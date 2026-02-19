@@ -133,18 +133,15 @@ uv run denoisr-init --output outputs/random_model.pt
 
 This is the same random model from the quick start — if you already created it, skip this step.
 
-### Step 3: Phase 1 — Supervised learning
+### Step 3: Generate training examples
 
-The network learns basic chess from human games annotated with Stockfish evaluations. Progress bars show data generation and training:
+Data generation with Stockfish is slow (~22 pos/s), so it runs as a separate step. Generate once, then iterate on training without re-generating:
 
 ```bash
-uv run denoisr-train-phase1 \
-    --checkpoint outputs/random_model.pt \
+uv run denoisr-generate-data \
     --pgn data/lichess_elite_2025-01.pgn \
     --max-examples 100000 \
-    --batch-size 64 \
-    --epochs 100 \
-    --output outputs/phase1.pt
+    --output outputs/training_data.pt
 ```
 
 Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to override.
@@ -152,28 +149,54 @@ Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to o
 **What you'll see:**
 
 ```
-Loaded checkpoint: d_s=256, heads=8, layers=15
 Generating examples: 45%|████████▌          | 45000/100000 [12:30<15:20, 59.7pos/s]
+Generated 100000 training examples
+Saved 100000 examples to outputs/training_data.pt
+```
+
+| Flag                | Default                    | Description                                |
+| ------------------- | -------------------------- | ------------------------------------------ |
+| `--pgn`             | (required)                 | Path to `.pgn` or `.pgn.zst` file          |
+| `--stockfish`       | auto-detect PATH           | Path to Stockfish binary                   |
+| `--stockfish-depth` | `10`                       | Stockfish analysis depth (higher = better) |
+| `--max-examples`    | `100000`                   | Training examples to generate              |
+| `--output`          | `outputs/training_data.pt` | Output path for generated data             |
+
+### Step 4: Phase 1 — Supervised learning
+
+The network learns basic chess from the pre-generated training data:
+
+```bash
+uv run denoisr-train-phase1 \
+    --checkpoint outputs/random_model.pt \
+    --data outputs/training_data.pt \
+    --batch-size 64 \
+    --epochs 100 \
+    --output outputs/phase1.pt
+```
+
+**What you'll see:**
+
+```
+Loaded checkpoint: d_s=256, heads=8, layers=15
+Loaded 100000 training examples from outputs/training_data.pt
 Epoch 12/100:  68%|█████████████▌      | 1088/1600 [00:45<00:21] loss=2.1234 policy=1.8901 value=0.2333
 Epoch 12/100: avg_loss=2.0891 top1_accuracy=28.5%
 ```
 
 Training automatically stops when top-1 accuracy exceeds **30%** (Phase 1 gate).
 
-| Flag                | Default             | Description                                     |
-| ------------------- | ------------------- | ----------------------------------------------- |
-| `--checkpoint`      | (required)          | Checkpoint to load (create with `denoisr-init`) |
-| `--pgn`             | (required)          | Path to `.pgn` or `.pgn.zst` file               |
-| `--stockfish`       | auto-detect PATH    | Path to Stockfish binary                        |
-| `--stockfish-depth` | `10`                | Stockfish analysis depth (higher = better)      |
-| `--max-examples`    | `100000`            | Training examples to generate                   |
-| `--holdout-frac`    | `0.05`              | Fraction for accuracy evaluation                |
-| `--batch-size`      | `64`                | Batch size                                      |
-| `--epochs`          | `100`               | Maximum epochs                                  |
-| `--lr`              | `1e-4`              | Learning rate                                   |
-| `--output`          | `outputs/phase1.pt` | Checkpoint path                                 |
+| Flag             | Default             | Description                                                    |
+| ---------------- | ------------------- | -------------------------------------------------------------- |
+| `--checkpoint`   | (required)          | Checkpoint to load (create with `denoisr-init`)                |
+| `--data`         | (required)          | Training data `.pt` file (create with `denoisr-generate-data`) |
+| `--holdout-frac` | `0.05`              | Fraction for accuracy evaluation                               |
+| `--batch-size`   | `64`                | Batch size                                                     |
+| `--epochs`       | `100`               | Maximum epochs                                                 |
+| `--lr`           | `1e-4`              | Learning rate                                                  |
+| `--output`       | `outputs/phase1.pt` | Checkpoint path                                                |
 
-### Step 4: Phase 2 — Diffusion bootstrapping
+### Step 5: Phase 2 — Diffusion bootstrapping
 
 Trains the diffusion module to denoise future trajectories, with the Phase 1 encoder frozen:
 
@@ -207,7 +230,7 @@ Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 pe
 | `--lr`               | `1e-4`              | Learning rate                      |
 | `--output`           | `outputs/phase2.pt` | Checkpoint path                    |
 
-### Step 5: Phase 3 — RL self-play
+### Step 6: Phase 3 — RL self-play
 
 The engine improves beyond human/Stockfish supervision by playing against itself:
 
@@ -376,19 +399,21 @@ Training proceeds in three phases, each gated on measurable quality thresholds t
 
 ## All available commands
 
-| Command                       | Description                                         |
-| ----------------------------- | --------------------------------------------------- |
-| `uv run denoisr-init`         | Initialize a random (untrained) model checkpoint    |
-| `uv run denoisr-train-phase1` | Phase 1: Supervised learning with Stockfish targets |
-| `uv run denoisr-train-phase2` | Phase 2: Diffusion bootstrapping on trajectories    |
-| `uv run denoisr-train-phase3` | Phase 3: RL self-play with MCTS-to-diffusion mixing |
-| `uv run denoisr-play`         | UCI chess engine (single-pass or diffusion)         |
-| `uv run denoisr-benchmark`    | Elo benchmarking via cutechess-cli                  |
+| Command                        | Description                                         |
+| ------------------------------ | --------------------------------------------------- |
+| `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint    |
+| `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish         |
+| `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data    |
+| `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories    |
+| `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing |
+| `uv run denoisr-play`          | UCI chess engine (single-pass or diffusion)         |
+| `uv run denoisr-benchmark`     | Elo benchmarking via cutechess-cli                  |
 
 All commands support `--help` for full flag documentation:
 
 ```bash
 uv run denoisr-init --help
+uv run denoisr-generate-data --help
 uv run denoisr-train-phase1 --help
 uv run denoisr-play --help
 ```

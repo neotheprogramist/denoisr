@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 denoisr-init = "denoisr.scripts.init_model:main"
+denoisr-generate-data = "denoisr.scripts.generate_data:main"
 denoisr-train-phase1 = "denoisr.scripts.train_phase1:main"
 denoisr-train-phase2 = "denoisr.scripts.train_phase2:main"
 denoisr-train-phase3 = "denoisr.scripts.train_phase3:main"
