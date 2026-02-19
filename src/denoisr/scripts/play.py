@@ -74,7 +74,7 @@ def main() -> None:
 
         diffusion = build_diffusion(cfg).to(device)
         diffusion.load_state_dict(state["diffusion"])
-        schedule = build_schedule(cfg)
+        schedule = build_schedule(cfg).to(device)
 
         select_move = DiffusionChessEngine(
             encoder=encoder,

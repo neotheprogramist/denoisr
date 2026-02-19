@@ -23,7 +23,7 @@ class TestDiffusionTrainer:
             num_layers=SMALL_NUM_LAYERS,
             num_timesteps=SMALL_NUM_TIMESTEPS,
         ).to(device)
-        schedule = CosineNoiseSchedule(num_timesteps=SMALL_NUM_TIMESTEPS)
+        schedule = CosineNoiseSchedule(num_timesteps=SMALL_NUM_TIMESTEPS).to(device)
         return DiffusionTrainer(
             encoder=encoder,
             diffusion=diffusion,

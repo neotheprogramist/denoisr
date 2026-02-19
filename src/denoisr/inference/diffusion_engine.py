@@ -94,7 +94,7 @@ class DiffusionChessEngine:
             t_val = max(0, self._schedule.num_timesteps - 1 - i * step_size)
             t = torch.tensor([t_val], device=self._device)
             noise_pred = self._diffusion(x, t, latent)
-            ab = self._schedule.alpha_bar.to(self._device)[t_val]
+            ab = self._schedule.alpha_bar[t_val]
             x = (x - (1 - ab).sqrt() * noise_pred) / ab.sqrt()
 
         return (latent + x) / 2
