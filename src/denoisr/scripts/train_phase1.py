@@ -113,6 +113,8 @@ def main() -> None:
         loss_fn=loss_fn,
         lr=args.lr,
         device=device,
+        total_epochs=args.epochs,
+        warmup_epochs=3,
     )
 
     # --- Train ---
@@ -143,6 +145,7 @@ def main() -> None:
                 value=f"{breakdown['value']:.4f}",
             )
         pbar.close()
+        trainer.scheduler_step()
 
         avg_loss = epoch_loss / max(num_batches, 1)
         top1 = measure_top1(trainer, holdout, device)

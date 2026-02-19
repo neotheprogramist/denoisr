@@ -23,6 +23,8 @@ class SupervisedTrainer:
         loss_fn: ChessLossComputer,
         lr: float = 1e-4,
         device: torch.device | None = None,
+        total_epochs: int = 100,
+        warmup_epochs: int = 3,
     ) -> None:
         self.encoder = encoder
         self.backbone = backbone
@@ -33,7 +35,7 @@ class SupervisedTrainer:
         self.max_grad_norm = 1.0
 
         param_groups = [
-            {"params": list(encoder.parameters()), "lr": lr * 0.1},
+            {"params": list(encoder.parameters()), "lr": lr * 0.3},
             {"params": list(backbone.parameters()), "lr": lr * 0.3},
             {"params": list(policy_head.parameters()), "lr": lr},
             {"params": list(value_head.parameters()), "lr": lr},
@@ -41,6 +43,13 @@ class SupervisedTrainer:
         self.optimizer = torch.optim.AdamW(
             param_groups, weight_decay=1e-4
         )
+
+        self._warmup_epochs = warmup_epochs
+        self._base_lrs = [g["lr"] for g in param_groups]
+        self._scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=max(1, total_epochs - warmup_epochs), eta_min=1e-6
+        )
+        self._epoch = 0
 
     def train_step(
         self, batch: list[TrainingExample]
@@ -82,6 +91,16 @@ class SupervisedTrainer:
         self.optimizer.step()
 
         return total_loss.item(), breakdown
+
+    def scheduler_step(self) -> None:
+        self._epoch += 1
+        if self._epoch <= self._warmup_epochs:
+            # Linear warmup
+            frac = self._epoch / self._warmup_epochs
+            for group, base_lr in zip(self.optimizer.param_groups, self._base_lrs):
+                group["lr"] = base_lr * frac
+        else:
+            self._scheduler.step()
 
     def save_checkpoint(self, path: Path) -> None:
         torch.save(

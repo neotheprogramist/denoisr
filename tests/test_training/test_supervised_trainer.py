@@ -106,3 +106,15 @@ class TestSupervisedTrainer:
             all_params, float("inf")
         )
         assert total_norm.item() < 100.0
+
+    def test_scheduler_reduces_lr(self, trainer: SupervisedTrainer) -> None:
+        """After stepping the scheduler, learning rates should decrease."""
+        initial_lrs = [g["lr"] for g in trainer.optimizer.param_groups]
+        batch = _make_batch(8)
+        # Simulate several epochs
+        for _ in range(5):
+            trainer.train_step(batch)
+            trainer.scheduler_step()
+        current_lrs = [g["lr"] for g in trainer.optimizer.param_groups]
+        # At least one group should have a lower LR
+        assert any(c < i for c, i in zip(current_lrs, initial_lrs))
