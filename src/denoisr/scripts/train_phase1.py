@@ -27,6 +27,7 @@ from denoisr.scripts.config import (
     build_value_head,
     config_from_args,
     detect_device,
+    load_checkpoint,
     save_checkpoint,
 )
 from denoisr.training.loss import ChessLossComputer
@@ -105,6 +106,11 @@ def measure_top1(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 1: Supervised training")
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Checkpoint to resume from (e.g. random_model.pt from denoisr-init)",
+    )
     parser.add_argument("--pgn", required=True, help="Path to .pgn or .pgn.zst file")
     parser.add_argument(
         "--stockfish",
@@ -130,10 +136,28 @@ def main() -> None:
         sys.exit(1)
     args.stockfish = stockfish_path
 
-    cfg = config_from_args(args)
     device = detect_device()
     print(f"Device: {device}")
-    print(f"Model config: d_s={cfg.d_s}, heads={cfg.num_heads}, layers={cfg.num_layers}")
+
+    # --- Build model (from checkpoint or fresh) ---
+    if args.checkpoint is not None:
+        cfg, state = load_checkpoint(Path(args.checkpoint), device)
+        print(f"Loaded checkpoint: d_s={cfg.d_s}, heads={cfg.num_heads}, layers={cfg.num_layers}")
+        encoder = build_encoder(cfg).to(device)
+        backbone = build_backbone(cfg).to(device)
+        policy_head = build_policy_head(cfg).to(device)
+        value_head = build_value_head(cfg).to(device)
+        encoder.load_state_dict(state["encoder"])
+        backbone.load_state_dict(state["backbone"])
+        policy_head.load_state_dict(state["policy_head"])
+        value_head.load_state_dict(state["value_head"])
+    else:
+        cfg = config_from_args(args)
+        print(f"Building fresh model: d_s={cfg.d_s}, heads={cfg.num_heads}, layers={cfg.num_layers}")
+        encoder = build_encoder(cfg).to(device)
+        backbone = build_backbone(cfg).to(device)
+        policy_head = build_policy_head(cfg).to(device)
+        value_head = build_value_head(cfg).to(device)
 
     # --- Generate data ---
     all_examples = generate_data(
@@ -146,11 +170,6 @@ def main() -> None:
     train = all_examples[holdout_n:]
     print(f"Train: {len(train)}, Holdout: {holdout_n}")
 
-    # --- Build model ---
-    encoder = build_encoder(cfg).to(device)
-    backbone = build_backbone(cfg).to(device)
-    policy_head = build_policy_head(cfg).to(device)
-    value_head = build_value_head(cfg).to(device)
     loss_fn = ChessLossComputer(use_harmony_dream=True)
 
     trainer = SupervisedTrainer(

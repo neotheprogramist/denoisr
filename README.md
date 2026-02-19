@@ -123,12 +123,23 @@ For larger-scale training, the [full Lichess database](https://database.lichess.
 wget -P data/ https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
 ```
 
-### Step 2: Phase 1 — Supervised learning
+### Step 2: Initialize the model
+
+Create a random model checkpoint that Phase 1 will train from:
+
+```bash
+uv run denoisr-init --output outputs/random_model.pt
+```
+
+This is the same random model from the quick start — if you already created it, skip this step.
+
+### Step 3: Phase 1 — Supervised learning
 
 The network learns basic chess from human games annotated with Stockfish evaluations. Progress bars show data generation and training:
 
 ```bash
 uv run denoisr-train-phase1 \
+    --checkpoint outputs/random_model.pt \
     --pgn data/lichess_elite_2025-01.pgn \
     --max-examples 100000 \
     --batch-size 64 \
@@ -141,6 +152,7 @@ Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to o
 **What you'll see:**
 
 ```
+Loaded checkpoint: d_s=256, heads=8, layers=15
 Generating examples: 45%|████████▌          | 45000/100000 [12:30<15:20, 59.7pos/s]
 Epoch 12/100:  68%|█████████████▌      | 1088/1600 [00:45<00:21] loss=2.1234 policy=1.8901 value=0.2333
 Epoch 12/100: avg_loss=2.0891 top1_accuracy=28.5%
@@ -148,19 +160,20 @@ Epoch 12/100: avg_loss=2.0891 top1_accuracy=28.5%
 
 Training automatically stops when top-1 accuracy exceeds **30%** (Phase 1 gate).
 
-| Flag                | Default             | Description                                |
-| ------------------- | ------------------- | ------------------------------------------ |
-| `--pgn`             | (required)          | Path to `.pgn` or `.pgn.zst` file          |
-| `--stockfish`       | auto-detect PATH    | Path to Stockfish binary                   |
-| `--stockfish-depth` | `10`                | Stockfish analysis depth (higher = better) |
-| `--max-examples`    | `100000`            | Training examples to generate              |
-| `--holdout-frac`    | `0.05`              | Fraction for accuracy evaluation           |
-| `--batch-size`      | `64`                | Batch size                                 |
-| `--epochs`          | `100`               | Maximum epochs                             |
-| `--lr`              | `1e-4`              | Learning rate                              |
-| `--output`          | `outputs/phase1.pt` | Checkpoint path                            |
+| Flag                | Default             | Description                                          |
+| ------------------- | ------------------- | ---------------------------------------------------- |
+| `--checkpoint`      | (none)              | Checkpoint to resume from (e.g. from `denoisr-init`) |
+| `--pgn`             | (required)          | Path to `.pgn` or `.pgn.zst` file                    |
+| `--stockfish`       | auto-detect PATH    | Path to Stockfish binary                             |
+| `--stockfish-depth` | `10`                | Stockfish analysis depth (higher = better)           |
+| `--max-examples`    | `100000`            | Training examples to generate                        |
+| `--holdout-frac`    | `0.05`              | Fraction for accuracy evaluation                     |
+| `--batch-size`      | `64`                | Batch size                                           |
+| `--epochs`          | `100`               | Maximum epochs                                       |
+| `--lr`              | `1e-4`              | Learning rate                                        |
+| `--output`          | `outputs/phase1.pt` | Checkpoint path                                      |
 
-### Step 3: Phase 2 — Diffusion bootstrapping
+### Step 4: Phase 2 — Diffusion bootstrapping
 
 Trains the diffusion module to denoise future trajectories, with the Phase 1 encoder frozen:
 
@@ -194,7 +207,7 @@ Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 pe
 | `--lr`               | `1e-4`              | Learning rate                      |
 | `--output`           | `outputs/phase2.pt` | Checkpoint path                    |
 
-### Step 4: Phase 3 — RL self-play
+### Step 5: Phase 3 — RL self-play
 
 The engine improves beyond human/Stockfish supervision by playing against itself:
 
