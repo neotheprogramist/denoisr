@@ -57,9 +57,12 @@ class ChessLossComputer:
         target_flat = target_policy.reshape(B, -1)
         # Mask illegal moves: set logits to -inf where target is zero
         legal_mask = target_flat > 0
+        has_legal = legal_mask.any(dim=-1, keepdim=True)
         masked_logits = pred_flat.masked_fill(~legal_mask, float("-inf"))
+        # Guard all-zero rows: replace all-inf rows with zeros to avoid NaN
+        masked_logits = masked_logits.masked_fill(~has_legal.expand_as(masked_logits), 0.0)
         log_probs = F.log_softmax(masked_logits, dim=-1)
-        # Replace -inf with 0 at illegal positions to avoid 0 * -inf = NaN
+        # Replace -inf/NaN at illegal positions with 0 to avoid 0 * -inf = NaN
         log_probs = log_probs.masked_fill(~legal_mask, 0.0)
         policy_loss = -(target_flat * log_probs).sum(dim=-1).mean()
 

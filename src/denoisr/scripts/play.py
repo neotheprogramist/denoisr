@@ -14,7 +14,6 @@ import argparse
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.inference.uci import run_uci_loop
 
 if TYPE_CHECKING:
@@ -23,6 +22,7 @@ if TYPE_CHECKING:
     import chess
 from denoisr.scripts.config import (
     build_backbone,
+    build_board_encoder,
     build_diffusion,
     build_encoder,
     build_policy_head,
@@ -65,7 +65,7 @@ def main() -> None:
     policy_head.load_state_dict(state["policy_head"])
     value_head.load_state_dict(state["value_head"])
 
-    board_encoder = SimpleBoardEncoder()
+    board_encoder = build_board_encoder(cfg)
 
     select_move: Callable[[chess.Board], chess.Move]
 

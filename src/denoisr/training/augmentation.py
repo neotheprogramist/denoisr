@@ -61,7 +61,8 @@ def flip_board(board: Tensor, num_planes: int) -> Tensor:
 
 def flip_policy(policy: Tensor) -> Tensor:
     """Flip policy tensor [64, 64]: mirror source and destination squares."""
-    return policy[_SQUARE_FLIP][:, _SQUARE_FLIP]
+    idx = _SQUARE_FLIP.to(policy.device)
+    return policy[idx][:, idx]
 
 
 def flip_value(win: float, draw: float, loss: float) -> tuple[float, float, float]:

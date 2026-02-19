@@ -2,7 +2,11 @@ import chess
 import torch
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
+from denoisr.nn.encoder import ChessEncoder
 from denoisr.training.augmentation import flip_board, flip_policy, flip_value
+
+from conftest import SMALL_D_S
 
 
 class TestBoardFlip:
@@ -55,3 +59,57 @@ class TestValueFlip:
         assert fw == loss
         assert fd == draw
         assert fl == win
+
+
+class TestExtendedBoardFlip:
+    """Tests for 110-plane flip_board path (metadata plane swaps)."""
+
+    def test_110_plane_involution(self) -> None:
+        """Flipping twice returns the original for 110-plane tensors."""
+        board = torch.randn(110, 8, 8)
+        assert torch.allclose(flip_board(flip_board(board, 110), 110), board)
+
+    def test_side_to_move_inverted(self) -> None:
+        """Side-to-move plane (96+7=103) should be inverted after flip."""
+        encoder = ExtendedBoardEncoder()
+        board = chess.Board()  # White to move
+        tensor = encoder.encode(board).data
+        assert tensor[103].sum() > 0  # side-to-move = 1 for white
+        flipped = flip_board(tensor, 110)
+        assert flipped[103].sum() == 0.0  # should be 0 for black
+
+    def test_castling_swapped(self) -> None:
+        """White castling planes (96,97) should swap with black (98,99)."""
+        encoder = ExtendedBoardEncoder()
+        board = chess.Board()  # All castling rights present
+        tensor = encoder.encode(board).data
+        w_king = tensor[96].clone()
+        w_queen = tensor[97].clone()
+        b_king = tensor[98].clone()
+        b_queen = tensor[99].clone()
+        flipped = flip_board(tensor, 110)
+        assert torch.allclose(flipped[96], b_king)
+        assert torch.allclose(flipped[97], b_queen)
+        assert torch.allclose(flipped[98], w_king)
+        assert torch.allclose(flipped[99], w_queen)
+
+
+class TestRoundTrip:
+    """Integration test: ExtendedBoardEncoder output through ChessEncoder."""
+
+    def test_extended_encoder_through_chess_encoder(self) -> None:
+        """Real ExtendedBoardEncoder output passes through 110-plane ChessEncoder."""
+        board_enc = ExtendedBoardEncoder()
+        nn_enc = ChessEncoder(num_planes=110, d_s=SMALL_D_S)
+
+        board = chess.Board()
+        board.push_san("e4")
+        board.push_san("e5")
+
+        tensor = board_enc.encode(board).data  # [110, 8, 8]
+        batch = tensor.unsqueeze(0)  # [1, 110, 8, 8]
+
+        with torch.no_grad():
+            out = nn_enc(batch)
+        assert out.shape == (1, 64, SMALL_D_S)
+        assert not torch.isnan(out).any()

@@ -63,7 +63,10 @@ def _evaluate_position(moves: _MoveSeq) -> _EvalResult:
         raise RuntimeError("Worker not initialized")
     board = chess.Board()
     for from_sq, to_sq, promo in moves:
-        board.push(chess.Move(from_sq, to_sq, promo))
+        move = chess.Move(from_sq, to_sq, promo)
+        if move not in board.legal_moves:
+            raise ValueError(f"Illegal move {move.uci()} at ply {len(board.move_stack)}")
+        board.push(move)
     board_tensor = _encoder.encode(board)
     policy, value, _ = _oracle.evaluate(board)
     return (
@@ -84,11 +87,11 @@ def _extract_positions(pgn_path: Path, max_positions: int) -> list[_MoveSeq]:
     for record in streamer.stream(pgn_path):
         moves_so_far: _MoveSeq = []
         for action in record.actions:
+            moves_so_far.append((action.from_square, action.to_square, action.promotion))
             if len(positions) >= max_positions:
                 break
             positions.append(list(moves_so_far))
             pbar.update(1)
-            moves_so_far.append((action.from_square, action.to_square, action.promotion))
 
         if len(positions) >= max_positions:
             break

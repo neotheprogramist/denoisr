@@ -3,6 +3,7 @@ import torch
 from torch import nn
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 
 
 class ChessEngine:
@@ -19,7 +20,7 @@ class ChessEngine:
         backbone: nn.Module,
         policy_head: nn.Module,
         value_head: nn.Module,
-        board_encoder: SimpleBoardEncoder,
+        board_encoder: SimpleBoardEncoder | ExtendedBoardEncoder,
         device: torch.device | None = None,
     ) -> None:
         self._encoder = encoder

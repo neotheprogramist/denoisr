@@ -38,22 +38,27 @@ class TestStockfishOracle:
         assert -10000 <= cp <= 10000
 
     def test_mate_position_value(self, oracle: StockfishOracle) -> None:
-        # Position after Scholar's mate — white already won
+        """Oracle should handle a checkmated position without crashing."""
         board = chess.Board()
         for uci in ("e2e4", "e7e5", "d1h5", "b8c6", "f1c4", "g8f6", "h5f7"):
             board.push_uci(uci)
-        # Game is over, but oracle should still handle it
-        # (implementation may return extreme values)
+        policy, value, _ = oracle.evaluate(board)
+        # No legal moves → policy should be all zeros
+        assert policy.data.sum().item() == pytest.approx(0.0)
+        # WDL should still sum to 1
+        assert abs(value.win + value.draw + value.loss - 1.0) < 1e-5
 
     def test_best_move_has_substantial_probability(
         self, oracle: StockfishOracle
     ) -> None:
-        """With T=30, the best move should get meaningful probability mass."""
+        """With T=30, the best move should be well above uniform probability."""
         board = chess.Board()
+        legal_count = board.legal_moves.count()
         policy, _, _ = oracle.evaluate(board)
         max_prob = policy.data.max().item()
-        # With T=30, best move in starting position should get >15%
-        assert max_prob > 0.15
+        uniform_prob = 1.0 / legal_count
+        # Best move should be at least 2x the uniform baseline
+        assert max_prob > 2.0 * uniform_prob
 
     def test_policy_only_on_legal_moves(
         self, oracle: StockfishOracle

@@ -4,6 +4,7 @@ import chess
 from torch import Tensor
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.game.chess_game import ChessGame
 from denoisr.training.mcts import MCTS, MCTSConfig
 from denoisr.types import (
@@ -28,7 +29,7 @@ class ReanalyseActor:
         world_model_fn: Callable[[Tensor, int, int], tuple[Tensor, float]],
         encode_fn: Callable[[Tensor], Tensor],
         game: ChessGame,
-        board_encoder: SimpleBoardEncoder,
+        board_encoder: SimpleBoardEncoder | ExtendedBoardEncoder,
         num_simulations: int = 100,
     ) -> None:
         self._game = game

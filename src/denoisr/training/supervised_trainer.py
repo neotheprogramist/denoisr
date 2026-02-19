@@ -110,6 +110,8 @@ class SupervisedTrainer:
                 "policy_head": self.policy_head.state_dict(),
                 "value_head": self.value_head.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
+                "scheduler": self._scheduler.state_dict(),
+                "scheduler_epoch": self._epoch,
             },
             path,
         )
@@ -121,3 +123,6 @@ class SupervisedTrainer:
         self.policy_head.load_state_dict(checkpoint["policy_head"])
         self.value_head.load_state_dict(checkpoint["value_head"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if "scheduler" in checkpoint:
+            self._scheduler.load_state_dict(checkpoint["scheduler"])
+            self._epoch = checkpoint["scheduler_epoch"]

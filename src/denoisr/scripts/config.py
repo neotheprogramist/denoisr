@@ -7,6 +7,8 @@ from typing import Any
 
 import torch
 
+from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.nn.consistency import ChessConsistencyProjector
 from denoisr.nn.diffusion import ChessDiffusionModule, CosineNoiseSchedule
 from denoisr.nn.encoder import ChessEncoder
@@ -39,6 +41,13 @@ def detect_device() -> torch.device:
 
 def build_encoder(cfg: ModelConfig) -> ChessEncoder:
     return ChessEncoder(num_planes=cfg.num_planes, d_s=cfg.d_s)
+
+
+def build_board_encoder(cfg: ModelConfig) -> SimpleBoardEncoder | ExtendedBoardEncoder:
+    """Return the appropriate board encoder based on config num_planes."""
+    if cfg.num_planes == 12:
+        return SimpleBoardEncoder()
+    return ExtendedBoardEncoder()
 
 
 def build_backbone(cfg: ModelConfig) -> ChessPolicyBackbone:
@@ -94,6 +103,7 @@ def add_model_args(parser: ArgumentParser) -> None:
     g.add_argument("--num-timesteps", type=int, default=100)
     g.add_argument("--world-model-layers", type=int, default=12)
     g.add_argument("--diffusion-layers", type=int, default=6)
+    g.add_argument("--proj-dim", type=int, default=256, help="consistency projector dimension")
 
 
 def config_from_args(args: Namespace) -> ModelConfig:
@@ -106,6 +116,7 @@ def config_from_args(args: Namespace) -> ModelConfig:
         num_timesteps=args.num_timesteps,
         world_model_layers=args.world_model_layers,
         diffusion_layers=args.diffusion_layers,
+        proj_dim=args.proj_dim,
     )
 
 

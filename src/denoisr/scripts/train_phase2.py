@@ -16,10 +16,12 @@ import torch
 from tqdm import tqdm
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.scripts.config import (
     add_model_args,
     build_backbone,
+    build_board_encoder,
     build_consistency,
     build_diffusion,
     build_encoder,
@@ -36,7 +38,7 @@ from denoisr.training.diffusion_trainer import DiffusionTrainer
 
 def extract_trajectories(
     pgn_path: Path,
-    encoder: SimpleBoardEncoder,
+    encoder: SimpleBoardEncoder | ExtendedBoardEncoder,
     seq_len: int,
     max_trajectories: int,
 ) -> list[torch.Tensor]:
@@ -123,7 +125,7 @@ def main() -> None:
     )
 
     # --- Extract trajectories ---
-    board_encoder = SimpleBoardEncoder()
+    board_encoder = build_board_encoder(cfg)
     trajectories = extract_trajectories(
         Path(args.pgn), board_encoder, args.seq_len, args.max_trajectories
     )

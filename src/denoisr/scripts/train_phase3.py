@@ -14,11 +14,11 @@ import torch
 from torch import Tensor
 from tqdm import tqdm
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.game.chess_game import ChessGame
 from denoisr.scripts.config import (
     add_model_args,
     build_backbone,
+    build_board_encoder,
     build_consistency,
     build_diffusion,
     build_encoder,
@@ -103,7 +103,7 @@ def main() -> None:
 
     # --- Self-play setup ---
     game = ChessGame()
-    board_encoder = SimpleBoardEncoder()
+    board_encoder = build_board_encoder(cfg)
 
     temp_schedule = TemperatureSchedule(
         base=1.0, explore_moves=30, generation_decay=0.97

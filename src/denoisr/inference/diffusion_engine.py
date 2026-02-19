@@ -3,6 +3,7 @@ import torch
 from torch import nn
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.nn.diffusion import CosineNoiseSchedule
 
 
@@ -27,7 +28,7 @@ class DiffusionChessEngine:
         value_head: nn.Module,
         diffusion: nn.Module,
         schedule: CosineNoiseSchedule,
-        board_encoder: SimpleBoardEncoder,
+        board_encoder: SimpleBoardEncoder | ExtendedBoardEncoder,
         device: torch.device | None = None,
         num_denoising_steps: int = 10,
     ) -> None:

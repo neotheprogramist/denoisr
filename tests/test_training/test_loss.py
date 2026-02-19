@@ -36,7 +36,8 @@ class TestChessLossComputer:
         )
         assert "policy" in breakdown
         assert "value" in breakdown
-        assert all(v >= 0 for v in breakdown.values())
+        assert breakdown["policy"] >= 0
+        assert breakdown["value"] >= 0
 
     def test_auxiliary_losses_included_in_total(
         self, loss_fn: ChessLossComputer
@@ -143,6 +144,20 @@ class TestChessLossComputer:
 
         loss_b, _ = loss_fn.compute(pred_policy_b, pred_value, target_policy, target_value)
         assert torch.allclose(loss_a, loss_b, atol=1e-5)
+
+    def test_all_zero_target_does_not_produce_nan(
+        self, loss_fn: ChessLossComputer
+    ) -> None:
+        """A batch item with no legal moves (all-zero target) must not produce NaN."""
+        pred_policy = torch.randn(2, 64, 64)
+        pred_value = torch.softmax(torch.randn(2, 3), dim=-1)
+        target_policy = torch.zeros(2, 64, 64)
+        target_policy[0, 4, 4] = 1.0  # item 0 has a legal move
+        # item 1 has NO legal moves — simulates a corrupted/padded row
+        target_value = torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        total, _ = loss_fn.compute(pred_policy, pred_value, target_policy, target_value)
+        assert not torch.isnan(total)
+        assert not torch.isinf(total)
 
     def test_harmony_dream_adjusts_coefficients(self) -> None:
         loss_fn = ChessLossComputer(use_harmony_dream=True)
