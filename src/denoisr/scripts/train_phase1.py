@@ -8,6 +8,8 @@ Gate to Phase 2: policy top-1 accuracy > 30% on held-out positions.
 
 import argparse
 import random
+import shutil
+import sys
 from pathlib import Path
 
 import chess
@@ -104,7 +106,11 @@ def measure_top1(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 1: Supervised training")
     parser.add_argument("--pgn", required=True, help="Path to .pgn or .pgn.zst file")
-    parser.add_argument("--stockfish", required=True, help="Path to Stockfish binary")
+    parser.add_argument(
+        "--stockfish",
+        default=None,
+        help="Path to Stockfish binary (auto-detected from PATH if omitted)",
+    )
     parser.add_argument("--stockfish-depth", type=int, default=10)
     parser.add_argument("--max-examples", type=int, default=100_000)
     parser.add_argument("--holdout-frac", type=float, default=0.05)
@@ -115,6 +121,15 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=10, help="Log every N batches")
     add_model_args(parser)
     args = parser.parse_args()
+
+    stockfish_path = args.stockfish or shutil.which("stockfish")
+    if stockfish_path is None:
+        print(
+            "Error: Stockfish not found. Install it or pass --stockfish /path/to/stockfish",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    args.stockfish = stockfish_path
 
     cfg = config_from_args(args)
     device = detect_device()

@@ -38,6 +38,31 @@ uv run pytest tests/ -v
 uv run pytest tests/ -v -k "not stockfish"
 ```
 
+## Getting training data
+
+Phase 1 needs a PGN file of chess games. The [Lichess Elite Database](https://database.nikonoel.fr/) provides curated high-quality games (2400+ vs 2200+ rated players, no bullet):
+
+```bash
+mkdir -p data
+
+# Download a month of elite games (~60-120 MB .zip, extracts to .pgn)
+wget -P data/ https://database.nikonoel.fr/lichess_elite_2025-01.zip
+unzip data/lichess_elite_2025-01.zip -d data/
+
+# The extracted .pgn file is ready to use
+# uv run denoisr-train-phase1 --pgn data/lichess_elite_2025-01.pgn ...
+```
+
+For larger-scale training, the [full Lichess database](https://database.lichess.org/) provides all rated games in `.pgn.zst` format (natively supported by the streamer, no decompression needed):
+
+```bash
+# Full month of rated games (~20-50 GB compressed, streams directly)
+wget -P data/ https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
+
+# Use directly — the PGN streamer handles .pgn.zst natively
+# uv run denoisr-train-phase1 --pgn data/lichess_db_standard_rated_2025-01.pgn.zst ...
+```
+
 ## Architecture overview
 
 ```
@@ -111,14 +136,20 @@ TrainingExample batches  ──>  SupervisedTrainer
 ### How to run
 
 ```bash
+# Stockfish is auto-detected from PATH (install via brew/apt/snap)
 uv run denoisr-train-phase1 \
-    --pgn data/lichess_2026-01.pgn.zst \
-    --stockfish /usr/local/bin/stockfish \
+    --pgn data/lichess_elite_2025-01.pgn \
     --stockfish-depth 12 \
     --max-examples 100000 \
     --batch-size 64 \
     --epochs 100 \
     --lr 1e-4 \
+    --output outputs/phase1.pt
+
+# Or specify the Stockfish path explicitly
+uv run denoisr-train-phase1 \
+    --pgn data/lichess_elite_2025-01.pgn \
+    --stockfish /usr/local/bin/stockfish \
     --output outputs/phase1.pt
 ```
 
@@ -127,7 +158,7 @@ Key flags:
 | Flag                | Default             | Description                                                |
 | ------------------- | ------------------- | ---------------------------------------------------------- |
 | `--pgn`             | (required)          | Path to `.pgn` or `.pgn.zst` file                          |
-| `--stockfish`       | (required)          | Path to Stockfish binary                                   |
+| `--stockfish`       | auto-detect PATH    | Path to Stockfish binary (found via PATH if omitted)       |
 | `--stockfish-depth` | `10`                | Stockfish analysis depth (higher = better targets)         |
 | `--max-examples`    | `100000`            | Maximum training examples to generate                      |
 | `--holdout-frac`    | `0.05`              | Fraction reserved for accuracy evaluation                  |
@@ -190,7 +221,7 @@ The diffusion trainer starts with only 25% of the maximum timesteps and graduall
 ```bash
 uv run denoisr-train-phase2 \
     --checkpoint outputs/phase1.pt \
-    --pgn data/lichess_2026-01.pgn.zst \
+    --pgn data/lichess_elite_2025-01.pgn \
     --seq-len 5 \
     --max-trajectories 50000 \
     --batch-size 32 \
@@ -361,29 +392,32 @@ uv run denoisr-benchmark \
 # 1. Install dependencies
 uv sync
 
-# 2. Phase 1: Supervised learning (~hours with GPU)
+# 2. Download training data
+wget -P data/ https://database.nikonoel.fr/lichess_elite_2025-01.zip
+unzip data/lichess_elite_2025-01.zip -d data/
+
+# 3. Phase 1: Supervised learning (~hours with GPU)
 uv run denoisr-train-phase1 \
-    --pgn data/lichess_2026-01.pgn.zst \
-    --stockfish /usr/local/bin/stockfish \
+    --pgn data/lichess_elite_2025-01.pgn \
     --output outputs/phase1.pt
 
-# 3. Phase 2: Diffusion bootstrapping (~hours with GPU)
+# 4. Phase 2: Diffusion bootstrapping (~hours with GPU)
 uv run denoisr-train-phase2 \
     --checkpoint outputs/phase1.pt \
-    --pgn data/lichess_2026-01.pgn.zst \
+    --pgn data/lichess_elite_2025-01.pgn \
     --output outputs/phase2.pt
 
-# 4. Phase 3: RL self-play (~days with GPU)
+# 5. Phase 3: RL self-play (~days with GPU)
 uv run denoisr-train-phase3 \
     --checkpoint outputs/phase2.pt \
     --output outputs/phase3.pt
 
-# 5. Play!
+# 6. Play!
 uv run denoisr-play \
     --checkpoint outputs/phase3.pt \
     --mode diffusion
 
-# 6. Benchmark
+# 7. Benchmark
 uv run denoisr-benchmark \
     --engine-cmd "uv run denoisr-play --checkpoint outputs/phase3.pt --mode diffusion" \
     --opponent-cmd stockfish \
