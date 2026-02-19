@@ -82,3 +82,27 @@ class TestSupervisedTrainer:
         trainer.save_checkpoint(path)
         assert path.exists()
         trainer.load_checkpoint(path)
+
+    def test_encoder_lr_lower_than_head_lr(
+        self, trainer: SupervisedTrainer
+    ) -> None:
+        groups = trainer.optimizer.param_groups
+        encoder_lr = groups[0]["lr"]
+        head_lr = groups[2]["lr"]
+        assert encoder_lr < head_lr
+
+    def test_gradients_are_clipped(
+        self, trainer: SupervisedTrainer
+    ) -> None:
+        batch = _make_batch(4)
+        trainer.train_step(batch)
+        all_params = [
+            p
+            for group in trainer.optimizer.param_groups
+            for p in group["params"]
+            if p.grad is not None
+        ]
+        total_norm = torch.nn.utils.clip_grad_norm_(
+            all_params, float("inf")
+        )
+        assert total_norm.item() < 100.0

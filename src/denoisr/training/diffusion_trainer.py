@@ -28,6 +28,11 @@ class DiffusionTrainer:
         params = list(diffusion.parameters())
         self.optimizer = torch.optim.AdamW(params, lr=lr)
 
+        self._curriculum_max_steps = schedule.num_timesteps
+        self._current_max_steps_f = float(max(1, schedule.num_timesteps // 4))
+        self._current_max_steps = int(self._current_max_steps_f)
+        self._curriculum_growth = 1.02
+
     def train_step(self, trajectories: Tensor) -> float:
         """Train on a batch of board tensor trajectories.
 
@@ -52,7 +57,7 @@ class DiffusionTrainer:
         )
 
         t = torch.randint(
-            0, self.schedule.num_timesteps, (B,), device=self.device
+            0, self._current_max_steps, (B,), device=self.device
         )
         noise = torch.randn_like(target)
         noisy_target = self.schedule.q_sample(target, t, noise)
@@ -66,3 +71,11 @@ class DiffusionTrainer:
         self.optimizer.step()
 
         return loss.item()
+
+    def advance_curriculum(self) -> None:
+        """Call once per epoch to increase diffusion step difficulty."""
+        self._current_max_steps_f = min(
+            float(self._curriculum_max_steps),
+            self._current_max_steps_f * self._curriculum_growth,
+        )
+        self._current_max_steps = int(self._current_max_steps_f)

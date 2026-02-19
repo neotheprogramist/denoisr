@@ -30,14 +30,17 @@ class SupervisedTrainer:
         self.value_head = value_head
         self.loss_fn = loss_fn
         self.device = device or torch.device("cpu")
+        self.max_grad_norm = 1.0
 
-        params = (
-            list(encoder.parameters())
-            + list(backbone.parameters())
-            + list(policy_head.parameters())
-            + list(value_head.parameters())
+        param_groups = [
+            {"params": list(encoder.parameters()), "lr": lr * 0.1},
+            {"params": list(backbone.parameters()), "lr": lr * 0.3},
+            {"params": list(policy_head.parameters()), "lr": lr},
+            {"params": list(value_head.parameters()), "lr": lr},
+        ]
+        self.optimizer = torch.optim.AdamW(
+            param_groups, weight_decay=1e-4
         )
-        self.optimizer = torch.optim.AdamW(params, lr=lr)
 
     def train_step(
         self, batch: list[TrainingExample]
@@ -68,6 +71,14 @@ class SupervisedTrainer:
 
         self.optimizer.zero_grad()
         total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            [
+                p
+                for group in self.optimizer.param_groups
+                for p in group["params"]
+            ],
+            self.max_grad_norm,
+        )
         self.optimizer.step()
 
         return total_loss.item(), breakdown

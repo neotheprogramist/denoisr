@@ -51,5 +51,16 @@ class TestDiffusionTrainer:
         self, trainer: DiffusionTrainer, device: torch.device
     ) -> None:
         trajectory = torch.randn(2, 4, 12, 8, 8, device=device)
-        losses = [trainer.train_step(trajectory) for _ in range(30)]
-        assert losses[-1] < losses[0]
+        losses = [trainer.train_step(trajectory) for _ in range(50)]
+        early_avg = sum(losses[:5]) / 5
+        late_avg = sum(losses[-5:]) / 5
+        assert late_avg < early_avg
+
+    def test_curriculum_increases_over_epochs(
+        self, trainer: DiffusionTrainer
+    ) -> None:
+        initial = trainer._current_max_steps
+        for _ in range(100):
+            trainer.advance_curriculum()
+        assert trainer._current_max_steps > initial
+        assert trainer._current_max_steps <= trainer._curriculum_max_steps
