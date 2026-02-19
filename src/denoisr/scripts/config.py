@@ -18,6 +18,7 @@ from denoisr.nn.world_model import ChessWorldModel
 
 @dataclass(frozen=True)
 class ModelConfig:
+    num_planes: int = 110
     d_s: int = 256
     num_heads: int = 8
     num_layers: int = 15
@@ -36,8 +37,8 @@ def detect_device() -> torch.device:
     return torch.device("cpu")
 
 
-def build_encoder(cfg: ModelConfig, num_planes: int = 12) -> ChessEncoder:
-    return ChessEncoder(num_planes=num_planes, d_s=cfg.d_s)
+def build_encoder(cfg: ModelConfig) -> ChessEncoder:
+    return ChessEncoder(num_planes=cfg.num_planes, d_s=cfg.d_s)
 
 
 def build_backbone(cfg: ModelConfig) -> ChessPolicyBackbone:
@@ -85,6 +86,7 @@ def build_schedule(cfg: ModelConfig) -> CosineNoiseSchedule:
 
 def add_model_args(parser: ArgumentParser) -> None:
     g = parser.add_argument_group("model")
+    g.add_argument("--num-planes", type=int, default=110, help="board encoder planes")
     g.add_argument("--d-s", type=int, default=256, help="latent dimension")
     g.add_argument("--num-heads", type=int, default=8)
     g.add_argument("--num-layers", type=int, default=15, help="backbone layers")
@@ -96,6 +98,7 @@ def add_model_args(parser: ArgumentParser) -> None:
 
 def config_from_args(args: Namespace) -> ModelConfig:
     return ModelConfig(
+        num_planes=args.num_planes,
         d_s=args.d_s,
         num_heads=args.num_heads,
         num_layers=args.num_layers,

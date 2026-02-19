@@ -1,7 +1,7 @@
 """Generate training data: PGN + Stockfish -> stacked tensors on disk.
 
 Produces a .pt file with:
-    boards:   Tensor[N, 12, 8, 8]
+    boards:   Tensor[N, 110, 8, 8]
     policies: Tensor[N, 64, 64]
     values:   Tensor[N, 3]        (win, draw, loss per example)
 
@@ -23,7 +23,7 @@ import numpy.typing as npt
 import torch
 from tqdm import tqdm
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.data.stockfish_oracle import StockfishOracle
 from denoisr.types import BoardTensor, PolicyTarget, TrainingExample, ValueTarget
@@ -31,7 +31,7 @@ from denoisr.types import BoardTensor, PolicyTarget, TrainingExample, ValueTarge
 # -- Per-worker process globals (set by _init_worker) ---------------------
 
 _oracle: StockfishOracle | None = None
-_encoder: SimpleBoardEncoder | None = None
+_encoder: ExtendedBoardEncoder | None = None
 
 
 def _cleanup_oracle() -> None:
@@ -46,7 +46,7 @@ def _cleanup_oracle() -> None:
 def _init_worker(stockfish_path: str, stockfish_depth: int) -> None:
     global _oracle, _encoder
     _oracle = StockfishOracle(path=stockfish_path, depth=stockfish_depth)
-    _encoder = SimpleBoardEncoder()
+    _encoder = ExtendedBoardEncoder()
     atexit.register(_cleanup_oracle)
 
 
@@ -55,11 +55,15 @@ def _init_worker(stockfish_path: str, stockfish_depth: int) -> None:
 # which exhausts file descriptors at high worker counts).
 _EvalResult = tuple[npt.NDArray[np.float32], npt.NDArray[np.float32], tuple[float, float, float]]
 
+_MoveSeq = list[tuple[int, int, int | None]]
 
-def _evaluate_position(fen: str) -> _EvalResult:
+
+def _evaluate_position(moves: _MoveSeq) -> _EvalResult:
     if _oracle is None or _encoder is None:
         raise RuntimeError("Worker not initialized")
-    board = chess.Board(fen)
+    board = chess.Board()
+    for from_sq, to_sq, promo in moves:
+        board.push(chess.Move(from_sq, to_sq, promo))
     board_tensor = _encoder.encode(board)
     policy, value, _ = _oracle.evaluate(board)
     return (
@@ -72,30 +76,25 @@ def _evaluate_position(fen: str) -> _EvalResult:
 # -- Public API -----------------------------------------------------------
 
 
-def _extract_fens(pgn_path: Path, max_positions: int) -> list[str]:
+def _extract_positions(pgn_path: Path, max_positions: int) -> list[_MoveSeq]:
     streamer = SimplePGNStreamer()
-    fens: list[str] = []
+    positions: list[_MoveSeq] = []
     pbar = tqdm(total=max_positions, desc="Extracting positions", unit="pos", smoothing=0.3)
 
     for record in streamer.stream(pgn_path):
-        board = chess.Board()
+        moves_so_far: _MoveSeq = []
         for action in record.actions:
-            if len(fens) >= max_positions:
+            if len(positions) >= max_positions:
                 break
-            fens.append(board.fen())
+            positions.append(list(moves_so_far))
             pbar.update(1)
-            move = chess.Move(
-                action.from_square,
-                action.to_square,
-                action.promotion,
-            )
-            board.push(move)
+            moves_so_far.append((action.from_square, action.to_square, action.promotion))
 
-        if len(fens) >= max_positions:
+        if len(positions) >= max_positions:
             break
 
     pbar.close()
-    return fens
+    return positions
 
 
 def generate_examples(
@@ -105,8 +104,8 @@ def generate_examples(
     max_examples: int,
     num_workers: int,
 ) -> list[TrainingExample]:
-    fens = _extract_fens(pgn_path, max_examples)
-    print(f"Extracted {len(fens)} positions, evaluating with {num_workers} workers")
+    positions = _extract_positions(pgn_path, max_examples)
+    print(f"Extracted {len(positions)} positions, evaluating with {num_workers} workers")
 
     examples: list[TrainingExample] = []
 
@@ -115,9 +114,9 @@ def generate_examples(
         initializer=_init_worker,
         initargs=(stockfish_path, stockfish_depth),
     ) as pool:
-        results = pool.imap_unordered(_evaluate_position, fens)
+        results = pool.imap_unordered(_evaluate_position, positions)
         for board_np, policy_np, (win, draw, loss) in tqdm(
-            results, total=len(fens), desc="Evaluating positions", unit="pos",
+            results, total=len(positions), desc="Evaluating positions", unit="pos",
             smoothing=0.1,
         ):
             examples.append(
