@@ -24,6 +24,7 @@ class DiffusionTrainer:
         self.diffusion = diffusion
         self.schedule = schedule
         self.device = device or torch.device("cpu")
+        self.schedule.to(self.device)
 
         params = list(diffusion.parameters())
         self.optimizer = torch.optim.AdamW(params, lr=lr)

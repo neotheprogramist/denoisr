@@ -114,7 +114,7 @@ def main() -> None:
     world_model = build_world_model(cfg).to(device)
     diffusion = build_diffusion(cfg).to(device)
     consistency = build_consistency(cfg).to(device)
-    schedule = build_schedule(cfg)
+    schedule = build_schedule(cfg).to(device)
 
     diff_trainer = DiffusionTrainer(
         encoder=encoder,

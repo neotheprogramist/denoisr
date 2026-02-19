@@ -51,6 +51,19 @@ class TestCosineNoiseSchedule:
         x_t = schedule.q_sample(x_0, t, noise)
         assert torch.allclose(x_t, x_0, atol=0.2)
 
+    def test_schedule_is_nn_module(
+        self, schedule: CosineNoiseSchedule
+    ) -> None:
+        import torch.nn as nn
+
+        assert isinstance(schedule, nn.Module)
+
+    def test_alpha_bar_moves_with_to(
+        self, schedule: CosineNoiseSchedule, device: torch.device
+    ) -> None:
+        schedule.to(device)
+        assert schedule.alpha_bar.device.type == device.type
+
 
 class TestChessDiffusionModule:
     @pytest.fixture

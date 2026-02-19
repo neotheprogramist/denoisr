@@ -5,14 +5,17 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 
-class CosineNoiseSchedule:
+class CosineNoiseSchedule(nn.Module):
     """Cosine noise schedule for continuous DDPM (Nichol & Dhariwal 2021).
 
     Produces alpha_bar_t values that follow a cosine curve, giving
     a gentler noise schedule than linear beta scheduling.
     """
 
+    alpha_bar: Tensor
+
     def __init__(self, num_timesteps: int, s: float = 0.008) -> None:
+        super().__init__()
         self.num_timesteps = num_timesteps
         steps = torch.arange(num_timesteps + 1, dtype=torch.float64)
         f = (
@@ -20,13 +23,14 @@ class CosineNoiseSchedule:
             ** 2
         )
         alpha_bar = f / f[0]
-        self.alpha_bar = (
-            alpha_bar[:num_timesteps].float().clamp(min=1e-5, max=0.9999)
+        self.register_buffer(
+            "alpha_bar",
+            alpha_bar[:num_timesteps].float().clamp(min=1e-5, max=0.9999),
         )
 
     def q_sample(self, x_0: Tensor, t: Tensor, noise: Tensor) -> Tensor:
         """Forward diffusion: add noise at timestep t."""
-        ab = self.alpha_bar.to(x_0.device)[t]
+        ab = self.alpha_bar[t]
         while ab.ndim < x_0.ndim:
             ab = ab.unsqueeze(-1)
         return ab.sqrt() * x_0 + (1 - ab).sqrt() * noise
