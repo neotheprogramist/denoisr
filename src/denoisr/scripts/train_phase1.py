@@ -24,9 +24,10 @@ from denoisr.scripts.config import (
     save_checkpoint,
 )
 from denoisr.scripts.generate_data import unstack_examples
+from denoisr.training.augmentation import flip_board, flip_policy, flip_value
 from denoisr.training.loss import ChessLossComputer
 from denoisr.training.supervised_trainer import SupervisedTrainer
-from denoisr.types import TrainingExample
+from denoisr.types import BoardTensor, PolicyTarget, TrainingExample, ValueTarget
 
 
 def measure_accuracy(
@@ -148,6 +149,19 @@ def main() -> None:
             batch = train[i : i + bs]
             if not batch:
                 break
+            augmented: list[TrainingExample] = []
+            for ex in batch:
+                if random.random() < 0.5:
+                    augmented.append(
+                        TrainingExample(
+                            board=BoardTensor(flip_board(ex.board.data, ex.board.data.shape[0])),
+                            policy=PolicyTarget(flip_policy(ex.policy.data)),
+                            value=ValueTarget(*flip_value(ex.value.win, ex.value.draw, ex.value.loss)),
+                        )
+                    )
+                else:
+                    augmented.append(ex)
+            batch = augmented
             loss, breakdown = trainer.train_step(batch)
             epoch_loss += loss
             num_batches += 1
