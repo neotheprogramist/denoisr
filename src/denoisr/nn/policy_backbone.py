@@ -1,5 +1,6 @@
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 from denoisr.nn.relative_pos import ShawRelativePositionBias
 from denoisr.nn.smolgen import SmolgenBias
@@ -54,9 +55,15 @@ class ChessPolicyBackbone(nn.Module):
     """
 
     def __init__(
-        self, d_s: int, num_heads: int, num_layers: int, ffn_dim: int
+        self,
+        d_s: int,
+        num_heads: int,
+        num_layers: int,
+        ffn_dim: int,
+        gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
+        self._gradient_checkpointing = gradient_checkpointing
         self.smolgen = SmolgenBias(d_s, num_heads)
         self.shaw_relative_pe = ShawRelativePositionBias(num_heads)
         self.layers = nn.ModuleList(
@@ -72,6 +79,11 @@ class ChessPolicyBackbone(nn.Module):
         shaw_bias = self.shaw_relative_pe()  # [H, 64, 64]
         combined_bias = smolgen_bias + shaw_bias.unsqueeze(0)
         for layer in self.layers:
-            x = layer(x, attn_bias=combined_bias)
+            if self._gradient_checkpointing and self.training:
+                x = torch_checkpoint(
+                    layer, x, combined_bias, use_reentrant=False
+                )
+            else:
+                x = layer(x, attn_bias=combined_bias)
         out: Tensor = self.final_norm(x)
         return out

@@ -79,6 +79,48 @@ class TestChessPolicyBackbone:
         x2 = torch.randn(1, 64, SMALL_D_S, device=device)
         assert not torch.allclose(backbone(x1), backbone(x2))
 
+    def test_gradient_checkpointing_produces_gradients(
+        self, device: torch.device
+    ) -> None:
+        """Backbone with gradient checkpointing should still produce valid gradients."""
+        backbone = ChessPolicyBackbone(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            ffn_dim=SMALL_FFN_DIM,
+            gradient_checkpointing=True,
+        ).to(device)
+        x = torch.randn(2, 64, SMALL_D_S, device=device)
+        out = backbone(x)
+        out.sum().backward()
+        for name, p in backbone.named_parameters():
+            assert p.grad is not None, f"No gradient for {name}"
+
+    def test_gradient_checkpointing_matches_output(
+        self, device: torch.device
+    ) -> None:
+        """Checkpointed and non-checkpointed should produce identical forward output."""
+        torch.manual_seed(42)
+        bb_normal = ChessPolicyBackbone(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            ffn_dim=SMALL_FFN_DIM,
+            gradient_checkpointing=False,
+        ).to(device)
+        torch.manual_seed(42)
+        bb_ckpt = ChessPolicyBackbone(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            ffn_dim=SMALL_FFN_DIM,
+            gradient_checkpointing=True,
+        ).to(device)
+        bb_normal.eval()
+        bb_ckpt.eval()
+        x = torch.randn(1, 64, SMALL_D_S, device=device)
+        assert torch.allclose(bb_normal(x), bb_ckpt(x), atol=1e-5)
+
     def test_sdpa_single_layer_valid(
         self, device: torch.device
     ) -> None:

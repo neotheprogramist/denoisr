@@ -3,6 +3,7 @@ import math
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 
 class CosineNoiseSchedule(nn.Module):
@@ -96,8 +97,10 @@ class ChessDiffusionModule(nn.Module):
         num_heads: int,
         num_layers: int,
         num_timesteps: int,
+        gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
+        self._gradient_checkpointing = gradient_checkpointing
         self.time_embed = nn.Sequential(
             nn.Embedding(num_timesteps, d_s),
             nn.Mish(),
@@ -121,7 +124,10 @@ class ChessDiffusionModule(nn.Module):
         c = (t_emb + c_emb).unsqueeze(1).expand(-1, 64, -1)
 
         for layer in self.layers:
-            x = layer(x, c)
+            if self._gradient_checkpointing and self.training:
+                x = torch_checkpoint(layer, x, c, use_reentrant=False)
+            else:
+                x = layer(x, c)
 
         out: Tensor = self.final_proj(self.final_norm(x))
         return out
