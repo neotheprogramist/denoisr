@@ -1,3 +1,4 @@
+import pytest
 import torch
 from torch import nn
 
@@ -11,18 +12,20 @@ class TestMaybeCompile:
         result = maybe_compile(m, torch.device("cpu"))
         assert result is m  # exact same object
 
-    def test_returns_module_on_mps_if_available(self) -> None:
+    @pytest.mark.skipif(
+        not torch.backends.mps.is_available(), reason="MPS not available"
+    )
+    def test_returns_module_on_mps(self) -> None:
         """On MPS, maybe_compile should return the original module."""
-        if not torch.backends.mps.is_available():
-            return  # skip on non-Mac
         m = nn.Linear(4, 4)
         result = maybe_compile(m, torch.device("mps"))
         assert result is m
 
-    def test_compiled_module_on_cuda_if_available(self) -> None:
+    @pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="CUDA not available"
+    )
+    def test_compiled_module_on_cuda(self) -> None:
         """On CUDA, maybe_compile should return a compiled wrapper."""
-        if not torch.cuda.is_available():
-            return  # skip if no CUDA
         m = nn.Linear(4, 4).cuda()
         result = maybe_compile(m, torch.device("cuda"))
         assert result is not m  # should be wrapped
