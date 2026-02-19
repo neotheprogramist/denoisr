@@ -95,7 +95,7 @@ class SelfPlayActor:
                 flat_dist = legal_mask.float().reshape(-1)
                 flat_dist = flat_dist / flat_dist.sum()
 
-            idx = torch.multinomial(flat_dist, 1).item()
+            idx = int(torch.multinomial(flat_dist, 1).item())
             from_sq = idx // 64
             to_sq = idx % 64
 

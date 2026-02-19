@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from denoisr.data.pgn_streamer import SimplePGNStreamer
-from denoisr.types import GameRecord
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
 

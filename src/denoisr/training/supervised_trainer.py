@@ -70,7 +70,7 @@ class SupervisedTrainer:
         )
 
         self.optimizer.zero_grad()
-        total_loss.backward()
+        total_loss.backward()  # type: ignore[no-untyped-call]
         torch.nn.utils.clip_grad_norm_(
             [
                 p

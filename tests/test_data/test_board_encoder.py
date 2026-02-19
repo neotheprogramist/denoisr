@@ -4,7 +4,6 @@ import torch
 from hypothesis import given, settings
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
-from denoisr.types import BoardTensor
 
 from conftest import random_boards
 

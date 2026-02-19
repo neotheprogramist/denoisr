@@ -15,7 +15,6 @@ import chess
 import torch
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
-from denoisr.data.dataset import generate_examples_from_game
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.scripts.config import (
     add_model_args,
@@ -27,7 +26,6 @@ from denoisr.scripts.config import (
     build_schedule,
     build_value_head,
     build_world_model,
-    config_from_args,
     detect_device,
     load_checkpoint,
     save_checkpoint,

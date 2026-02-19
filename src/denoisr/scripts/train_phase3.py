@@ -22,7 +22,6 @@ from denoisr.scripts.config import (
     build_diffusion,
     build_encoder,
     build_policy_head,
-    build_schedule,
     build_value_head,
     build_world_model,
     detect_device,
@@ -98,7 +97,8 @@ def main() -> None:
 
     @torch.no_grad()
     def encode_fn(board_tensor: Tensor) -> Tensor:
-        return encoder(board_tensor.unsqueeze(0)).squeeze(0)
+        out: Tensor = encoder(board_tensor.unsqueeze(0)).squeeze(0)
+        return out
 
     # --- Self-play setup ---
     game = ChessGame()

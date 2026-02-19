@@ -6,7 +6,6 @@ from torch.utils.data import Dataset
 
 from denoisr.data.protocols import BoardEncoder
 from denoisr.types import (
-    Action,
     GameRecord,
     PolicyTarget,
     TrainingExample,

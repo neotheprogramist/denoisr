@@ -49,7 +49,7 @@ class ChessEngine:
 
         masked_logits = logits + legal_mask
         probs = torch.softmax(masked_logits.reshape(-1), dim=0)
-        idx = torch.multinomial(probs, 1).item()
+        idx = int(torch.multinomial(probs, 1).item())
 
         from_sq = idx // 64
         to_sq = idx % 64

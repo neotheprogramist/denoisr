@@ -55,7 +55,7 @@ class DiffusionChessEngine:
         legal_mask = legal_mask.to(self._device)
 
         probs = torch.softmax((logits + legal_mask).reshape(-1), dim=0)
-        idx = torch.multinomial(probs, 1).item()
+        idx = int(torch.multinomial(probs, 1).item())
         from_sq, to_sq = idx // 64, idx % 64
 
         promotion = None
@@ -81,7 +81,8 @@ class DiffusionChessEngine:
 
     def _encode_board(self, board: chess.Board) -> torch.Tensor:
         board_tensor = self._board_encoder.encode(board).data
-        return self._encoder(board_tensor.unsqueeze(0).to(self._device))
+        latent: torch.Tensor = self._encoder(board_tensor.unsqueeze(0).to(self._device))
+        return latent
 
     def _diffusion_imagine(self, latent: torch.Tensor) -> torch.Tensor:
         """Run iterative denoising to imagine future trajectories."""

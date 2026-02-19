@@ -67,7 +67,7 @@ class DiffusionTrainer:
         loss = nn.functional.mse_loss(predicted_noise, noise)
 
         self.optimizer.zero_grad()
-        loss.backward()
+        loss.backward()  # type: ignore[no-untyped-call]
         self.optimizer.step()
 
         return loss.item()

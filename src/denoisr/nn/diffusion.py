@@ -119,4 +119,5 @@ class ChessDiffusionModule(nn.Module):
         for layer in self.layers:
             x = layer(x, c)
 
-        return self.final_proj(self.final_norm(x))
+        out: Tensor = self.final_proj(self.final_norm(x))
+        return out

@@ -8,11 +8,19 @@ Supports two inference modes:
   --mode diffusion   Diffusion-enhanced with anytime search (stronger)
 """
 
+from __future__ import annotations
+
 import argparse
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.inference.uci import run_uci_loop
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import chess
 from denoisr.scripts.config import (
     build_backbone,
     build_diffusion,
@@ -59,6 +67,8 @@ def main() -> None:
 
     board_encoder = SimpleBoardEncoder()
 
+    select_move: Callable[[chess.Board], chess.Move]
+
     if args.mode == "diffusion":
         from denoisr.inference.diffusion_engine import DiffusionChessEngine
 
@@ -66,7 +76,7 @@ def main() -> None:
         diffusion.load_state_dict(state["diffusion"])
         schedule = build_schedule(cfg)
 
-        engine = DiffusionChessEngine(
+        select_move = DiffusionChessEngine(
             encoder=encoder,
             backbone=backbone,
             policy_head=policy_head,
@@ -76,20 +86,20 @@ def main() -> None:
             board_encoder=board_encoder,
             device=device,
             num_denoising_steps=args.denoising_steps,
-        )
+        ).select_move
     else:
         from denoisr.inference.engine import ChessEngine
 
-        engine = ChessEngine(
+        select_move = ChessEngine(
             encoder=encoder,
             backbone=backbone,
             policy_head=policy_head,
             value_head=value_head,
             board_encoder=board_encoder,
             device=device,
-        )
+        ).select_move
 
-    run_uci_loop(engine_select_move_fn=engine.select_move)
+    run_uci_loop(engine_select_move_fn=select_move)
 
 
 if __name__ == "__main__":

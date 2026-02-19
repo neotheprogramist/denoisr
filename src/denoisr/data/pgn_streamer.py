@@ -1,6 +1,6 @@
-import io
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TextIO
 
 import chess.pgn
 
@@ -22,6 +22,8 @@ class SimplePGNStreamer:
             yield from self._parse_games(f)
 
     def _stream_zst(self, path: Path) -> Iterator[GameRecord]:
+        import io
+
         import zstandard as zstd
 
         with open(path, "rb") as fh:
@@ -30,7 +32,7 @@ class SimplePGNStreamer:
             yield from self._parse_games(text_stream)
 
     def _parse_games(
-        self, stream: io.TextIOBase
+        self, stream: TextIO
     ) -> Iterator[GameRecord]:
         while True:
             game = chess.pgn.read_game(stream)

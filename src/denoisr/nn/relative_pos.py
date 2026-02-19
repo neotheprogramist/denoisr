@@ -16,6 +16,9 @@ class ShawRelativePositionBias(nn.Module):
     differences in range [-7, +7]. The output is [num_heads, 64, 64].
     """
 
+    rank_idx: Tensor
+    file_idx: Tensor
+
     def __init__(self, num_heads: int) -> None:
         super().__init__()
         self.num_heads = num_heads

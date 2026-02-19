@@ -1,14 +1,12 @@
 from typing import Callable
 
 import chess
-import torch
 from torch import Tensor
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.game.chess_game import ChessGame
 from denoisr.training.mcts import MCTS, MCTSConfig
 from denoisr.types import (
-    Action,
     GameRecord,
     PolicyTarget,
     TrainingExample,

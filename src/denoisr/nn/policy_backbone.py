@@ -1,4 +1,3 @@
-import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
@@ -77,4 +76,5 @@ class ChessPolicyBackbone(nn.Module):
         combined_bias = smolgen_bias + shaw_bias.unsqueeze(0)
         for layer in self.layers:
             x = layer(x, attn_bias=combined_bias)
-        return self.final_norm(x)
+        out: Tensor = self.final_norm(x)
+        return out

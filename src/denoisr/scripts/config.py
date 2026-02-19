@@ -3,11 +3,10 @@
 from argparse import ArgumentParser, Namespace
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
-from torch import nn
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.nn.consistency import ChessConsistencyProjector
 from denoisr.nn.diffusion import ChessDiffusionModule, CosineNoiseSchedule
 from denoisr.nn.encoder import ChessEncoder
@@ -110,10 +109,10 @@ def config_from_args(args: Namespace) -> ModelConfig:
 def save_checkpoint(
     path: Path,
     cfg: ModelConfig,
-    **state_dicts: dict,
+    **state_dicts: Any,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    data: dict = {"config": cfg.__dict__}
+    data: dict[str, Any] = {"config": cfg.__dict__}
     data.update(state_dicts)
     torch.save(data, path)
     print(f"Checkpoint saved to {path}")
@@ -122,7 +121,7 @@ def save_checkpoint(
 def load_checkpoint(
     path: Path,
     device: torch.device,
-) -> tuple[ModelConfig, dict]:
+) -> tuple[ModelConfig, dict[str, Any]]:
     data = torch.load(path, map_location=device, weights_only=False)
     cfg = ModelConfig(**data.pop("config"))
     return cfg, data

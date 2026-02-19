@@ -71,12 +71,14 @@ class ChessLossComputer:
         if self._use_harmony:
             self._update_harmony(losses)
 
-        total = sum(
-            self._coefficients.get(name, self._base_weights.get(name, 1.0)) * loss
-            for name, loss in losses.items()
-        )
+        total = torch.tensor(0.0, device=pred_policy.device)
+        for name, loss in losses.items():
+            coeff = self._coefficients.get(name, self._base_weights.get(name, 1.0))
+            total = total + coeff * loss
 
-        breakdown = {name: loss.item() for name, loss in losses.items()}
+        breakdown: dict[str, float] = {
+            name: loss.item() for name, loss in losses.items()
+        }
         breakdown["total"] = total.item()
         return total, breakdown
 

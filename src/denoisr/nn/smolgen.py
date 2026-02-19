@@ -1,4 +1,3 @@
-import torch
 from torch import Tensor, nn
 
 
@@ -25,6 +24,6 @@ class SmolgenBias(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         B = x.shape[0]
         flat = x.reshape(B, -1)
-        compressed = self.compress(flat)
-        biases = self.project(compressed)
+        compressed: Tensor = self.compress(flat)
+        biases: Tensor = self.project(compressed)
         return biases.reshape(B, self.num_heads, 64, 64)

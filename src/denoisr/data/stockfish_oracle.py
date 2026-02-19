@@ -58,10 +58,12 @@ class StockfishOracle:
 
         wdl = info.get("wdl")
         if wdl is not None:
-            w, d, l = wdl.white().wdl().tuple()
-            total = w + d + l
+            wdl_white = wdl.white()
+            total = wdl_white.wins + wdl_white.draws + wdl_white.losses
             value = ValueTarget(
-                win=w / total, draw=d / total, loss=l / total
+                win=wdl_white.wins / total,
+                draw=wdl_white.draws / total,
+                loss=wdl_white.losses / total,
             )
         else:
             # Approximate WDL from centipawns using sigmoid

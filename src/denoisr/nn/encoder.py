@@ -1,4 +1,3 @@
-import torch
 from torch import Tensor, nn
 
 
@@ -29,4 +28,5 @@ class ChessEncoder(nn.Module):
         flat = x.reshape(B, C * 64)
         glob = self.global_embed(flat).unsqueeze(1).expand(-1, 64, -1)
 
-        return self.norm(local + glob)
+        out: Tensor = self.norm(local + glob)
+        return out

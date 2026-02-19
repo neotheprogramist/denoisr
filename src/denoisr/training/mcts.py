@@ -124,6 +124,7 @@ class MCTS:
         if node.state is None and action_taken is not None:
             parent = path[-2]
             f, t = action_taken
+            assert parent.state is not None
             state, reward = self._wm(parent.state, f, t)
             node.state = state
         else:

@@ -20,4 +20,5 @@ class ChessConsistencyProjector(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         pooled = x.mean(dim=1)
-        return self.projector(pooled)
+        out: Tensor = self.projector(pooled)
+        return out

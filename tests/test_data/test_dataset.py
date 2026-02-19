@@ -50,7 +50,6 @@ class TestChessDataset:
 
 class TestGenerateExamples:
     def test_scholars_mate(self) -> None:
-        board = chess.Board()
         moves = ["e2e4", "e7e5", "d1h5", "b8c6", "f1c4", "g8f6", "h5f7"]
         record = GameRecord(
             actions=tuple(
@@ -71,7 +70,6 @@ class TestGenerateExamples:
             assert ex.value.win + ex.value.draw + ex.value.loss == pytest.approx(1.0)
 
     def test_policy_target_has_played_move(self) -> None:
-        board = chess.Board()
         move = chess.Move.from_uci("e2e4")
         record = GameRecord(
             actions=(Action(move.from_square, move.to_square, move.promotion),),

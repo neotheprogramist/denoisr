@@ -4,6 +4,15 @@ Handles parsing UCI commands from stdin and formatting responses.
 The actual engine logic is in engine.py.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import chess
+
 
 def parse_position(command: str) -> tuple[str | None, list[str]]:
     """Parse a UCI 'position' command.
@@ -65,12 +74,11 @@ def format_bestmove(uci_move: str) -> str:
 
 
 def run_uci_loop(
-    engine_select_move_fn: object,
+    engine_select_move_fn: "Callable[[chess.Board], chess.Move]",
 ) -> None:
     """Main UCI loop reading from stdin.
 
     Connect to any UCI-compatible GUI (CuteChess, Arena, etc.).
-    engine_select_move_fn: callable(chess.Board) -> chess.Move.
     """
     import sys
 

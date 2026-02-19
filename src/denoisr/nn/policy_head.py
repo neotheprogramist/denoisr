@@ -18,6 +18,7 @@ class ChessPolicyHead(nn.Module):
         self.scale = d_head**-0.5
 
     def forward(self, x: Tensor) -> Tensor:
-        q = self.query(x)
-        k = self.key(x)
-        return torch.bmm(q, k.transpose(1, 2)) * self.scale
+        q: Tensor = self.query(x)
+        k: Tensor = self.key(x)
+        logits: Tensor = torch.bmm(q, k.transpose(1, 2)) * self.scale
+        return logits

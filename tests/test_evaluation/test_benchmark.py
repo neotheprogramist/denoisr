@@ -1,4 +1,3 @@
-import pytest
 
 from denoisr.evaluation.benchmark import (
     BenchmarkConfig,

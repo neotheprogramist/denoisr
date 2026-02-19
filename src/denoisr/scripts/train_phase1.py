@@ -16,7 +16,6 @@ import chess
 import torch
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
-from denoisr.data.dataset import generate_examples_from_game
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.data.stockfish_oracle import StockfishOracle
 from denoisr.scripts.config import (
