@@ -5,8 +5,8 @@
 .env
 .env.local
 
-# Data files
-data/
+# Data files (top-level only, not src/denoisr/data/)
+/data/
 
 # Plot outputs
 plots/
