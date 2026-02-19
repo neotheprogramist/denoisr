@@ -45,7 +45,7 @@ class SupervisedTrainer:
         )
 
         self._warmup_epochs = warmup_epochs
-        self._base_lrs = [g["lr"] for g in param_groups]
+        self._base_lrs: list[float] = [float(g["lr"]) for g in param_groups]  # type: ignore[arg-type]
         self._scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=max(1, total_epochs - warmup_epochs), eta_min=1e-6
         )
