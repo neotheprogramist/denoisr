@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 
 import chess
+import numpy as np
+import numpy.typing as npt
 import torch
 from tqdm import tqdm
 
@@ -32,22 +34,39 @@ _oracle: StockfishOracle | None = None
 _encoder: SimpleBoardEncoder | None = None
 
 
+def _cleanup_oracle() -> None:
+    if _oracle is None:
+        return
+    try:
+        _oracle.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _init_worker(stockfish_path: str, stockfish_depth: int) -> None:
     global _oracle, _encoder
     _oracle = StockfishOracle(path=stockfish_path, depth=stockfish_depth)
     _encoder = SimpleBoardEncoder()
-    atexit.register(_oracle.close)
+    atexit.register(_cleanup_oracle)
 
 
-def _evaluate_position(
-    fen: str,
-) -> tuple[torch.Tensor, torch.Tensor, tuple[float, float, float]]:
+# Return numpy arrays instead of torch tensors to avoid FD-based IPC
+# (torch uses sendmsg/recvmsg ancillary data to share tensor storage,
+# which exhausts file descriptors at high worker counts).
+_EvalResult = tuple[npt.NDArray[np.float32], npt.NDArray[np.float32], tuple[float, float, float]]
+
+
+def _evaluate_position(fen: str) -> _EvalResult:
     if _oracle is None or _encoder is None:
         raise RuntimeError("Worker not initialized")
     board = chess.Board(fen)
     board_tensor = _encoder.encode(board)
     policy, value, _ = _oracle.evaluate(board)
-    return board_tensor.data, policy.data, (value.win, value.draw, value.loss)
+    return (
+        board_tensor.data.numpy(),
+        policy.data.numpy(),
+        (value.win, value.draw, value.loss),
+    )
 
 
 # -- Public API -----------------------------------------------------------
@@ -97,14 +116,14 @@ def generate_examples(
         initargs=(stockfish_path, stockfish_depth),
     ) as pool:
         results = pool.imap_unordered(_evaluate_position, fens)
-        for board_data, policy_data, (win, draw, loss) in tqdm(
+        for board_np, policy_np, (win, draw, loss) in tqdm(
             results, total=len(fens), desc="Evaluating positions", unit="pos",
             smoothing=0.1,
         ):
             examples.append(
                 TrainingExample(
-                    board=BoardTensor(board_data),
-                    policy=PolicyTarget(policy_data),
+                    board=BoardTensor(torch.from_numpy(board_np)),
+                    policy=PolicyTarget(torch.from_numpy(policy_np)),
                     value=ValueTarget(win=win, draw=draw, loss=loss),
                 )
             )
