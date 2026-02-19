@@ -4,8 +4,14 @@ Produces a .pt file with:
     boards:   Tensor[N, 12, 8, 8]
     policies: Tensor[N, 64, 64]
     values:   Tensor[N, 3]        (win, draw, loss per example)
+
+Stockfish evaluation is parallelized across multiple worker processes,
+each owning its own Stockfish subprocess.
 """
 
+import atexit
+import multiprocessing
+import os
 import argparse
 import shutil
 import sys
@@ -20,46 +26,88 @@ from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.data.stockfish_oracle import StockfishOracle
 from denoisr.types import BoardTensor, PolicyTarget, TrainingExample, ValueTarget
 
+# -- Per-worker process globals (set by _init_worker) ---------------------
+
+_oracle: StockfishOracle | None = None
+_encoder: SimpleBoardEncoder | None = None
+
+
+def _init_worker(stockfish_path: str, stockfish_depth: int) -> None:
+    global _oracle, _encoder
+    _oracle = StockfishOracle(path=stockfish_path, depth=stockfish_depth)
+    _encoder = SimpleBoardEncoder()
+    atexit.register(_oracle.close)
+
+
+def _evaluate_position(
+    fen: str,
+) -> tuple[torch.Tensor, torch.Tensor, tuple[float, float, float]]:
+    if _oracle is None or _encoder is None:
+        raise RuntimeError("Worker not initialized")
+    board = chess.Board(fen)
+    board_tensor = _encoder.encode(board)
+    policy, value, _ = _oracle.evaluate(board)
+    return board_tensor.data, policy.data, (value.win, value.draw, value.loss)
+
+
+# -- Public API -----------------------------------------------------------
+
+
+def _extract_fens(pgn_path: Path, max_positions: int) -> list[str]:
+    streamer = SimplePGNStreamer()
+    fens: list[str] = []
+    pbar = tqdm(total=max_positions, desc="Extracting positions", unit="pos")
+
+    for record in streamer.stream(pgn_path):
+        board = chess.Board()
+        for action in record.actions:
+            if len(fens) >= max_positions:
+                break
+            fens.append(board.fen())
+            pbar.update(1)
+            move = chess.Move(
+                action.from_square,
+                action.to_square,
+                action.promotion,
+            )
+            board.push(move)
+
+        if len(fens) >= max_positions:
+            break
+
+    pbar.close()
+    return fens
+
 
 def generate_examples(
     pgn_path: Path,
     stockfish_path: str,
     stockfish_depth: int,
     max_examples: int,
+    num_workers: int,
 ) -> list[TrainingExample]:
-    streamer = SimplePGNStreamer()
-    encoder = SimpleBoardEncoder()
+    fens = _extract_fens(pgn_path, max_examples)
+    print(f"Extracted {len(fens)} positions, evaluating with {num_workers} workers")
+
     examples: list[TrainingExample] = []
 
-    pbar = tqdm(total=max_examples, desc="Generating examples", unit="pos")
-
-    with StockfishOracle(path=stockfish_path, depth=stockfish_depth) as oracle:
-        for record in streamer.stream(pgn_path):
-            board = chess.Board()
-            for action in record.actions:
-                if len(examples) >= max_examples:
-                    break
-                board_tensor = encoder.encode(board)
-                policy_target, value_target, _ = oracle.evaluate(board)
-                examples.append(
-                    TrainingExample(
-                        board=board_tensor,
-                        policy=policy_target,
-                        value=value_target,
-                    )
+    with multiprocessing.Pool(
+        num_workers,
+        initializer=_init_worker,
+        initargs=(stockfish_path, stockfish_depth),
+    ) as pool:
+        results = pool.imap_unordered(_evaluate_position, fens)
+        for board_data, policy_data, (win, draw, loss) in tqdm(
+            results, total=len(fens), desc="Evaluating positions", unit="pos"
+        ):
+            examples.append(
+                TrainingExample(
+                    board=BoardTensor(board_data),
+                    policy=PolicyTarget(policy_data),
+                    value=ValueTarget(win=win, draw=draw, loss=loss),
                 )
-                pbar.update(1)
-                move = chess.Move(
-                    action.from_square,
-                    action.to_square,
-                    action.promotion,
-                )
-                board.push(move)
+            )
 
-            if len(examples) >= max_examples:
-                break
-
-    pbar.close()
     print(f"Generated {len(examples)} training examples")
     return examples
 
@@ -97,6 +145,10 @@ def unstack_examples(
     ]
 
 
+def _default_num_workers() -> int:
+    return (os.cpu_count() or 1) * 2 + 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate training data from PGN games with Stockfish evaluation"
@@ -109,6 +161,12 @@ def main() -> None:
     )
     parser.add_argument("--stockfish-depth", type=int, default=10)
     parser.add_argument("--max-examples", type=int, default=100_000)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=_default_num_workers(),
+        help=f"Worker processes (default: cpu_count*2+1 = {_default_num_workers()})",
+    )
     parser.add_argument(
         "--output", type=str, default="outputs/training_data.pt"
     )
@@ -123,7 +181,11 @@ def main() -> None:
         sys.exit(1)
 
     examples = generate_examples(
-        Path(args.pgn), stockfish_path, args.stockfish_depth, args.max_examples
+        Path(args.pgn),
+        stockfish_path,
+        args.stockfish_depth,
+        args.max_examples,
+        args.workers,
     )
 
     output_path = Path(args.output)
