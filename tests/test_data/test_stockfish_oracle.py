@@ -1,4 +1,5 @@
 import shutil
+from collections.abc import Iterator
 
 import chess
 import pytest
@@ -13,9 +14,11 @@ pytestmark = pytest.mark.skipif(
 
 class TestStockfishOracle:
     @pytest.fixture
-    def oracle(self) -> StockfishOracle:
+    def oracle(self) -> Iterator[StockfishOracle]:
         assert STOCKFISH_PATH is not None
-        return StockfishOracle(path=STOCKFISH_PATH, depth=10)
+        o = StockfishOracle(path=STOCKFISH_PATH, depth=10)
+        yield o
+        o.close()
 
     def test_starting_position_policy_is_distribution(
         self, oracle: StockfishOracle

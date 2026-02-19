@@ -3,7 +3,11 @@ import torch
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.game.chess_game import ChessGame
-from denoisr.training.self_play import SelfPlayActor, SelfPlayConfig
+from denoisr.training.self_play import (
+    SelfPlayActor,
+    SelfPlayConfig,
+    TemperatureSchedule,
+)
 
 from conftest import SMALL_D_S
 
@@ -55,3 +59,23 @@ class TestSelfPlayActor:
         for action in record.actions:
             assert 0 <= action.from_square < 64
             assert 0 <= action.to_square < 64
+
+
+class TestTemperatureSchedule:
+    def test_explore_phase_returns_base(self) -> None:
+        ts = TemperatureSchedule(base=1.0, explore_moves=30)
+        assert ts.get_temperature(0) == 1.0
+        assert ts.get_temperature(29) == 1.0
+
+    def test_exploit_phase_returns_zero(self) -> None:
+        ts = TemperatureSchedule(base=1.0, explore_moves=30)
+        assert ts.get_temperature(30) == 0.0
+        assert ts.get_temperature(100) == 0.0
+
+    def test_generation_decay(self) -> None:
+        ts = TemperatureSchedule(
+            base=1.0, explore_moves=30, generation_decay=0.5
+        )
+        assert ts.get_temperature(0, generation=0) == 1.0
+        assert ts.get_temperature(0, generation=1) == pytest.approx(0.5)
+        assert ts.get_temperature(0, generation=2) == pytest.approx(0.25)
