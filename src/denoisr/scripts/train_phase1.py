@@ -29,15 +29,18 @@ from denoisr.training.supervised_trainer import SupervisedTrainer
 from denoisr.types import TrainingExample
 
 
-def measure_top1(
+def measure_accuracy(
     trainer: SupervisedTrainer,
     examples: list[TrainingExample],
     device: torch.device,
-) -> float:
-    correct = 0
+) -> tuple[float, float]:
+    correct_1 = 0
+    correct_5 = 0
     total = 0
-    for m in (trainer.encoder, trainer.backbone, trainer.policy_head):
-        m.training = False
+
+    trainer.encoder.eval()
+    trainer.backbone.eval()
+    trainer.policy_head.eval()
 
     with torch.no_grad():
         for ex in examples:
@@ -46,13 +49,18 @@ def measure_top1(
             features = trainer.backbone(latent)
             logits = trainer.policy_head(features).squeeze(0)
 
-            pred = logits.reshape(-1).argmax().item()
-            target = ex.policy.data.reshape(-1).argmax().item()
-            if pred == target:
-                correct += 1
+            pred_flat = logits.reshape(-1)
+            target_flat = ex.policy.data.reshape(-1)
+            target_idx = target_flat.argmax().item()
+
+            top5 = pred_flat.topk(5).indices.tolist()
+            if top5[0] == target_idx:
+                correct_1 += 1
+            if target_idx in top5:
+                correct_5 += 1
             total += 1
 
-    return correct / max(total, 1)
+    return correct_1 / max(total, 1), correct_5 / max(total, 1)
 
 
 def main() -> None:
@@ -152,11 +160,11 @@ def main() -> None:
         trainer.scheduler_step()
 
         avg_loss = epoch_loss / max(num_batches, 1)
-        top1 = measure_top1(trainer, holdout, device)
+        top1, top5 = measure_accuracy(trainer, holdout, device)
 
         print(
             f"Epoch {epoch+1}/{args.epochs}: "
-            f"avg_loss={avg_loss:.4f} top1_accuracy={top1:.1%}"
+            f"avg_loss={avg_loss:.4f} top1={top1:.1%} top5={top5:.1%}"
         )
 
         if top1 > best_acc:
