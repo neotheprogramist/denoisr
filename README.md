@@ -105,113 +105,53 @@ For each position in each game:
     └──> StockfishOracle.evaluate(board)   ──>  (PolicyTarget [64,64], ValueTarget, centipawns)
     |
     v
-ChessDataset  ──>  PyTorch DataLoader batches
+TrainingExample batches  ──>  SupervisedTrainer
 ```
 
 ### How to run
 
-```python
-import torch
-from denoisr.data.board_encoder import SimpleBoardEncoder
-from denoisr.data.dataset import ChessDataset, generate_examples_from_game
-from denoisr.data.pgn_streamer import SimplePGNStreamer
-from denoisr.data.stockfish_oracle import StockfishOracle
-from denoisr.nn.encoder import ChessEncoder
-from denoisr.nn.policy_backbone import ChessPolicyBackbone
-from denoisr.nn.policy_head import ChessPolicyHead
-from denoisr.nn.value_head import ChessValueHead
-from denoisr.training.loss import ChessLossComputer
-from denoisr.training.supervised_trainer import SupervisedTrainer
-
-# --- Configuration ---
-D_S = 256               # latent dimension
-NUM_HEADS = 8           # attention heads
-NUM_LAYERS = 15         # transformer layers
-FFN_DIM = 1024          # feedforward dimension
-LR = 1e-4               # base learning rate (heads get 1x, backbone 0.3x, encoder 0.1x)
-STOCKFISH_PATH = "/usr/local/bin/stockfish"
-PGN_PATH = "data/lichess_2026-01.pgn.zst"
-
-# --- Device ---
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-
-# --- Build models ---
-encoder = ChessEncoder(num_planes=12, d_s=D_S).to(device)
-backbone = ChessPolicyBackbone(
-    d_s=D_S, num_heads=NUM_HEADS, num_layers=NUM_LAYERS, ffn_dim=FFN_DIM
-).to(device)
-policy_head = ChessPolicyHead(d_s=D_S).to(device)
-value_head = ChessValueHead(d_s=D_S).to(device)
-
-# --- Loss with HarmonyDream for dynamic coefficient balancing ---
-# HarmonyDream tracks EMA of per-loss gradient norms and adjusts
-# coefficients inversely proportional to balance contributions.
-# This prevents any single loss term from dominating training.
-loss_fn = ChessLossComputer(use_harmony_dream=True)
-
-# --- Trainer with tiered learning rates + gradient clipping ---
-trainer = SupervisedTrainer(
-    encoder=encoder,
-    backbone=backbone,
-    policy_head=policy_head,
-    value_head=value_head,
-    loss_fn=loss_fn,
-    lr=LR,
-    device=device,
-)
-
-# --- Generate training data ---
-streamer = SimplePGNStreamer()
-board_encoder = SimpleBoardEncoder()
-
-with StockfishOracle(path=STOCKFISH_PATH, depth=12) as oracle:
-    examples = []
-    for game_record in streamer.stream(PGN_PATH):
-        for example in generate_examples_from_game(game_record, board_encoder, oracle):
-            examples.append(example)
-        if len(examples) >= 100_000:
-            break
-
-dataset = ChessDataset(examples)
-
-# --- Train ---
-from torch.utils.data import DataLoader
-
-# ChessDataset returns (board_tensor, policy_tensor, value_tensor) tuples
-# but SupervisedTrainer.train_step expects list[TrainingExample]
-# so we train directly with example batches:
-
-for epoch in range(100):
-    batch = examples[:64]  # replace with proper DataLoader sampling
-    total_loss, breakdown = trainer.train_step(batch)
-    print(f"Epoch {epoch}: loss={total_loss:.4f} policy={breakdown['policy']:.4f} value={breakdown['value']:.4f}")
-
-# --- Save checkpoint ---
-from pathlib import Path
-trainer.save_checkpoint(Path("outputs/phase1_checkpoint.pt"))
+```bash
+uv run denoisr-train-phase1 \
+    --pgn data/lichess_2026-01.pgn.zst \
+    --stockfish /usr/local/bin/stockfish \
+    --stockfish-depth 12 \
+    --max-examples 100000 \
+    --batch-size 64 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --output outputs/phase1.pt
 ```
+
+Key flags:
+
+| Flag                | Default             | Description                                                |
+| ------------------- | ------------------- | ---------------------------------------------------------- |
+| `--pgn`             | (required)          | Path to `.pgn` or `.pgn.zst` file                          |
+| `--stockfish`       | (required)          | Path to Stockfish binary                                   |
+| `--stockfish-depth` | `10`                | Stockfish analysis depth (higher = better targets)         |
+| `--max-examples`    | `100000`            | Maximum training examples to generate                      |
+| `--holdout-frac`    | `0.05`              | Fraction reserved for accuracy evaluation                  |
+| `--batch-size`      | `64`                | Training batch size                                        |
+| `--epochs`          | `100`               | Maximum training epochs                                    |
+| `--lr`              | `1e-4`              | Base learning rate (heads 1x, backbone 0.3x, encoder 0.1x) |
+| `--output`          | `outputs/phase1.pt` | Checkpoint output path                                     |
+| `--log-every`       | `10`                | Log every N batches                                        |
+| `--d-s`             | `256`               | Latent dimension                                           |
+| `--num-heads`       | `8`                 | Attention heads                                            |
+| `--num-layers`      | `15`                | Transformer backbone layers                                |
+| `--ffn-dim`         | `1024`              | Feedforward dimension                                      |
+
+The loss function uses HarmonyDream for dynamic coefficient balancing across policy, value, and auxiliary objectives. Gradient clipping (max norm 1.0) prevents training instability.
 
 ### Gate to Phase 2
 
-Policy accuracy must exceed **30% top-1** on a held-out set of 10,000 positions. This threshold confirms the network has learned enough positional understanding to provide meaningful latent representations for the world model and diffusion module.
-
-```python
-from denoisr.training.phase_orchestrator import PhaseOrchestrator, PhaseConfig
-
-orchestrator = PhaseOrchestrator(PhaseConfig(phase1_gate=0.30))
-
-# Evaluate on held-out positions
-top1_accuracy = evaluate_top1(trainer, held_out_examples)  # you implement this
-if orchestrator.check_gate({"top1_accuracy": top1_accuracy}):
-    print(f"Phase 1 complete! top-1 accuracy: {top1_accuracy:.1%}")
-    print(f"Advancing to Phase {orchestrator.current_phase}")
-```
+Training automatically checks whether policy accuracy exceeds **30% top-1** on the held-out set after each epoch. When the gate passes, training stops and the checkpoint is ready for Phase 2.
 
 ## Phase 2: World model + diffusion bootstrapping
 
 ### What happens
 
-Two new modules are trained on top of the frozen (or slowly-updating) Phase 1 representations:
+Two new modules are trained on top of the Phase 1 representations:
 
 1. **World model** learns latent-space dynamics: given a position and a move, predict the next latent state and reward. This enables MCTS to search entirely in latent space without needing game rules.
 2. **Diffusion module** learns to denoise corrupted future trajectories. Given the current position, it learns to reconstruct plausible future continuations from noise.
@@ -247,74 +187,35 @@ The diffusion trainer starts with only 25% of the maximum timesteps and graduall
 
 ### How to run
 
-```python
-import torch
-from denoisr.nn.diffusion import ChessDiffusionModule, CosineNoiseSchedule
-from denoisr.nn.world_model import ChessWorldModel
-from denoisr.nn.consistency import ChessConsistencyProjector
-from denoisr.training.diffusion_trainer import DiffusionTrainer
-
-# --- Load Phase 1 checkpoint ---
-trainer.load_checkpoint(Path("outputs/phase1_checkpoint.pt"))
-
-# --- Build Phase 2 modules ---
-NUM_TIMESTEPS = 100
-
-world_model = ChessWorldModel(
-    d_s=D_S, num_heads=NUM_HEADS, num_layers=12, ffn_dim=FFN_DIM
-).to(device)
-diffusion = ChessDiffusionModule(
-    d_s=D_S, num_heads=NUM_HEADS, num_layers=6, num_timesteps=NUM_TIMESTEPS
-).to(device)
-consistency = ChessConsistencyProjector(d_s=D_S, proj_dim=256).to(device)
-schedule = CosineNoiseSchedule(num_timesteps=NUM_TIMESTEPS)
-
-# --- Diffusion trainer (encoder frozen, only diffusion params updated) ---
-diff_trainer = DiffusionTrainer(
-    encoder=encoder,
-    diffusion=diffusion,
-    schedule=schedule,
-    lr=1e-4,
-    device=device,
-)
-
-# --- Train on trajectories extracted from Lichess games ---
-# trajectories shape: [batch, time_steps, channels, 8, 8]
-# e.g. 5 consecutive board states from the same game
-for epoch in range(200):
-    trajectories = sample_trajectory_batch(examples, seq_len=5)  # you implement this
-    loss = diff_trainer.train_step(trajectories)
-
-    # Advance curriculum every epoch (25% -> 100% of timesteps over training)
-    diff_trainer.advance_curriculum()
-
-    if epoch % 10 == 0:
-        print(f"Epoch {epoch}: diffusion_loss={loss:.4f} max_steps={diff_trainer._current_max_steps}")
-
-# Continue supervised training with all 6 loss terms active
-for epoch in range(100):
-    batch = examples[:64]
-    total_loss, breakdown = trainer.train_step(batch)
-    # Add auxiliary losses for consistency, diffusion, reward, ply:
-    # total_loss, breakdown = loss_fn.compute(
-    #     pred_policy, pred_value, target_policy, target_value,
-    #     consistency_loss=..., diffusion_loss=..., reward_loss=..., ply_loss=...
-    # )
+```bash
+uv run denoisr-train-phase2 \
+    --checkpoint outputs/phase1.pt \
+    --pgn data/lichess_2026-01.pgn.zst \
+    --seq-len 5 \
+    --max-trajectories 50000 \
+    --batch-size 32 \
+    --epochs 200 \
+    --lr 1e-4 \
+    --output outputs/phase2.pt
 ```
+
+Key flags:
+
+| Flag                 | Default             | Description                             |
+| -------------------- | ------------------- | --------------------------------------- |
+| `--checkpoint`       | (required)          | Phase 1 checkpoint to load              |
+| `--pgn`              | (required)          | PGN file for trajectory extraction      |
+| `--seq-len`          | `5`                 | Consecutive board states per trajectory |
+| `--max-trajectories` | `50000`             | Maximum trajectories to extract         |
+| `--batch-size`       | `32`                | Training batch size                     |
+| `--epochs`           | `200`               | Training epochs                         |
+| `--lr`               | `1e-4`              | Learning rate for diffusion parameters  |
+| `--output`           | `outputs/phase2.pt` | Checkpoint output path                  |
+| `--log-every`        | `10`                | Log every N batches                     |
 
 ### Gate to Phase 3
 
-Diffusion-conditioned inference accuracy must exceed single-step accuracy by **>5 percentage points**. This confirms the diffusion module provides meaningful information beyond what the backbone already captures.
-
-```python
-single_step_acc = evaluate_engine(engine, held_out)
-diffusion_acc = evaluate_engine(diffusion_engine, held_out)
-improvement = (diffusion_acc - single_step_acc) * 100  # percentage points
-
-if orchestrator.check_gate({"diffusion_improvement_pp": improvement}):
-    print(f"Phase 2 complete! Diffusion improvement: +{improvement:.1f}pp")
-    print(f"Advancing to Phase {orchestrator.current_phase}")
-```
+Diffusion-conditioned inference accuracy must exceed single-step accuracy by **>5 percentage points**. This confirms the diffusion module provides meaningful information beyond what the backbone already captures. The script reports the best diffusion loss; evaluate both engines on held-out positions to measure the gate metric.
 
 ## Phase 3: RL self-play
 
@@ -343,99 +244,32 @@ Rather than discarding old games after training on them once, the ReanalyseActor
 
 ### How to run
 
-```python
-from denoisr.training.self_play import SelfPlayActor, SelfPlayConfig, TemperatureSchedule
-from denoisr.training.mcts import MCTS, MCTSConfig
-from denoisr.training.replay_buffer import PriorityReplayBuffer
-from denoisr.training.reanalyse import ReanalyseActor
-from denoisr.training.phase_orchestrator import PhaseOrchestrator, PhaseConfig
-
-# --- Self-play configuration ---
-temp_schedule = TemperatureSchedule(
-    base=1.0,
-    explore_moves=30,      # stochastic for first 30 moves
-    generation_decay=0.97,  # 3% decay per generation
-)
-
-config = SelfPlayConfig(
-    num_simulations=800,   # MCTS simulations per move
-    max_moves=300,
-    temperature=1.0,
-    c_puct=1.4,
-    temp_schedule=temp_schedule,
-)
-
-# --- Build actor (uses latest model weights for MCTS) ---
-def policy_value_fn(state):
-    """Wraps model forward pass for MCTS."""
-    features = backbone(state.unsqueeze(0))
-    policy = policy_head(features).squeeze(0)
-    wdl, _ = value_head(features)
-    return policy, wdl.squeeze(0)
-
-def world_model_fn(state, from_sq, to_sq):
-    """Wraps world model for latent-space MCTS transitions."""
-    action_tensor = torch.zeros(64, 64)
-    action_tensor[from_sq, to_sq] = 1.0
-    # ... encode action and step world model
-    return next_state, reward
-
-def encode_fn(board_tensor):
-    return encoder(board_tensor.unsqueeze(0)).squeeze(0)
-
-actor = SelfPlayActor(
-    policy_value_fn=policy_value_fn,
-    world_model_fn=world_model_fn,
-    encode_fn=encode_fn,
-    game=ChessGame(),
-    board_encoder=SimpleBoardEncoder(),
-    config=config,
-)
-
-# --- Replay buffer with priority sampling ---
-buffer = PriorityReplayBuffer(capacity=100_000)
-
-# --- Reanalyse actor ---
-reanalyser = ReanalyseActor(
-    policy_value_fn=policy_value_fn,
-    world_model_fn=world_model_fn,
-    encode_fn=encode_fn,
-    game=ChessGame(),
-    board_encoder=SimpleBoardEncoder(),
-    num_simulations=100,
-)
-
-# --- Phase orchestrator ---
-orchestrator = PhaseOrchestrator(PhaseConfig(alpha_generations=50))
-# Advance to phase 3 (assumes gates already passed)
-orchestrator.check_gate({"top1_accuracy": 0.35})
-orchestrator.check_gate({"diffusion_improvement_pp": 6.0})
-
-# --- Training loop ---
-for generation in range(1000):
-    # 1. Generate self-play games
-    for _ in range(100):
-        record = actor.play_game(generation=generation)
-        buffer.add(record, priority=1.0)
-
-    # 2. Reanalyse old games with current network
-    old_records = buffer.sample(50)
-    for old_record in old_records:
-        reanalysed = reanalyser.reanalyse(old_record)
-        # Train on reanalysed examples with improved policy targets
-
-    # 3. Train on batch from replay buffer
-    batch = buffer.sample(64)
-    # ... convert to training examples and run trainer.train_step()
-
-    # 4. Alpha mixing (Phase 3b): gradually shift from MCTS to diffusion
-    alpha = orchestrator.get_alpha(generation)
-    if alpha > 0:
-        # mixed_policy = orchestrator.mix_policies(mcts_policy, diff_policy, alpha)
-        pass
-
-    print(f"Gen {generation}: buffer={len(buffer)} alpha={alpha:.2f} temp_base={temp_schedule.get_temperature(0, generation):.3f}")
+```bash
+uv run denoisr-train-phase3 \
+    --checkpoint outputs/phase2.pt \
+    --generations 1000 \
+    --games-per-gen 100 \
+    --reanalyse-per-gen 50 \
+    --mcts-sims 800 \
+    --buffer-capacity 100000 \
+    --alpha-generations 50 \
+    --save-every 10 \
+    --output outputs/phase3.pt
 ```
+
+Key flags:
+
+| Flag                  | Default             | Description                                             |
+| --------------------- | ------------------- | ------------------------------------------------------- |
+| `--checkpoint`        | (required)          | Phase 2 checkpoint to load                              |
+| `--generations`       | `1000`              | Total self-play generations                             |
+| `--games-per-gen`     | `100`               | Games played per generation                             |
+| `--reanalyse-per-gen` | `50`                | Old games reanalysed per generation                     |
+| `--mcts-sims`         | `800`               | MCTS simulations per move                               |
+| `--buffer-capacity`   | `100000`            | Priority replay buffer capacity                         |
+| `--alpha-generations` | `50`                | Generations to transition from MCTS to diffusion (0->1) |
+| `--save-every`        | `10`                | Save checkpoint every N generations                     |
+| `--output`            | `outputs/phase3.pt` | Checkpoint output path                                  |
 
 ### Success criteria
 
@@ -443,105 +277,134 @@ Elo increases over generations (measured via cutechess-cli). The ultimate goal: 
 
 ## Inference: playing with the trained model
 
-### Single-pass engine (fastest)
+The `denoisr-play` command starts a UCI-compatible chess engine that connects to any chess GUI (CuteChess, Arena, Banksia, etc.).
+
+### Single-pass mode (fastest)
 
 Direct encoder -> backbone -> policy head. No search, no diffusion. The simplest mode.
 
-```python
-from denoisr.inference.engine import ChessEngine
-
-engine = ChessEngine(
-    encoder=encoder,
-    backbone=backbone,
-    policy_head=policy_head,
-    value_head=value_head,
-    board_encoder=SimpleBoardEncoder(),
-    device=device,
-)
-
-import chess
-board = chess.Board()
-move = engine.select_move(board)       # returns chess.Move
-wdl = engine.evaluate(board)           # returns (win, draw, loss) tuple
-print(f"Best move: {move.uci()}, WDL: {wdl}")
+```bash
+uv run denoisr-play \
+    --checkpoint outputs/phase3.pt \
+    --mode single
 ```
 
-### Diffusion-enhanced engine (stronger, adjustable)
+### Diffusion-enhanced mode (stronger, adjustable)
 
-Adds diffusion imagination before the policy backbone. The `num_denoising_steps` parameter provides **anytime search**: more steps produce stronger play at the cost of inference time. This is the core innovation — the engine thinks deeper by running more denoising iterations rather than by building an explicit search tree.
+Adds diffusion imagination before the policy backbone. The `--denoising-steps` flag provides **anytime search**: more steps produce stronger play at the cost of inference time. This is the core innovation — the engine thinks deeper by running more denoising iterations rather than by building an explicit search tree.
 
-```python
-from denoisr.inference.diffusion_engine import DiffusionChessEngine
-from denoisr.nn.diffusion import CosineNoiseSchedule
-
-diffusion_engine = DiffusionChessEngine(
-    encoder=encoder,
-    backbone=backbone,
-    policy_head=policy_head,
-    value_head=value_head,
-    diffusion=diffusion,
-    schedule=CosineNoiseSchedule(num_timesteps=100),
-    board_encoder=SimpleBoardEncoder(),
-    device=device,
-    num_denoising_steps=20,  # more steps = stronger but slower
-)
-
-move = diffusion_engine.select_move(board)
-wdl = diffusion_engine.evaluate(board)
+```bash
+uv run denoisr-play \
+    --checkpoint outputs/phase3.pt \
+    --mode diffusion \
+    --denoising-steps 20
 ```
 
-### UCI protocol (connect to any chess GUI)
+| Flag                | Default    | Description                                                       |
+| ------------------- | ---------- | ----------------------------------------------------------------- |
+| `--checkpoint`      | (required) | Path to any phase checkpoint                                      |
+| `--mode`            | `single`   | `single` (fast) or `diffusion` (stronger)                         |
+| `--denoising-steps` | `20`       | Denoising iterations for diffusion mode (more = stronger, slower) |
 
-The UCI wrapper lets you connect Denoisr to any standard chess GUI (CuteChess, Arena, Banksia, etc.):
+### Connecting to a chess GUI
 
-```python
-from denoisr.inference.uci import run_uci_loop
+Point your chess GUI at the engine command:
 
-# run_uci_loop reads from stdin, writes to stdout
-run_uci_loop(engine_select_move_fn=engine.select_move)
+```
+uv run denoisr-play --checkpoint outputs/phase3.pt --mode diffusion
 ```
 
-Or wrap as a script:
+The engine speaks standard UCI protocol (reads from stdin, writes to stdout). In CuteChess, add it via **Engines > Add** and paste the command above.
 
-```python
-#!/usr/bin/env -S uv run --script
-# /// script
-# dependencies = ["denoisr"]
-# ///
-
-from denoisr.inference.uci import run_uci_loop
-# ... load model, create engine ...
-run_uci_loop(engine_select_move_fn=engine.select_move)
-```
-
-Then point your chess GUI at this script as a UCI engine.
-
-### Benchmarking with cutechess-cli
+## Benchmarking with cutechess-cli
 
 Measure Elo against a reference engine using SPRT (Sequential Probability Ratio Test) for statistical confidence:
 
-```python
-from denoisr.evaluation.benchmark import BenchmarkConfig, build_cutechess_command, parse_cutechess_output
+```bash
+# Basic benchmark (100 games)
+uv run denoisr-benchmark \
+    --engine-cmd "uv run denoisr-play --checkpoint outputs/phase3.pt --mode diffusion" \
+    --opponent-cmd stockfish \
+    --games 100 \
+    --time-control "10+0.1"
 
-config = BenchmarkConfig(
-    engine_cmd="./run_denoisr.sh",
-    opponent_cmd="stockfish",
-    games=1000,
-    time_control="10+0.1",
-    sprt_elo0=0,       # null hypothesis: no Elo difference
-    sprt_elo1=50,       # alternative: at least 50 Elo stronger
-    concurrency=4,
-)
+# With SPRT (stops early when statistically significant)
+uv run denoisr-benchmark \
+    --engine-cmd "uv run denoisr-play --checkpoint outputs/phase3.pt --mode diffusion" \
+    --opponent-cmd stockfish \
+    --games 1000 \
+    --sprt-elo0 0 \
+    --sprt-elo1 50 \
+    --concurrency 4
 
-cmd = build_cutechess_command(config)
-print(cmd)
-# cutechess-cli -engine cmd=./run_denoisr.sh proto=uci -engine cmd=stockfish proto=uci ...
+# Dry run (print the cutechess-cli command without executing)
+uv run denoisr-benchmark \
+    --engine-cmd "./run_denoisr.sh" \
+    --opponent-cmd stockfish \
+    --dry-run
+```
 
-# After running, parse the output:
-result = parse_cutechess_output(output)
-print(f"Elo: {result['elo_diff']:.1f} +/- {result['elo_error']:.1f}")
-if result.get("sprt_result") == "H1":
-    print("SPRT: Confirmed stronger!")
+| Flag             | Default     | Description                                |
+| ---------------- | ----------- | ------------------------------------------ |
+| `--engine-cmd`   | (required)  | Command to run the Denoisr UCI engine      |
+| `--opponent-cmd` | `stockfish` | Command to run the opponent UCI engine     |
+| `--games`        | `100`       | Number of games to play                    |
+| `--time-control` | `10+0.1`    | Time control (seconds + increment)         |
+| `--sprt-elo0`    | (none)      | SPRT null hypothesis Elo difference        |
+| `--sprt-elo1`    | (none)      | SPRT alternative hypothesis Elo difference |
+| `--concurrency`  | `1`         | Parallel games                             |
+| `--dry-run`      | `false`     | Print command without running              |
+
+## Complete training pipeline
+
+```bash
+# 1. Install dependencies
+uv sync
+
+# 2. Phase 1: Supervised learning (~hours with GPU)
+uv run denoisr-train-phase1 \
+    --pgn data/lichess_2026-01.pgn.zst \
+    --stockfish /usr/local/bin/stockfish \
+    --output outputs/phase1.pt
+
+# 3. Phase 2: Diffusion bootstrapping (~hours with GPU)
+uv run denoisr-train-phase2 \
+    --checkpoint outputs/phase1.pt \
+    --pgn data/lichess_2026-01.pgn.zst \
+    --output outputs/phase2.pt
+
+# 4. Phase 3: RL self-play (~days with GPU)
+uv run denoisr-train-phase3 \
+    --checkpoint outputs/phase2.pt \
+    --output outputs/phase3.pt
+
+# 5. Play!
+uv run denoisr-play \
+    --checkpoint outputs/phase3.pt \
+    --mode diffusion
+
+# 6. Benchmark
+uv run denoisr-benchmark \
+    --engine-cmd "uv run denoisr-play --checkpoint outputs/phase3.pt --mode diffusion" \
+    --opponent-cmd stockfish \
+    --games 100
+```
+
+## All available commands
+
+| Command                       | Description                                         |
+| ----------------------------- | --------------------------------------------------- |
+| `uv run denoisr-train-phase1` | Phase 1: Supervised learning with Stockfish targets |
+| `uv run denoisr-train-phase2` | Phase 2: Diffusion bootstrapping on trajectories    |
+| `uv run denoisr-train-phase3` | Phase 3: RL self-play with MCTS-to-diffusion mixing |
+| `uv run denoisr-play`         | UCI chess engine (single-pass or diffusion)         |
+| `uv run denoisr-benchmark`    | Elo benchmarking via cutechess-cli                  |
+
+All commands support `--help` for full flag documentation:
+
+```bash
+uv run denoisr-train-phase1 --help
+uv run denoisr-play --help
 ```
 
 ## Project structure
@@ -555,7 +418,8 @@ denoisr/
 │   ├── nn/             # Neural network modules (encoder, backbone, heads, world model, diffusion)
 │   ├── training/       # Loss, trainers, MCTS, self-play, replay buffer, reanalyse, orchestrator
 │   ├── inference/      # Chess engines (single-pass, diffusion-enhanced), UCI protocol
-│   └── evaluation/     # cutechess-cli benchmarking harness
+│   ├── evaluation/     # cutechess-cli benchmarking harness
+│   └── scripts/        # CLI entry points for all phases + inference + benchmarking
 ├── tests/              # 197 tests mirroring src/ structure
 ├── fixtures/           # Sample PGN files for testing
 ├── docs/plans/         # Architecture design and implementation plans

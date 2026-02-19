@@ -11,6 +11,13 @@ dependencies = [
     "zstandard>=0.25.0",
 ]
 
+[project.scripts]
+denoisr-train-phase1 = "denoisr.scripts.train_phase1:main"
+denoisr-train-phase2 = "denoisr.scripts.train_phase2:main"
+denoisr-train-phase3 = "denoisr.scripts.train_phase3:main"
+denoisr-play = "denoisr.scripts.play:main"
+denoisr-benchmark = "denoisr.scripts.benchmark:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
