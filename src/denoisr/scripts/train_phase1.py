@@ -103,7 +103,11 @@ def main() -> None:
     train = all_examples[holdout_n:]
     print(f"Train: {len(train)}, Holdout: {holdout_n}")
 
-    loss_fn = ChessLossComputer(use_harmony_dream=True)
+    loss_fn = ChessLossComputer(
+        policy_weight=2.0,
+        value_weight=0.5,
+        use_harmony_dream=False,
+    )
 
     trainer = SupervisedTrainer(
         encoder=encoder,
