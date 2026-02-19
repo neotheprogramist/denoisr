@@ -45,6 +45,16 @@ class TestStockfishOracle:
         # Game is over, but oracle should still handle it
         # (implementation may return extreme values)
 
+    def test_best_move_has_substantial_probability(
+        self, oracle: StockfishOracle
+    ) -> None:
+        """With T=30, the best move should get meaningful probability mass."""
+        board = chess.Board()
+        policy, _, _ = oracle.evaluate(board)
+        max_prob = policy.data.max().item()
+        # With T=30, best move in starting position should get >15%
+        assert max_prob > 0.15
+
     def test_policy_only_on_legal_moves(
         self, oracle: StockfishOracle
     ) -> None:

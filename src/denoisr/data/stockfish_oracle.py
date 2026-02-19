@@ -39,7 +39,7 @@ class StockfishOracle:
 
         # Softmax over centipawn scores to get distribution
         t = torch.tensor(scores, dtype=torch.float32)
-        probs = torch.softmax(t / 100.0, dim=0)
+        probs = torch.softmax(t / 30.0, dim=0)
 
         data = torch.zeros(64, 64, dtype=torch.float32)
         for move, prob in zip(legal_moves, probs):
