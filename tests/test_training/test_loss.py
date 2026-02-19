@@ -122,6 +122,28 @@ class TestChessLossComputer:
         total.backward()
         assert pred_policy.grad is not None
 
+    def test_illegal_logits_do_not_affect_loss(self, loss_fn: ChessLossComputer) -> None:
+        """Changing logits at positions where target=0 should not change the loss."""
+        B = 2
+        pred_policy = torch.randn(B, 64, 64)
+        pred_value = torch.softmax(torch.randn(B, 3), dim=-1)
+        # Sparse target: only a few legal moves have nonzero probability
+        target_policy = torch.zeros(B, 64, 64)
+        target_policy[0, 4, 4] = 0.6  # e2-e4
+        target_policy[0, 4, 12] = 0.4  # e2-e5
+        target_policy[1, 1, 18] = 1.0  # single move
+        target_value = torch.tensor([[0.4, 0.3, 0.3], [0.5, 0.2, 0.3]])
+
+        loss_a, _ = loss_fn.compute(pred_policy, pred_value, target_policy, target_value)
+
+        # Wildly change logits at illegal positions (where target is 0)
+        pred_policy_b = pred_policy.clone()
+        pred_policy_b[:, 0, 0] += 1000.0  # a1-a1 is never legal
+        pred_policy_b[:, 7, 7] -= 1000.0
+
+        loss_b, _ = loss_fn.compute(pred_policy_b, pred_value, target_policy, target_value)
+        assert torch.allclose(loss_a, loss_b, atol=1e-5)
+
     def test_harmony_dream_adjusts_coefficients(self) -> None:
         loss_fn = ChessLossComputer(use_harmony_dream=True)
         pred_policy = torch.randn(2, 64, 64)
