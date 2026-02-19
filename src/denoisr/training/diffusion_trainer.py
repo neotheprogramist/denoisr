@@ -1,5 +1,7 @@
 import torch
 from torch import Tensor, nn
+from torch.amp import GradScaler  # type: ignore[attr-defined]
+from torch.amp import autocast  # type: ignore[attr-defined]
 
 from denoisr.nn.diffusion import CosineNoiseSchedule
 
@@ -27,6 +29,9 @@ class DiffusionTrainer:
 
         params = list(diffusion.parameters())
         self.optimizer = torch.optim.AdamW(params, lr=lr)
+        self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
+        self._autocast_device = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
+        self._autocast_enabled = self.device.type == "cuda"
 
         self._curriculum_max_steps = schedule.num_timesteps
         self._current_max_steps_f = float(max(1, schedule.num_timesteps // 4))
@@ -44,31 +49,33 @@ class DiffusionTrainer:
         self.encoder.eval()
         self.diffusion.train()
 
-        with torch.no_grad():
-            flat = trajectories.reshape(B * T, C, H, W)
-            latent_flat = self.encoder(flat)
-            latent = latent_flat.reshape(B, T, 64, -1)
+        with autocast(self._autocast_device, enabled=self._autocast_enabled):
+            with torch.no_grad():
+                flat = trajectories.reshape(B * T, C, H, W)
+                latent_flat = self.encoder(flat)
+                latent = latent_flat.reshape(B, T, 64, -1)
 
-        cond = latent[:, 0]
+            cond = latent[:, 0]
 
-        target_idx = torch.randint(1, T, (B,), device=self.device)
-        target = torch.stack(
-            [latent[b, target_idx[b]] for b in range(B)]
-        )
+            target_idx = torch.randint(1, T, (B,), device=self.device)
+            target = torch.stack(
+                [latent[b, target_idx[b]] for b in range(B)]
+            )
 
-        t = torch.randint(
-            0, self._current_max_steps, (B,), device=self.device
-        )
-        noise = torch.randn_like(target)
-        noisy_target = self.schedule.q_sample(target, t, noise)
+            t = torch.randint(
+                0, self._current_max_steps, (B,), device=self.device
+            )
+            noise = torch.randn_like(target)
+            noisy_target = self.schedule.q_sample(target, t, noise)
 
-        predicted_noise = self.diffusion(noisy_target, t, cond)
+            predicted_noise = self.diffusion(noisy_target, t, cond)
 
-        loss = nn.functional.mse_loss(predicted_noise, noise)
+            loss = nn.functional.mse_loss(predicted_noise, noise)
 
         self.optimizer.zero_grad()
-        loss.backward()  # type: ignore[no-untyped-call]
-        self.optimizer.step()
+        self.scaler.scale(loss).backward()  # type: ignore[no-untyped-call]
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
 
         return loss.item()
 

@@ -2,6 +2,8 @@ from pathlib import Path
 
 import torch
 from torch import nn
+from torch.amp import GradScaler  # type: ignore[attr-defined]
+from torch.amp import autocast  # type: ignore[attr-defined]
 
 from denoisr.training.loss import ChessLossComputer
 from denoisr.types import TrainingExample
@@ -33,6 +35,9 @@ class SupervisedTrainer:
         self.loss_fn = loss_fn
         self.device = device or torch.device("cpu")
         self.max_grad_norm = 1.0
+        self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
+        self._autocast_device = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
+        self._autocast_enabled = self.device.type == "cuda"
 
         param_groups = [
             {"params": list(encoder.parameters()), "lr": lr * 0.3},
@@ -69,26 +74,24 @@ class SupervisedTrainer:
         self.policy_head.train()
         self.value_head.train()
 
-        latent = self.encoder(boards)
-        features = self.backbone(latent)
-        pred_policy = self.policy_head(features)
-        pred_value, _pred_ply = self.value_head(features)
-
-        total_loss, breakdown = self.loss_fn.compute(
-            pred_policy, pred_value, target_policies, target_values
-        )
+        with autocast(self._autocast_device, enabled=self._autocast_enabled):
+            latent = self.encoder(boards)
+            features = self.backbone(latent)
+            pred_policy = self.policy_head(features)
+            pred_value, _pred_ply = self.value_head(features)
+            total_loss, breakdown = self.loss_fn.compute(
+                pred_policy, pred_value, target_policies, target_values
+            )
 
         self.optimizer.zero_grad()
-        total_loss.backward()  # type: ignore[no-untyped-call]
+        self.scaler.scale(total_loss).backward()  # type: ignore[no-untyped-call]
+        self.scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(
-            [
-                p
-                for group in self.optimizer.param_groups
-                for p in group["params"]
-            ],
+            [p for group in self.optimizer.param_groups for p in group["params"]],
             self.max_grad_norm,
         )
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
 
         return total_loss.item(), breakdown
 
@@ -110,6 +113,7 @@ class SupervisedTrainer:
                 "policy_head": self.policy_head.state_dict(),
                 "value_head": self.value_head.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
+                "scaler": self.scaler.state_dict(),
                 "scheduler": self._scheduler.state_dict(),
                 "scheduler_epoch": self._epoch,
             },
@@ -123,6 +127,8 @@ class SupervisedTrainer:
         self.policy_head.load_state_dict(checkpoint["policy_head"])
         self.value_head.load_state_dict(checkpoint["value_head"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if "scaler" in checkpoint:
+            self.scaler.load_state_dict(checkpoint["scaler"])
         if "scheduler" in checkpoint:
             self._scheduler.load_state_dict(checkpoint["scheduler"])
             self._epoch = checkpoint["scheduler_epoch"]
