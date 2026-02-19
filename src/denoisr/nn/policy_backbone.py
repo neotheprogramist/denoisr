@@ -34,11 +34,8 @@ class TransformerBlock(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        attn = (q @ k.transpose(-2, -1)) * (self.head_dim**-0.5)
-        if attn_bias is not None:
-            attn = attn + attn_bias
-        attn = F.softmax(attn, dim=-1)
-        h = (attn @ v).transpose(1, 2).reshape(B, S, D)
+        h = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)
+        h = h.transpose(1, 2).reshape(B, S, D)
         h = self.out_proj(h)
         x = x + h
 

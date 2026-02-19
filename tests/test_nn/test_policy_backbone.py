@@ -78,3 +78,21 @@ class TestChessPolicyBackbone:
         x1 = torch.randn(1, 64, SMALL_D_S, device=device)
         x2 = torch.randn(1, 64, SMALL_D_S, device=device)
         assert not torch.allclose(backbone(x1), backbone(x2))
+
+    def test_sdpa_single_layer_valid(
+        self, device: torch.device
+    ) -> None:
+        """Single-layer backbone with SDPA produces finite correct-shape output."""
+        torch.manual_seed(42)
+        backbone = ChessPolicyBackbone(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=1,
+            ffn_dim=SMALL_FFN_DIM,
+        ).to(device)
+        backbone.eval()
+        x = torch.randn(1, 64, SMALL_D_S, device=device)
+        out = backbone(x)
+        assert out.shape == (1, 64, SMALL_D_S)
+        assert not torch.isnan(out).any()
+        assert not torch.isinf(out).any()
