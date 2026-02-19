@@ -44,7 +44,7 @@ def extract_trajectories(
     streamer = SimplePGNStreamer()
     trajectories: list[torch.Tensor] = []
 
-    pbar = tqdm(total=max_trajectories, desc="Extracting trajectories", unit="traj")
+    pbar = tqdm(total=max_trajectories, desc="Extracting trajectories", unit="traj", smoothing=0.3)
 
     for record in streamer.stream(pgn_path):
         if len(record.actions) < seq_len:
@@ -142,6 +142,7 @@ def main() -> None:
             range(0, len(trajectories), bs),
             desc=f"Epoch {epoch+1}/{args.epochs}",
             leave=False,
+            smoothing=0.3,
         )
         for i in pbar:
             chunk = trajectories[i : i + bs]

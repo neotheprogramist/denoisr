@@ -128,6 +128,7 @@ def main() -> None:
             range(0, len(train), bs),
             desc=f"Epoch {epoch+1}/{args.epochs}",
             leave=False,
+            smoothing=0.3,
         )
         for i in pbar:
             batch = train[i : i + bs]

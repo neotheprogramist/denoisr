@@ -143,7 +143,7 @@ def main() -> None:
     orchestrator.check_gate({"diffusion_improvement_pp": 100.0})
 
     # --- Training loop ---
-    gen_pbar = tqdm(range(args.generations), desc="Generations", unit="gen")
+    gen_pbar = tqdm(range(args.generations), desc="Generations", unit="gen", smoothing=0.1)
     for gen in gen_pbar:
         alpha = orchestrator.get_alpha(gen)
         temp_base = temp_schedule.get_temperature(0, gen)
@@ -155,6 +155,7 @@ def main() -> None:
             desc=f"Gen {gen+1} self-play",
             leave=False,
             unit="game",
+            smoothing=0.1,
         )
         for _ in sp_pbar:
             record = actor.play_game(generation=gen)
@@ -179,6 +180,7 @@ def main() -> None:
                 desc=f"Gen {gen+1} reanalyse",
                 leave=False,
                 unit="game",
+                smoothing=0.1,
             )
             for old_record in ra_pbar:
                 examples = reanalyser.reanalyse(old_record)

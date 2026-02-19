@@ -56,7 +56,7 @@ def _evaluate_position(
 def _extract_fens(pgn_path: Path, max_positions: int) -> list[str]:
     streamer = SimplePGNStreamer()
     fens: list[str] = []
-    pbar = tqdm(total=max_positions, desc="Extracting positions", unit="pos")
+    pbar = tqdm(total=max_positions, desc="Extracting positions", unit="pos", smoothing=0.3)
 
     for record in streamer.stream(pgn_path):
         board = chess.Board()
@@ -98,7 +98,8 @@ def generate_examples(
     ) as pool:
         results = pool.imap_unordered(_evaluate_position, fens)
         for board_data, policy_data, (win, draw, loss) in tqdm(
-            results, total=len(fens), desc="Evaluating positions", unit="pos"
+            results, total=len(fens), desc="Evaluating positions", unit="pos",
+            smoothing=0.1,
         ):
             examples.append(
                 TrainingExample(
