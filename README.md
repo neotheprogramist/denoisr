@@ -16,29 +16,95 @@ The architecture combines ideas from several recent results:
 | HarmonyDream 10-69% improvement        | Ma et al., ICML 2024    | Dynamic loss balancing across 6 training objectives   |
 | EfficientZero consistency loss         | Yu et al.               | Prevents latent-space collapse in world model         |
 
-Training proceeds in three phases, each gated on measurable quality thresholds to prevent premature advancement.
+## Quick start: play against an untrained engine
 
-## Prerequisites
+You can play against Denoisr immediately — no training data, no Stockfish, no GPU required. The untrained model plays random-looking moves, which makes a great baseline to compare against after training.
 
-- Python >= 3.14
-- [uv](https://docs.astral.sh/uv/) for dependency management (never use pip directly)
-- [Stockfish](https://stockfishchess.org/) for supervised targets in Phase 1
-- [cutechess-cli](https://github.com/cutechess/cutechess) for Elo benchmarking (optional)
-- Apple Silicon (MPS) for development, CUDA for scale training
+### 1. Install
 
 ```bash
-# Clone and sync
 git clone <repo-url> && cd denoisr
 uv sync
-
-# Verify all 197 tests pass
-uv run pytest tests/ -v
-
-# Skip Stockfish-dependent tests if not installed
-uv run pytest tests/ -v -k "not stockfish"
 ```
 
-## Getting training data
+### 2. Initialize a random model
+
+```bash
+uv run denoisr-init --output outputs/random_model.pt
+```
+
+This creates a checkpoint with random weights (~340M parameters). The engine will make legal moves, but they'll be essentially random.
+
+### 3. Install a chess GUI
+
+Denoisr speaks the UCI protocol, so it works with any UCI-compatible chess GUI. We recommend **CuteChess**:
+
+**macOS (Homebrew):**
+
+```bash
+brew install --cask cutechess
+```
+
+**Linux (Flatpak):**
+
+```bash
+flatpak install flathub io.github.cutechess.cutechess
+```
+
+**Linux (build from source):**
+
+```bash
+sudo apt install qt6-base-dev cmake g++
+git clone https://github.com/cutechess/cutechess.git
+cd cutechess && cmake . && make -j$(nproc)
+sudo make install
+```
+
+**Windows:**
+Download the latest release from [github.com/cutechess/cutechess/releases](https://github.com/cutechess/cutechess/releases).
+
+Other UCI-compatible GUIs also work: Arena, Banksia, Lucas Chess, PyChess, or any GUI that supports adding custom UCI engines.
+
+### 4. Connect the engine to the GUI
+
+In CuteChess:
+
+1. Go to **Tools > Settings > Engines**
+2. Click **+** (Add)
+3. Set **Name** to `Denoisr (random)`
+4. Set **Command** to the full path of the engine launcher, for example:
+   ```
+   /path/to/denoisr/.venv/bin/denoisr-play
+   ```
+5. Set **Arguments** to:
+   ```
+   --checkpoint outputs/random_model.pt --mode single
+   ```
+6. Set **Protocol** to **UCI**
+7. Set **Working Directory** to your denoisr project root
+8. Click **OK**
+
+Now start a new game (**Game > New**) and select `Denoisr (random)` as one of the players. Play a few games to see how the untrained engine behaves — it makes legal moves but has no chess understanding.
+
+> **Tip:** If you prefer the terminal, you can also interact with the engine directly via UCI:
+>
+> ```bash
+> uv run denoisr-play --checkpoint outputs/random_model.pt --mode single
+> ```
+>
+> Then type `uci`, `isready`, `position startpos`, `go movetime 1000`, etc.
+
+## Full training pipeline
+
+After seeing how the random model plays, train it through all three phases to produce a strong chess engine.
+
+### Prerequisites
+
+- [Stockfish](https://stockfishchess.org/) for Phase 1 supervised targets (install via `brew install stockfish`, `sudo apt install stockfish`, or `sudo snap install stockfish`)
+- A GPU is recommended (MPS on Apple Silicon, CUDA on Linux) but CPU works for small runs
+- ~2 GB disk space for training data
+
+### Step 1: Download training data
 
 Phase 1 needs a PGN file of chess games. The [Lichess Elite Database](https://database.nikonoel.fr/) provides curated high-quality games (2400+ vs 2200+ rated players, no bullet):
 
@@ -48,9 +114,6 @@ mkdir -p data
 # Download a month of elite games (~60-120 MB .zip, extracts to .pgn)
 wget -P data/ https://database.nikonoel.fr/lichess_elite_2025-01.zip
 unzip data/lichess_elite_2025-01.zip -d data/
-
-# The extracted .pgn file is ready to use
-# uv run denoisr-train-phase1 --pgn data/lichess_elite_2025-01.pgn ...
 ```
 
 For larger-scale training, the [full Lichess database](https://database.lichess.org/) provides all rated games in `.pgn.zst` format (natively supported by the streamer, no decompression needed):
@@ -58,261 +121,119 @@ For larger-scale training, the [full Lichess database](https://database.lichess.
 ```bash
 # Full month of rated games (~20-50 GB compressed, streams directly)
 wget -P data/ https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
-
-# Use directly — the PGN streamer handles .pgn.zst natively
-# uv run denoisr-train-phase1 --pgn data/lichess_db_standard_rated_2025-01.pgn.zst ...
 ```
 
-## Architecture overview
+### Step 2: Phase 1 — Supervised learning
 
-```
-Board position (chess.Board)
-    |
-    v
-BoardEncoder  ──>  BoardTensor [C, 8, 8]
-    |                   (12 planes simple, 110 planes extended)
-    v
-ChessEncoder  ──>  LatentState [64, d_s]
-    |                   (one token per square)
-    v
-PolicyBackbone  ──>  LatentState [64, d_s]
-    |                   (15-layer transformer with smolgen + Shaw relative PE)
-    |
-    ├──> PolicyHead  ──>  move_logits [64, 64]
-    |                       (source-destination grid)
-    └──> ValueHead   ──>  (wdl_probs [3], ply [1])
-                            (win/draw/loss + game length)
-```
-
-The diffusion module adds an imagination step before the backbone:
-
-```
-LatentState  ──>  DiffusionModule (T denoising steps)  ──>  enriched LatentState
-                      (iteratively refines noise into plausible future trajectories,
-                       conditioned on the current position)
-```
-
-The world model enables latent-space MCTS:
-
-```
-(LatentState, Action)  ──>  WorldModel  ──>  (next LatentState, predicted reward)
-                                (causal transformer, UniZero-style)
-```
-
-Total: ~340M parameters across all modules.
-
-## Phase 1: Supervised learning (Lichess + Stockfish)
-
-### What happens
-
-The network learns basic chess knowledge from human games annotated with Stockfish evaluations. This is the cheapest way to bootstrap: millions of Lichess games provide positional patterns, and Stockfish provides policy targets (move distributions) and value targets (win/draw/loss probabilities) that are far stronger than human labels alone.
-
-### Why Stockfish targets instead of human move labels
-
-Human games provide one-hot move labels (the move that was played), but Stockfish analysis provides full probability distributions over all legal moves. This is dramatically more informative: a one-hot label says "e4 was played" while Stockfish says "e4 is best at 45%, d4 is close at 40%, c4 is reasonable at 10%..." The richer signal accelerates learning and teaches the network to distinguish between good alternatives rather than memorizing a single move.
-
-### Why separate learning rates per component
-
-The encoder learns general board representations that should change slowly (stability matters), while the policy and value heads need to quickly adapt their output mappings. Using a single learning rate forces a compromise that's too slow for the heads or too aggressive for the encoder. Tiered rates (encoder at 0.1x, backbone at 0.3x, heads at 1.0x base LR) let each component train at its natural pace.
-
-### Data pipeline
-
-```
-lichess_games.pgn.zst
-    |
-    v
-SimplePGNStreamer  ──>  stream of GameRecord
-    |
-    v
-For each position in each game:
-    |
-    ├──> SimpleBoardEncoder.encode(board)  ──>  BoardTensor [12, 8, 8]
-    └──> StockfishOracle.evaluate(board)   ──>  (PolicyTarget [64,64], ValueTarget, centipawns)
-    |
-    v
-TrainingExample batches  ──>  SupervisedTrainer
-```
-
-### How to run
+The network learns basic chess from human games annotated with Stockfish evaluations. Progress bars show data generation and training:
 
 ```bash
-# Stockfish is auto-detected from PATH (install via brew/apt/snap)
 uv run denoisr-train-phase1 \
     --pgn data/lichess_elite_2025-01.pgn \
-    --stockfish-depth 12 \
     --max-examples 100000 \
     --batch-size 64 \
     --epochs 100 \
-    --lr 1e-4 \
-    --output outputs/phase1.pt
-
-# Or specify the Stockfish path explicitly
-uv run denoisr-train-phase1 \
-    --pgn data/lichess_elite_2025-01.pgn \
-    --stockfish /usr/local/bin/stockfish \
     --output outputs/phase1.pt
 ```
 
-Key flags:
+Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to override.
 
-| Flag                | Default             | Description                                                |
-| ------------------- | ------------------- | ---------------------------------------------------------- |
-| `--pgn`             | (required)          | Path to `.pgn` or `.pgn.zst` file                          |
-| `--stockfish`       | auto-detect PATH    | Path to Stockfish binary (found via PATH if omitted)       |
-| `--stockfish-depth` | `10`                | Stockfish analysis depth (higher = better targets)         |
-| `--max-examples`    | `100000`            | Maximum training examples to generate                      |
-| `--holdout-frac`    | `0.05`              | Fraction reserved for accuracy evaluation                  |
-| `--batch-size`      | `64`                | Training batch size                                        |
-| `--epochs`          | `100`               | Maximum training epochs                                    |
-| `--lr`              | `1e-4`              | Base learning rate (heads 1x, backbone 0.3x, encoder 0.1x) |
-| `--output`          | `outputs/phase1.pt` | Checkpoint output path                                     |
-| `--log-every`       | `10`                | Log every N batches                                        |
-| `--d-s`             | `256`               | Latent dimension                                           |
-| `--num-heads`       | `8`                 | Attention heads                                            |
-| `--num-layers`      | `15`                | Transformer backbone layers                                |
-| `--ffn-dim`         | `1024`              | Feedforward dimension                                      |
+**What you'll see:**
 
-The loss function uses HarmonyDream for dynamic coefficient balancing across policy, value, and auxiliary objectives. Gradient clipping (max norm 1.0) prevents training instability.
+```
+Generating examples: 45%|████████▌          | 45000/100000 [12:30<15:20, 59.7pos/s]
+Epoch 12/100:  68%|█████████████▌      | 1088/1600 [00:45<00:21] loss=2.1234 policy=1.8901 value=0.2333
+Epoch 12/100: avg_loss=2.0891 top1_accuracy=28.5%
+```
 
-### Gate to Phase 2
+Training automatically stops when top-1 accuracy exceeds **30%** (Phase 1 gate).
 
-Training automatically checks whether policy accuracy exceeds **30% top-1** on the held-out set after each epoch. When the gate passes, training stops and the checkpoint is ready for Phase 2.
+| Flag                | Default             | Description                                |
+| ------------------- | ------------------- | ------------------------------------------ |
+| `--pgn`             | (required)          | Path to `.pgn` or `.pgn.zst` file          |
+| `--stockfish`       | auto-detect PATH    | Path to Stockfish binary                   |
+| `--stockfish-depth` | `10`                | Stockfish analysis depth (higher = better) |
+| `--max-examples`    | `100000`            | Training examples to generate              |
+| `--holdout-frac`    | `0.05`              | Fraction for accuracy evaluation           |
+| `--batch-size`      | `64`                | Batch size                                 |
+| `--epochs`          | `100`               | Maximum epochs                             |
+| `--lr`              | `1e-4`              | Learning rate                              |
+| `--output`          | `outputs/phase1.pt` | Checkpoint path                            |
 
-## Phase 2: World model + diffusion bootstrapping
+### Step 3: Phase 2 — Diffusion bootstrapping
 
-### What happens
-
-Two new modules are trained on top of the Phase 1 representations:
-
-1. **World model** learns latent-space dynamics: given a position and a move, predict the next latent state and reward. This enables MCTS to search entirely in latent space without needing game rules.
-2. **Diffusion module** learns to denoise corrupted future trajectories. Given the current position, it learns to reconstruct plausible future continuations from noise.
-
-### Why train the world model on Lichess trajectories first
-
-The world model needs consistent latent dynamics before MCTS can search effectively. Training on supervised Lichess trajectories (where positions evolve according to real games) gives the model a stable foundation. If trained directly from self-play with a weak policy, the trajectories would be near-random, and the world model would learn chaotic dynamics that MCTS cannot exploit.
-
-### Why diffusion in latent space instead of FEN tokens
-
-Operating on latent tensors [64, d_s] rather than FEN strings means the diffusion process works with rich continuous representations where nearby points in latent space correspond to similar board positions. This makes the corruption-and-recovery training signal much smoother than discrete token prediction. It also means denoising steps are cheap (small tensor operations) rather than expensive (autoregressive token generation).
-
-### Why the consistency projector matters
-
-Without the consistency loss, the world model's latent dynamics can "collapse" — the predicted next state might satisfy the value equivalence constraint by mapping everything to a small subspace, losing information needed for planning. The SimSiam-style consistency projector, with stop-gradient on the target branch, prevents this by ensuring predicted latent states remain structurally similar to encoded real states.
-
-### The 6-term loss function
-
-Phase 2 activates all 6 loss terms, balanced by HarmonyDream:
-
-| Term        | What it measures                                                             | Why it matters                |
-| ----------- | ---------------------------------------------------------------------------- | ----------------------------- |
-| Policy      | Cross-entropy between predicted and target move distributions                | Core chess skill              |
-| Value       | Cross-entropy between predicted and target WDL                               | Position evaluation           |
-| Consistency | SimSiam negative cosine similarity between predicted and encoded next states | Prevents latent collapse      |
-| Diffusion   | MSE between predicted and actual noise (DDPM)                                | Future trajectory imagination |
-| Reward      | MSE between predicted and actual game reward                                 | Outcome-relevant dynamics     |
-| Ply         | Huber loss on predicted vs actual game length                                | Time horizon awareness        |
-
-### Diffusion step curriculum
-
-The diffusion trainer starts with only 25% of the maximum timesteps and gradually increases by 2% per epoch. This curriculum makes early training easier (less noise to denoise) and progressively challenges the model with harder corruption levels. Without it, the model faces the hardest denoising tasks from step one, slowing convergence.
-
-### How to run
+Trains the diffusion module to denoise future trajectories, with the Phase 1 encoder frozen:
 
 ```bash
 uv run denoisr-train-phase2 \
     --checkpoint outputs/phase1.pt \
     --pgn data/lichess_elite_2025-01.pgn \
-    --seq-len 5 \
     --max-trajectories 50000 \
-    --batch-size 32 \
     --epochs 200 \
-    --lr 1e-4 \
     --output outputs/phase2.pt
 ```
 
-Key flags:
+**What you'll see:**
 
-| Flag                 | Default             | Description                             |
-| -------------------- | ------------------- | --------------------------------------- |
-| `--checkpoint`       | (required)          | Phase 1 checkpoint to load              |
-| `--pgn`              | (required)          | PGN file for trajectory extraction      |
-| `--seq-len`          | `5`                 | Consecutive board states per trajectory |
-| `--max-trajectories` | `50000`             | Maximum trajectories to extract         |
-| `--batch-size`       | `32`                | Training batch size                     |
-| `--epochs`           | `200`               | Training epochs                         |
-| `--lr`               | `1e-4`              | Learning rate for diffusion parameters  |
-| `--output`           | `outputs/phase2.pt` | Checkpoint output path                  |
-| `--log-every`        | `10`                | Log every N batches                     |
+```
+Extracting trajectories: 72%|██████████████▍     | 36000/50000 [02:15<00:52, 267traj/s]
+Epoch 45/200:  55%|███████████         | 860/1562 [00:32<00:26] loss=0.0234
+Epoch 45/200: avg_diffusion_loss=0.0218 curriculum_steps=32
+```
 
-### Gate to Phase 3
+Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 percentage points.
 
-Diffusion-conditioned inference accuracy must exceed single-step accuracy by **>5 percentage points**. This confirms the diffusion module provides meaningful information beyond what the backbone already captures. The script reports the best diffusion loss; evaluate both engines on held-out positions to measure the gate metric.
+| Flag                 | Default             | Description                        |
+| -------------------- | ------------------- | ---------------------------------- |
+| `--checkpoint`       | (required)          | Phase 1 checkpoint                 |
+| `--pgn`              | (required)          | PGN file for trajectory extraction |
+| `--seq-len`          | `5`                 | Board states per trajectory        |
+| `--max-trajectories` | `50000`             | Trajectories to extract            |
+| `--batch-size`       | `32`                | Batch size                         |
+| `--epochs`           | `200`               | Training epochs                    |
+| `--lr`               | `1e-4`              | Learning rate                      |
+| `--output`           | `outputs/phase2.pt` | Checkpoint path                    |
 
-## Phase 3: RL self-play
+### Step 4: Phase 3 — RL self-play
 
-### What happens
-
-The engine improves beyond human/Stockfish supervision by playing games against itself. This phase has two sub-phases:
-
-- **Phase 3a (MCTS bootstrap):** Traditional MCTS in latent space generates self-play games. MCTS provides decent move quality even with a weak policy network, so the training data has meaningful winning/losing patterns from the start.
-- **Phase 3b (Diffusion transition):** Once the diffusion model has absorbed enough patterns from MCTS-quality games, it gradually takes over move selection via alpha mixing. A virtuous cycle begins: better diffusion produces better games which produce better training data which produces better diffusion.
-
-### Why MCTS bootstraps diffusion (not the other way around)
-
-Early self-play games from a random policy are terrible — random moves produce random trajectories with no useful signal for the diffusion model. MCTS solves this cold-start problem: even with a weak neural network, tree search explores enough alternatives to find reasonable moves. The diffusion model then learns from these MCTS-quality games, absorbing tactical patterns that MCTS found through brute-force search.
-
-### Why alpha mixing instead of a hard switch
-
-A sudden switch from MCTS to diffusion would destabilize training: the game quality would drop sharply, producing worse training data, which would further degrade the diffusion model. Linear alpha mixing (from 0 to 1 over 50 generations) ensures a smooth transition where the diffusion model is only responsible for a fraction of decisions commensurate with its current ability.
-
-### Temperature scheduling
-
-Self-play uses temperature scheduling within each game: high temperature (exploratory, stochastic moves) for the first 30 moves to diversify openings, then temperature=0 (greedy) for the remainder to generate clean tactical data. Across generations, the base temperature decays by 3% per generation as the model trusts its improving policy more and needs less exploration.
-
-### MuZero Reanalyse for sample efficiency
-
-Rather than discarding old games after training on them once, the ReanalyseActor replays old positions through the current (improved) network's MCTS. This generates higher-quality policy targets from existing data without playing new games — one of MuZero's key sample efficiency innovations. A game played 100 generations ago might have had poor MCTS targets with the old network, but the current network's MCTS produces much better targets for the same positions.
-
-### How to run
+The engine improves beyond human/Stockfish supervision by playing against itself:
 
 ```bash
 uv run denoisr-train-phase3 \
     --checkpoint outputs/phase2.pt \
     --generations 1000 \
     --games-per-gen 100 \
-    --reanalyse-per-gen 50 \
-    --mcts-sims 800 \
-    --buffer-capacity 100000 \
-    --alpha-generations 50 \
     --save-every 10 \
     --output outputs/phase3.pt
 ```
 
-Key flags:
+**What you'll see:**
 
-| Flag                  | Default             | Description                                             |
-| --------------------- | ------------------- | ------------------------------------------------------- |
-| `--checkpoint`        | (required)          | Phase 2 checkpoint to load                              |
-| `--generations`       | `1000`              | Total self-play generations                             |
-| `--games-per-gen`     | `100`               | Games played per generation                             |
-| `--reanalyse-per-gen` | `50`                | Old games reanalysed per generation                     |
-| `--mcts-sims`         | `800`               | MCTS simulations per move                               |
-| `--buffer-capacity`   | `100000`            | Priority replay buffer capacity                         |
-| `--alpha-generations` | `50`                | Generations to transition from MCTS to diffusion (0->1) |
-| `--save-every`        | `10`                | Save checkpoint every N generations                     |
-| `--output`            | `outputs/phase3.pt` | Checkpoint output path                                  |
+```
+Generations:  5%|█                   | 50/1000 [4:12:30<79:30:00]
+Gen 51 self-play:  34%|██████▊             | 34/100 [08:12<15:55] W=12 D=8 L=14
+Gen 51/1000: buffer=5100 alpha=0.00 temp=0.220 W/D/L=48/21/31 reanalysed=450
+```
 
-### Success criteria
+| Flag                  | Default             | Description                              |
+| --------------------- | ------------------- | ---------------------------------------- |
+| `--checkpoint`        | (required)          | Phase 2 checkpoint                       |
+| `--generations`       | `1000`              | Self-play generations                    |
+| `--games-per-gen`     | `100`               | Games per generation                     |
+| `--reanalyse-per-gen` | `50`                | Old games reanalysed per generation      |
+| `--mcts-sims`         | `800`               | MCTS simulations per move                |
+| `--buffer-capacity`   | `100000`            | Replay buffer capacity                   |
+| `--alpha-generations` | `50`                | Generations to transition MCTS→diffusion |
+| `--save-every`        | `10`                | Checkpoint every N generations           |
+| `--output`            | `outputs/phase3.pt` | Checkpoint path                          |
 
-Elo increases over generations (measured via cutechess-cli). The ultimate goal: diffusion-only inference (alpha=1.0) matches or exceeds MCTS-based inference strength.
+## Play with the trained model
 
-## Inference: playing with the trained model
-
-The `denoisr-play` command starts a UCI-compatible chess engine that connects to any chess GUI (CuteChess, Arena, Banksia, etc.).
+After training, add the trained engine to your chess GUI and compare it against the random model:
 
 ### Single-pass mode (fastest)
 
-Direct encoder -> backbone -> policy head. No search, no diffusion. The simplest mode.
+Direct encoder → backbone → policy head. No search, no diffusion:
 
 ```bash
 uv run denoisr-play \
@@ -320,9 +241,9 @@ uv run denoisr-play \
     --mode single
 ```
 
-### Diffusion-enhanced mode (stronger, adjustable)
+### Diffusion-enhanced mode (stronger)
 
-Adds diffusion imagination before the policy backbone. The `--denoising-steps` flag provides **anytime search**: more steps produce stronger play at the cost of inference time. This is the core innovation — the engine thinks deeper by running more denoising iterations rather than by building an explicit search tree.
+Adds diffusion imagination before the policy backbone. More denoising steps = stronger play:
 
 ```bash
 uv run denoisr-play \
@@ -331,25 +252,27 @@ uv run denoisr-play \
     --denoising-steps 20
 ```
 
-| Flag                | Default    | Description                                                       |
-| ------------------- | ---------- | ----------------------------------------------------------------- |
-| `--checkpoint`      | (required) | Path to any phase checkpoint                                      |
-| `--mode`            | `single`   | `single` (fast) or `diffusion` (stronger)                         |
-| `--denoising-steps` | `20`       | Denoising iterations for diffusion mode (more = stronger, slower) |
+### Compare random vs trained
 
-### Connecting to a chess GUI
+Add both engines to CuteChess to see the difference training makes:
 
-Point your chess GUI at the engine command:
+| Engine in CuteChess   | Command args                                         |
+| --------------------- | ---------------------------------------------------- |
+| `Denoisr (random)`    | `--checkpoint outputs/random_model.pt --mode single` |
+| `Denoisr (trained)`   | `--checkpoint outputs/phase3.pt --mode single`       |
+| `Denoisr (diffusion)` | `--checkpoint outputs/phase3.pt --mode diffusion`    |
 
-```
-uv run denoisr-play --checkpoint outputs/phase3.pt --mode diffusion
-```
+Set up a match between them (**Game > New**, select both engines) to see the Elo improvement from training.
 
-The engine speaks standard UCI protocol (reads from stdin, writes to stdout). In CuteChess, add it via **Engines > Add** and paste the command above.
+| Flag                | Default    | Description                                    |
+| ------------------- | ---------- | ---------------------------------------------- |
+| `--checkpoint`      | (required) | Path to any phase checkpoint                   |
+| `--mode`            | `single`   | `single` (fast) or `diffusion` (stronger)      |
+| `--denoising-steps` | `20`       | Denoising iterations (more = stronger, slower) |
 
 ## Benchmarking with cutechess-cli
 
-Measure Elo against a reference engine using SPRT (Sequential Probability Ratio Test) for statistical confidence:
+Measure Elo against a reference engine using SPRT for statistical confidence:
 
 ```bash
 # Basic benchmark (100 games)
@@ -386,48 +309,63 @@ uv run denoisr-benchmark \
 | `--concurrency`  | `1`         | Parallel games                             |
 | `--dry-run`      | `false`     | Print command without running              |
 
-## Complete training pipeline
+## Architecture deep dive
 
-```bash
-# 1. Install dependencies
-uv sync
+### Board encoding → latent space → policy/value
 
-# 2. Download training data
-wget -P data/ https://database.nikonoel.fr/lichess_elite_2025-01.zip
-unzip data/lichess_elite_2025-01.zip -d data/
-
-# 3. Phase 1: Supervised learning (~hours with GPU)
-uv run denoisr-train-phase1 \
-    --pgn data/lichess_elite_2025-01.pgn \
-    --output outputs/phase1.pt
-
-# 4. Phase 2: Diffusion bootstrapping (~hours with GPU)
-uv run denoisr-train-phase2 \
-    --checkpoint outputs/phase1.pt \
-    --pgn data/lichess_elite_2025-01.pgn \
-    --output outputs/phase2.pt
-
-# 5. Phase 3: RL self-play (~days with GPU)
-uv run denoisr-train-phase3 \
-    --checkpoint outputs/phase2.pt \
-    --output outputs/phase3.pt
-
-# 6. Play!
-uv run denoisr-play \
-    --checkpoint outputs/phase3.pt \
-    --mode diffusion
-
-# 7. Benchmark
-uv run denoisr-benchmark \
-    --engine-cmd "uv run denoisr-play --checkpoint outputs/phase3.pt --mode diffusion" \
-    --opponent-cmd stockfish \
-    --games 100
 ```
+Board position (chess.Board)
+    |
+    v
+BoardEncoder  ──>  BoardTensor [C, 8, 8]
+    |                   (12 planes simple, 110 planes extended)
+    v
+ChessEncoder  ──>  LatentState [64, d_s]
+    |                   (one token per square)
+    v
+PolicyBackbone  ──>  LatentState [64, d_s]
+    |                   (15-layer transformer with smolgen + Shaw relative PE)
+    |
+    ├──> PolicyHead  ──>  move_logits [64, 64]
+    |                       (source-destination grid)
+    └──> ValueHead   ──>  (wdl_probs [3], ply [1])
+                            (win/draw/loss + game length)
+```
+
+### Diffusion imagination
+
+The diffusion module adds an imagination step before the backbone:
+
+```
+LatentState  ──>  DiffusionModule (T denoising steps)  ──>  enriched LatentState
+                      (iteratively refines noise into plausible future trajectories,
+                       conditioned on the current position)
+```
+
+### World model for latent MCTS
+
+```
+(LatentState, Action)  ──>  WorldModel  ──>  (next LatentState, predicted reward)
+                                (causal transformer, UniZero-style)
+```
+
+Total: ~340M parameters across all modules.
+
+### Training phases explained
+
+Training proceeds in three phases, each gated on measurable quality thresholds to prevent premature advancement.
+
+**Phase 1: Supervised learning** — The cheapest way to bootstrap. Millions of Lichess games provide positional patterns, and Stockfish provides policy targets (move distributions) and value targets (win/draw/loss probabilities) far stronger than human labels alone. Stockfish gives full probability distributions over legal moves rather than one-hot human labels — "e4 is best at 45%, d4 is close at 40%" is dramatically more informative than "e4 was played."
+
+**Phase 2: World model + diffusion** — Two new modules train on top of Phase 1 representations. The world model learns latent-space dynamics (given position + move, predict next state). The diffusion module learns to denoise corrupted future trajectories. The 6-term HarmonyDream loss balances policy, value, consistency, diffusion, reward, and ply objectives. A curriculum gradually increases diffusion timesteps from 25% to 100%.
+
+**Phase 3: RL self-play** — MCTS in latent space generates self-play data (Phase 3a), then alpha mixing gradually transitions from MCTS to diffusion guidance (Phase 3b). MuZero Reanalyse replays old positions through the improved network for sample efficiency. Temperature scheduling diversifies openings (high temp for first 30 moves, then greedy).
 
 ## All available commands
 
 | Command                       | Description                                         |
 | ----------------------------- | --------------------------------------------------- |
+| `uv run denoisr-init`         | Initialize a random (untrained) model checkpoint    |
 | `uv run denoisr-train-phase1` | Phase 1: Supervised learning with Stockfish targets |
 | `uv run denoisr-train-phase2` | Phase 2: Diffusion bootstrapping on trajectories    |
 | `uv run denoisr-train-phase3` | Phase 3: RL self-play with MCTS-to-diffusion mixing |
@@ -437,8 +375,19 @@ uv run denoisr-benchmark \
 All commands support `--help` for full flag documentation:
 
 ```bash
+uv run denoisr-init --help
 uv run denoisr-train-phase1 --help
 uv run denoisr-play --help
+```
+
+## Running tests
+
+```bash
+uv run pytest tests/ -v                  # all tests
+uv run pytest tests/ -x                  # stop at first failure
+uv run pytest tests/ -n auto             # parallel execution
+uv run pytest tests/ -k "not stockfish"  # skip Stockfish-dependent tests
+uv run pytest tests/test_nn/ -v          # just neural network tests
 ```
 
 ## Project structure
@@ -458,14 +407,4 @@ denoisr/
 ├── fixtures/           # Sample PGN files for testing
 ├── docs/plans/         # Architecture design and implementation plans
 └── outputs/            # Training artifacts (gitignored)
-```
-
-## Running tests
-
-```bash
-uv run pytest tests/ -v                  # all tests
-uv run pytest tests/ -x                  # stop at first failure
-uv run pytest tests/ -n auto             # parallel execution
-uv run pytest tests/ -k "not stockfish"  # skip Stockfish-dependent tests
-uv run pytest tests/test_nn/ -v          # just neural network tests
 ```

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import chess
 import torch
+from tqdm import tqdm
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.data.pgn_streamer import SimplePGNStreamer
@@ -39,12 +40,11 @@ def extract_trajectories(
     seq_len: int,
     max_trajectories: int,
 ) -> list[torch.Tensor]:
-    """Extract consecutive board-state trajectories from PGN games.
-
-    Returns list of tensors shaped [seq_len, C, 8, 8].
-    """
+    """Extract consecutive board-state trajectories from PGN games."""
     streamer = SimplePGNStreamer()
     trajectories: list[torch.Tensor] = []
+
+    pbar = tqdm(total=max_trajectories, desc="Extracting trajectories", unit="traj")
 
     for record in streamer.stream(pgn_path):
         if len(record.actions) < seq_len:
@@ -63,9 +63,12 @@ def extract_trajectories(
         for start in range(0, len(boards) - seq_len, seq_len):
             chunk = boards[start : start + seq_len]
             trajectories.append(torch.stack(chunk))
+            pbar.update(1)
             if len(trajectories) >= max_trajectories:
+                pbar.close()
                 return trajectories
 
+    pbar.close()
     return trajectories
 
 
@@ -85,7 +88,6 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--output", type=str, default="outputs/phase2.pt")
-    parser.add_argument("--log-every", type=int, default=10)
     add_model_args(parser)
     args = parser.parse_args()
 
@@ -122,7 +124,6 @@ def main() -> None:
 
     # --- Extract trajectories ---
     board_encoder = SimpleBoardEncoder()
-    print("Extracting trajectories from PGN...")
     trajectories = extract_trajectories(
         Path(args.pgn), board_encoder, args.seq_len, args.max_trajectories
     )
@@ -137,7 +138,12 @@ def main() -> None:
         epoch_loss = 0.0
         num_batches = 0
 
-        for i in range(0, len(trajectories), bs):
+        pbar = tqdm(
+            range(0, len(trajectories), bs),
+            desc=f"Epoch {epoch+1}/{args.epochs}",
+            leave=False,
+        )
+        for i in pbar:
             chunk = trajectories[i : i + bs]
             if len(chunk) < 2:
                 continue
@@ -145,12 +151,8 @@ def main() -> None:
             loss = diff_trainer.train_step(batch)
             epoch_loss += loss
             num_batches += 1
-
-            if args.log_every and num_batches % args.log_every == 0:
-                print(
-                    f"  [{epoch+1}/{args.epochs}] batch {num_batches}: "
-                    f"diffusion_loss={loss:.4f}"
-                )
+            pbar.set_postfix(loss=f"{loss:.4f}")
+        pbar.close()
 
         diff_trainer.advance_curriculum()
         avg_loss = epoch_loss / max(num_batches, 1)

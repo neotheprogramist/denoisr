@@ -8,10 +8,12 @@ dependencies = [
     "chess>=1.11.2",
     "numpy>=2.4.2",
     "torch>=2.10.0",
+    "tqdm>=4.67.3",
     "zstandard>=0.25.0",
 ]
 
 [project.scripts]
+denoisr-init = "denoisr.scripts.init_model:main"
 denoisr-train-phase1 = "denoisr.scripts.train_phase1:main"
 denoisr-train-phase2 = "denoisr.scripts.train_phase2:main"
 denoisr-train-phase3 = "denoisr.scripts.train_phase3:main"
@@ -33,4 +35,5 @@ dev = [
     "hypothesis>=6.151.9",
     "pytest>=9.0.2",
     "pytest-xdist>=3.8.0",
+    "types-tqdm>=4.67.3.20260205",
 ]

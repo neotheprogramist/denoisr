@@ -12,6 +12,7 @@ from pathlib import Path
 
 import torch
 from torch import Tensor
+from tqdm import tqdm
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.game.chess_game import ChessGame
@@ -142,13 +143,20 @@ def main() -> None:
     orchestrator.check_gate({"diffusion_improvement_pp": 100.0})
 
     # --- Training loop ---
-    for gen in range(args.generations):
+    gen_pbar = tqdm(range(args.generations), desc="Generations", unit="gen")
+    for gen in gen_pbar:
         alpha = orchestrator.get_alpha(gen)
         temp_base = temp_schedule.get_temperature(0, gen)
 
         # 1. Self-play
         results = {"wins": 0, "draws": 0, "losses": 0}
-        for _ in range(args.games_per_gen):
+        sp_pbar = tqdm(
+            range(args.games_per_gen),
+            desc=f"Gen {gen+1} self-play",
+            leave=False,
+            unit="game",
+        )
+        for _ in sp_pbar:
             record = actor.play_game(generation=gen)
             buffer.add(record, priority=1.0)
             if record.result == 1.0:
@@ -157,24 +165,44 @@ def main() -> None:
                 results["losses"] += 1
             else:
                 results["draws"] += 1
+            sp_pbar.set_postfix(
+                W=results["wins"], D=results["draws"], L=results["losses"]
+            )
+        sp_pbar.close()
 
         # 2. Reanalyse old games
+        reanalyse_count = 0
         if len(buffer) >= args.reanalyse_per_gen:
             old_records = buffer.sample(args.reanalyse_per_gen)
-            reanalyse_count = 0
-            for old_record in old_records:
+            ra_pbar = tqdm(
+                old_records,
+                desc=f"Gen {gen+1} reanalyse",
+                leave=False,
+                unit="game",
+            )
+            for old_record in ra_pbar:
                 examples = reanalyser.reanalyse(old_record)
                 reanalyse_count += len(examples)
+                ra_pbar.set_postfix(examples=reanalyse_count)
                 # TODO: train on reanalysed examples
+            ra_pbar.close()
 
         # 3. Train on replay buffer batch
         # TODO: convert game records to training examples and run trainer
 
-        print(
+        gen_pbar.set_postfix(
+            buf=len(buffer),
+            alpha=f"{alpha:.2f}",
+            W=results["wins"],
+            D=results["draws"],
+            L=results["losses"],
+        )
+        tqdm.write(
             f"Gen {gen+1}/{args.generations}: "
             f"buffer={len(buffer)} alpha={alpha:.2f} "
             f"temp={temp_base:.3f} "
-            f"W/D/L={results['wins']}/{results['draws']}/{results['losses']}"
+            f"W/D/L={results['wins']}/{results['draws']}/{results['losses']} "
+            f"reanalysed={reanalyse_count}"
         )
 
         # 4. Checkpoint

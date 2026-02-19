@@ -14,6 +14,7 @@ from pathlib import Path
 
 import chess
 import torch
+from tqdm import tqdm
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.data.pgn_streamer import SimplePGNStreamer
@@ -43,10 +44,10 @@ def generate_data(
     encoder = SimpleBoardEncoder()
     examples: list[TrainingExample] = []
 
-    print(f"Generating examples from {pgn_path} with Stockfish depth={stockfish_depth}...")
+    pbar = tqdm(total=max_examples, desc="Generating examples", unit="pos")
 
     with StockfishOracle(path=stockfish_path, depth=stockfish_depth) as oracle:
-        for i, record in enumerate(streamer.stream(pgn_path)):
+        for record in streamer.stream(pgn_path):
             board = chess.Board()
             for action in record.actions:
                 if len(examples) >= max_examples:
@@ -60,6 +61,7 @@ def generate_data(
                         value=value_target,
                     )
                 )
+                pbar.update(1)
                 move = chess.Move(
                     action.from_square,
                     action.to_square,
@@ -69,9 +71,8 @@ def generate_data(
 
             if len(examples) >= max_examples:
                 break
-            if (i + 1) % 100 == 0:
-                print(f"  Processed {i + 1} games, {len(examples)} examples")
 
+    pbar.close()
     print(f"Generated {len(examples)} training examples")
     return examples
 
@@ -117,7 +118,6 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--output", type=str, default="outputs/phase1.pt")
-    parser.add_argument("--log-every", type=int, default=10, help="Log every N batches")
     add_model_args(parser)
     args = parser.parse_args()
 
@@ -172,23 +172,26 @@ def main() -> None:
         epoch_loss = 0.0
         num_batches = 0
 
-        for i in range(0, len(train), bs):
+        pbar = tqdm(
+            range(0, len(train), bs),
+            desc=f"Epoch {epoch+1}/{args.epochs}",
+            leave=False,
+        )
+        for i in pbar:
             batch = train[i : i + bs]
             if not batch:
                 break
             loss, breakdown = trainer.train_step(batch)
             epoch_loss += loss
             num_batches += 1
-
-            if args.log_every and num_batches % args.log_every == 0:
-                print(
-                    f"  [{epoch+1}/{args.epochs}] batch {num_batches}: "
-                    f"loss={loss:.4f} policy={breakdown['policy']:.4f} "
-                    f"value={breakdown['value']:.4f}"
-                )
+            pbar.set_postfix(
+                loss=f"{loss:.4f}",
+                policy=f"{breakdown['policy']:.4f}",
+                value=f"{breakdown['value']:.4f}",
+            )
+        pbar.close()
 
         avg_loss = epoch_loss / max(num_batches, 1)
-
         top1 = measure_top1(trainer, holdout, device)
 
         print(
