@@ -160,18 +160,18 @@ Epoch 12/100: avg_loss=2.0891 top1_accuracy=28.5%
 
 Training automatically stops when top-1 accuracy exceeds **30%** (Phase 1 gate).
 
-| Flag                | Default             | Description                                          |
-| ------------------- | ------------------- | ---------------------------------------------------- |
-| `--checkpoint`      | (none)              | Checkpoint to resume from (e.g. from `denoisr-init`) |
-| `--pgn`             | (required)          | Path to `.pgn` or `.pgn.zst` file                    |
-| `--stockfish`       | auto-detect PATH    | Path to Stockfish binary                             |
-| `--stockfish-depth` | `10`                | Stockfish analysis depth (higher = better)           |
-| `--max-examples`    | `100000`            | Training examples to generate                        |
-| `--holdout-frac`    | `0.05`              | Fraction for accuracy evaluation                     |
-| `--batch-size`      | `64`                | Batch size                                           |
-| `--epochs`          | `100`               | Maximum epochs                                       |
-| `--lr`              | `1e-4`              | Learning rate                                        |
-| `--output`          | `outputs/phase1.pt` | Checkpoint path                                      |
+| Flag                | Default             | Description                                     |
+| ------------------- | ------------------- | ----------------------------------------------- |
+| `--checkpoint`      | (required)          | Checkpoint to load (create with `denoisr-init`) |
+| `--pgn`             | (required)          | Path to `.pgn` or `.pgn.zst` file               |
+| `--stockfish`       | auto-detect PATH    | Path to Stockfish binary                        |
+| `--stockfish-depth` | `10`                | Stockfish analysis depth (higher = better)      |
+| `--max-examples`    | `100000`            | Training examples to generate                   |
+| `--holdout-frac`    | `0.05`              | Fraction for accuracy evaluation                |
+| `--batch-size`      | `64`                | Batch size                                      |
+| `--epochs`          | `100`               | Maximum epochs                                  |
+| `--lr`              | `1e-4`              | Learning rate                                   |
+| `--output`          | `outputs/phase1.pt` | Checkpoint path                                 |
 
 ### Step 4: Phase 2 — Diffusion bootstrapping
 

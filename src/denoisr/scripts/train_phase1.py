@@ -25,7 +25,6 @@ from denoisr.scripts.config import (
     build_encoder,
     build_policy_head,
     build_value_head,
-    config_from_args,
     detect_device,
     load_checkpoint,
     save_checkpoint,
@@ -108,8 +107,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 1: Supervised training")
     parser.add_argument(
         "--checkpoint",
-        default=None,
-        help="Checkpoint to resume from (e.g. random_model.pt from denoisr-init)",
+        required=True,
+        help="Checkpoint to load (create with denoisr-init)",
     )
     parser.add_argument("--pgn", required=True, help="Path to .pgn or .pgn.zst file")
     parser.add_argument(
@@ -139,25 +138,19 @@ def main() -> None:
     device = detect_device()
     print(f"Device: {device}")
 
-    # --- Build model (from checkpoint or fresh) ---
-    if args.checkpoint is not None:
-        cfg, state = load_checkpoint(Path(args.checkpoint), device)
-        print(f"Loaded checkpoint: d_s={cfg.d_s}, heads={cfg.num_heads}, layers={cfg.num_layers}")
-        encoder = build_encoder(cfg).to(device)
-        backbone = build_backbone(cfg).to(device)
-        policy_head = build_policy_head(cfg).to(device)
-        value_head = build_value_head(cfg).to(device)
-        encoder.load_state_dict(state["encoder"])
-        backbone.load_state_dict(state["backbone"])
-        policy_head.load_state_dict(state["policy_head"])
-        value_head.load_state_dict(state["value_head"])
-    else:
-        cfg = config_from_args(args)
-        print(f"Building fresh model: d_s={cfg.d_s}, heads={cfg.num_heads}, layers={cfg.num_layers}")
-        encoder = build_encoder(cfg).to(device)
-        backbone = build_backbone(cfg).to(device)
-        policy_head = build_policy_head(cfg).to(device)
-        value_head = build_value_head(cfg).to(device)
+    # --- Load checkpoint ---
+    cfg, state = load_checkpoint(Path(args.checkpoint), device)
+    print(f"Loaded checkpoint: d_s={cfg.d_s}, heads={cfg.num_heads}, layers={cfg.num_layers}")
+
+    encoder = build_encoder(cfg).to(device)
+    backbone = build_backbone(cfg).to(device)
+    policy_head = build_policy_head(cfg).to(device)
+    value_head = build_value_head(cfg).to(device)
+
+    encoder.load_state_dict(state["encoder"])
+    backbone.load_state_dict(state["backbone"])
+    policy_head.load_state_dict(state["policy_head"])
+    value_head.load_state_dict(state["value_head"])
 
     # --- Generate data ---
     all_examples = generate_data(
