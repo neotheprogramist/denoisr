@@ -31,6 +31,7 @@ from denoisr.scripts.config import (
     build_world_model,
     detect_device,
     load_checkpoint,
+    maybe_compile,
     save_checkpoint,
 )
 from denoisr.training.diffusion_trainer import DiffusionTrainer
@@ -115,6 +116,10 @@ def main() -> None:
     diffusion = build_diffusion(cfg).to(device)
     consistency = build_consistency(cfg).to(device)
     schedule = build_schedule(cfg).to(device)
+
+    encoder = maybe_compile(encoder, device)
+    backbone = maybe_compile(backbone, device)
+    diffusion = maybe_compile(diffusion, device)
 
     diff_trainer = DiffusionTrainer(
         encoder=encoder,

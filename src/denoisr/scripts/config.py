@@ -3,9 +3,10 @@
 from argparse import ArgumentParser, Namespace
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import torch
+from torch import nn
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
@@ -29,6 +30,7 @@ class ModelConfig:
     world_model_layers: int = 12
     diffusion_layers: int = 6
     proj_dim: int = 256
+    gradient_checkpointing: bool = False
 
 
 def detect_device() -> torch.device:
@@ -37,6 +39,16 @@ def detect_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
+
+
+_M = TypeVar("_M", bound=nn.Module)
+
+
+def maybe_compile(module: _M, device: torch.device) -> _M:
+    """Compile module with torch.compile on CUDA, return as-is otherwise."""
+    if device.type == "cuda":
+        return torch.compile(module)  # type: ignore[return-value]
+    return module
 
 
 def build_encoder(cfg: ModelConfig) -> ChessEncoder:
@@ -56,6 +68,7 @@ def build_backbone(cfg: ModelConfig) -> ChessPolicyBackbone:
         num_heads=cfg.num_heads,
         num_layers=cfg.num_layers,
         ffn_dim=cfg.ffn_dim,
+        gradient_checkpointing=cfg.gradient_checkpointing,
     )
 
 
@@ -82,6 +95,7 @@ def build_diffusion(cfg: ModelConfig) -> ChessDiffusionModule:
         num_heads=cfg.num_heads,
         num_layers=cfg.diffusion_layers,
         num_timesteps=cfg.num_timesteps,
+        gradient_checkpointing=cfg.gradient_checkpointing,
     )
 
 
@@ -104,6 +118,12 @@ def add_model_args(parser: ArgumentParser) -> None:
     g.add_argument("--world-model-layers", type=int, default=12)
     g.add_argument("--diffusion-layers", type=int, default=6)
     g.add_argument("--proj-dim", type=int, default=256, help="consistency projector dimension")
+    g.add_argument(
+        "--gradient-checkpointing",
+        action="store_true",
+        default=False,
+        help="Enable gradient checkpointing (saves VRAM, slightly slower)",
+    )
 
 
 def config_from_args(args: Namespace) -> ModelConfig:
@@ -117,6 +137,7 @@ def config_from_args(args: Namespace) -> ModelConfig:
         world_model_layers=args.world_model_layers,
         diffusion_layers=args.diffusion_layers,
         proj_dim=args.proj_dim,
+        gradient_checkpointing=args.gradient_checkpointing,
     )
 
 

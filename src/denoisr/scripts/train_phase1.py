@@ -21,6 +21,7 @@ from denoisr.scripts.config import (
     build_value_head,
     detect_device,
     load_checkpoint,
+    maybe_compile,
     save_checkpoint,
 )
 from denoisr.scripts.generate_data import unstack_examples
@@ -100,6 +101,11 @@ def main() -> None:
     backbone.load_state_dict(state["backbone"])
     policy_head.load_state_dict(state["policy_head"])
     value_head.load_state_dict(state["value_head"])
+
+    encoder = maybe_compile(encoder, device)
+    backbone = maybe_compile(backbone, device)
+    policy_head = maybe_compile(policy_head, device)
+    value_head = maybe_compile(value_head, device)
 
     # --- Load pre-generated data ---
     raw = torch.load(Path(args.data), weights_only=True)
