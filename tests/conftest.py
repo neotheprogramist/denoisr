@@ -14,6 +14,20 @@ def device() -> torch.device:
 
 
 SMALL_D_S = 64
+SMALL_NUM_HEADS = 4
+SMALL_NUM_LAYERS = 2
+SMALL_FFN_DIM = 128
+SMALL_NUM_TIMESTEPS = 20
+
+
+@pytest.fixture
+def small_latent(device: torch.device) -> torch.Tensor:
+    return torch.randn(2, 64, SMALL_D_S, device=device)
+
+
+@pytest.fixture
+def small_board_tensor(device: torch.device) -> torch.Tensor:
+    return torch.randn(2, 12, 8, 8, device=device)
 
 
 @st.composite
