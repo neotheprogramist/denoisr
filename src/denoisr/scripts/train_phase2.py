@@ -36,7 +36,7 @@ from denoisr.training.diffusion_trainer import DiffusionTrainer
 
 
 def extract_trajectories(
-    pgn_path: str,
+    pgn_path: Path,
     encoder: SimpleBoardEncoder,
     seq_len: int,
     max_trajectories: int,
@@ -126,7 +126,7 @@ def main() -> None:
     board_encoder = SimpleBoardEncoder()
     print("Extracting trajectories from PGN...")
     trajectories = extract_trajectories(
-        args.pgn, board_encoder, args.seq_len, args.max_trajectories
+        Path(args.pgn), board_encoder, args.seq_len, args.max_trajectories
     )
     print(f"Extracted {len(trajectories)} trajectories of length {args.seq_len}")
 

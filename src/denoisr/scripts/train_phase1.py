@@ -35,7 +35,7 @@ from denoisr.types import TrainingExample
 
 
 def generate_data(
-    pgn_path: str,
+    pgn_path: Path,
     stockfish_path: str,
     stockfish_depth: int,
     max_examples: int,
@@ -138,7 +138,7 @@ def main() -> None:
 
     # --- Generate data ---
     all_examples = generate_data(
-        args.pgn, args.stockfish, args.stockfish_depth, args.max_examples
+        Path(args.pgn), args.stockfish, args.stockfish_depth, args.max_examples
     )
     random.shuffle(all_examples)
 
