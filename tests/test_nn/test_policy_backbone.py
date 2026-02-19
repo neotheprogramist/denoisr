@@ -116,8 +116,6 @@ class TestChessPolicyBackbone:
             ffn_dim=SMALL_FFN_DIM,
             gradient_checkpointing=True,
         ).to(device)
-        bb_normal.eval()
-        bb_ckpt.eval()
         x = torch.randn(1, 64, SMALL_D_S, device=device)
         assert torch.allclose(bb_normal(x), bb_ckpt(x), atol=1e-5)
 

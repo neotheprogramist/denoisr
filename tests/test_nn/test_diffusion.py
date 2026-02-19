@@ -127,3 +127,49 @@ class TestChessDiffusionModule:
         out = diffusion(x, t, cond)
         assert not torch.isnan(out).any()
         assert not torch.isinf(out).any()
+
+    def test_gradient_checkpointing_produces_gradients(
+        self, device: torch.device
+    ) -> None:
+        """Diffusion module with gradient checkpointing should produce valid gradients."""
+        diff = ChessDiffusionModule(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            num_timesteps=SMALL_NUM_TIMESTEPS,
+            gradient_checkpointing=True,
+        ).to(device)
+        x = torch.randn(2, 64, SMALL_D_S, device=device)
+        t = torch.randint(0, SMALL_NUM_TIMESTEPS, (2,), device=device)
+        cond = torch.randn(2, 64, SMALL_D_S, device=device)
+        out = diff(x, t, cond)
+        out.sum().backward()
+        for name, p in diff.named_parameters():
+            assert p.grad is not None, f"No gradient for {name}"
+
+    def test_gradient_checkpointing_matches_output(
+        self, device: torch.device
+    ) -> None:
+        """Checkpointed and non-checkpointed diffusion produce identical output."""
+        torch.manual_seed(42)
+        diff_normal = ChessDiffusionModule(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            num_timesteps=SMALL_NUM_TIMESTEPS,
+            gradient_checkpointing=False,
+        ).to(device)
+        torch.manual_seed(42)
+        diff_ckpt = ChessDiffusionModule(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            num_timesteps=SMALL_NUM_TIMESTEPS,
+            gradient_checkpointing=True,
+        ).to(device)
+        x = torch.randn(1, 64, SMALL_D_S, device=device)
+        t = torch.tensor([0], device=device)
+        cond = torch.randn(1, 64, SMALL_D_S, device=device)
+        assert torch.allclose(
+            diff_normal(x, t, cond), diff_ckpt(x, t, cond), atol=1e-5
+        )
