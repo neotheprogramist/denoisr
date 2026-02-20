@@ -129,7 +129,7 @@ class DenoisrApp:
             row=1, column=1, sticky="nsew", pady=(8, 0)
         )
 
-        self._status_var = tk.StringVar(value="Ready")
+        self._status_var = tk.StringVar(value="Set checkpoint, then New Game")
         status_entry = ttk.Entry(
             status_frame, textvariable=self._status_var, state="readonly",
         )
