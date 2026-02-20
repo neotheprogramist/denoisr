@@ -263,15 +263,21 @@ uv run denoisr-play \
 
 ### Compare random vs trained
 
-Add both engines to CuteChess to see the difference training makes:
+Use **Match** mode in the built-in GUI to pit different checkpoints against each other:
 
-| Engine in CuteChess   | Command args                                         |
-| --------------------- | ---------------------------------------------------- |
-| `Denoisr (random)`    | `--checkpoint outputs/random_model.pt --mode single` |
-| `Denoisr (trained)`   | `--checkpoint outputs/phase3.pt --mode single`       |
-| `Denoisr (diffusion)` | `--checkpoint outputs/phase3.pt --mode diffusion`    |
+```bash
+# Play against the trained model
+uv run denoisr-gui --checkpoint outputs/phase3.pt --mode single
 
-Set up a match between them (**Game > New**, select both engines) to see the Elo improvement from training.
+# Or diffusion-enhanced mode (stronger)
+uv run denoisr-gui --checkpoint outputs/phase3.pt --mode diffusion
+```
+
+| Checkpoint            | Mode        | Expected strength            |
+| --------------------- | ----------- | ---------------------------- |
+| `random_model.pt`     | `single`    | Random legal moves           |
+| `phase3.pt`           | `single`    | Fast, moderate strength      |
+| `phase3.pt`           | `diffusion` | Stronger, uses imagination   |
 
 | Flag                | Default    | Description                                    |
 | ------------------- | ---------- | ---------------------------------------------- |
