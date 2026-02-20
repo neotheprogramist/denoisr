@@ -1,4 +1,4 @@
-"""Tests for the MLX safetensors export script."""
+"""Tests for the MLX safetensors export script and weight remapping."""
 
 import json
 import pathlib
@@ -6,6 +6,7 @@ import pathlib
 import torch
 from safetensors.torch import load_file
 
+from denoisr.inference._weight_remap import _remap_all_keys, _remap_sequential_keys
 from denoisr.nn.encoder import ChessEncoder
 from denoisr.nn.policy_backbone import ChessPolicyBackbone
 from denoisr.nn.policy_head import ChessPolicyHead
@@ -118,3 +119,49 @@ class TestExportWeights:
 
         exported = weights["encoder.square_embed.weight"]
         assert torch.equal(original_weight, exported)
+
+
+class TestRemapSequentialKeys:
+    """Test weight key remapping (pure dict manipulation, no MLX needed)."""
+
+    def test_remaps_skipping_mish_index(self) -> None:
+        """Sequential(Linear(0), Mish(1), Linear(2)) remaps indices 0 and 2."""
+        weights: dict[str, object] = {
+            "enc.global_embed.0.weight": "w0",
+            "enc.global_embed.0.bias": "b0",
+            "enc.global_embed.2.weight": "w2",
+            "enc.global_embed.2.bias": "b2",
+        }
+        _remap_sequential_keys(
+            weights, "enc", "global_embed",
+            [(0, "global_embed_0"), (2, "global_embed_2")],
+        )
+        assert "enc.global_embed_0.weight" in weights
+        assert "enc.global_embed_0.bias" in weights
+        assert "enc.global_embed_2.weight" in weights
+        assert "enc.global_embed_2.bias" in weights
+        assert weights["enc.global_embed_2.weight"] == "w2"
+
+    def test_remap_all_keys_covers_encoder_and_ffn(self) -> None:
+        """_remap_all_keys remaps encoder global_embed and FFN keys."""
+        weights: dict[str, object] = {
+            "encoder.global_embed.0.weight": "eg0w",
+            "encoder.global_embed.0.bias": "eg0b",
+            "encoder.global_embed.2.weight": "eg2w",
+            "encoder.global_embed.2.bias": "eg2b",
+            "backbone.smolgen.compress.0.weight": "sc0w",
+            "backbone.smolgen.compress.0.bias": "sc0b",
+            "backbone.layers.0.ffn.0.weight": "f0w",
+            "backbone.layers.0.ffn.0.bias": "f0b",
+            "backbone.layers.0.ffn.2.weight": "f2w",
+            "backbone.layers.0.ffn.2.bias": "f2b",
+        }
+        _remap_all_keys(weights, num_layers=1)
+        assert "encoder.global_embed_0.weight" in weights
+        assert "encoder.global_embed_2.weight" in weights
+        assert "backbone.smolgen.compress_0.weight" in weights
+        assert "backbone.layers.0.ffn_0.weight" in weights
+        assert "backbone.layers.0.ffn_2.weight" in weights
+        # Old keys should be gone
+        assert "encoder.global_embed.2.weight" not in weights
+        assert "backbone.layers.0.ffn.2.weight" not in weights

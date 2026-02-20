@@ -1,4 +1,6 @@
 # mypy: ignore-errors
+# MLX has no type stubs; every class subclassing mnn.Module and every
+# mx.array annotation would require type: ignore, so we suppress file-wide.
 """MLX inference engine for Apple Silicon.
 
 Reimplements the PyTorch inference modules (encoder, backbone, policy head,
@@ -15,6 +17,8 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from denoisr.inference._weight_remap import _remap_all_keys
+
 if TYPE_CHECKING:
     import chess
 
@@ -24,7 +28,7 @@ try:
 except ImportError as e:
     raise ImportError(
         "MLX is required for Apple Silicon inference. "
-        "Install with: pip install mlx"
+        "Install with: uv add mlx"
     ) from e
 
 
@@ -139,38 +143,6 @@ class MLXValueHead(mnn.Module):
         wdl = mx.softmax(self.wdl_linear(pooled), axis=-1)
         ply = mnn.softplus(self.ply_linear(pooled))
         return wdl, ply
-
-
-def _remap_sequential_keys(
-    weights: dict[str, mx.array],
-    prefix: str,
-    seq_name: str,
-    target_names: list[str],
-) -> None:
-    """Remap PyTorch nn.Sequential indexed keys to named MLX linear layers.
-
-    E.g., "encoder.global_embed.0.weight" -> "encoder.global_embed_0.weight"
-    """
-    for old_idx, new_name in enumerate(target_names):
-        for param in ("weight", "bias"):
-            old_key = f"{prefix}.{seq_name}.{old_idx}.{param}"
-            new_key = f"{prefix}.{new_name}.{param}"
-            if old_key in weights:
-                weights[new_key] = weights.pop(old_key)
-
-
-def _remap_all_keys(weights: dict[str, mx.array], num_layers: int) -> None:
-    """Remap all PyTorch Sequential keys to MLX flat attribute names."""
-    _remap_sequential_keys(
-        weights, "encoder", "global_embed", ["global_embed_0", "global_embed_2"]
-    )
-    _remap_sequential_keys(
-        weights, "backbone.smolgen", "compress", ["compress_0"]
-    )
-    for i in range(num_layers):
-        _remap_sequential_keys(
-            weights, f"backbone.layers.{i}", "ffn", ["ffn_0", "ffn_2"]
-        )
 
 
 class MLXChessEngine:
