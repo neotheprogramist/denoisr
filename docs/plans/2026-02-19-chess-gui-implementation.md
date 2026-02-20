@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python stdlib only (`tkinter`, `math`, `subprocess`, `threading`, `queue`). Uses existing `chess` library for board state. No new dependencies.
 
+**Scope note:** The MLX engine (`mlx_engine.py`, added recently) lacks a UCI wrapper and uses safetensors format. The GUI v1 launches engines as UCI subprocesses via `denoisr-play`, so MLX is out of scope. The `denoisr-export-mlx` script is also unaffected.
+
 **Design doc:** `docs/plans/2026-02-19-chess-gui-design.md`
 
 ---
@@ -2044,7 +2046,21 @@ def main() -> None:
 
 **Step 2: Add console script to pyproject.toml**
 
-In `pyproject.toml`, in the `[project.scripts]` section, add:
+The current `[project.scripts]` section is:
+
+```toml
+[project.scripts]
+denoisr-init = "denoisr.scripts.init_model:main"
+denoisr-generate-data = "denoisr.scripts.generate_data:main"
+denoisr-train-phase1 = "denoisr.scripts.train_phase1:main"
+denoisr-train-phase2 = "denoisr.scripts.train_phase2:main"
+denoisr-train-phase3 = "denoisr.scripts.train_phase3:main"
+denoisr-play = "denoisr.scripts.play:main"
+denoisr-benchmark = "denoisr.scripts.benchmark:main"
+denoisr-export-mlx = "denoisr.scripts.export_mlx:main"
+```
+
+Add after `denoisr-export-mlx`:
 
 ```toml
 denoisr-gui = "denoisr.scripts.gui:main"
@@ -2052,7 +2068,7 @@ denoisr-gui = "denoisr.scripts.gui:main"
 
 **Step 3: Update README.md**
 
-Replace the "Install a chess GUI" section (lines 38-87) with:
+Replace the "Install a chess GUI" section (### 3) and "Connect the engine to the GUI" section (### 4) — currently lines 38-95 — with:
 
 ```markdown
 ### 3. Play against the engine
@@ -2065,12 +2081,14 @@ uv run denoisr-gui --checkpoint outputs/random_model.pt
 
 This opens a window where you can play against the engine with click-to-move interaction.
 
-> **Tip:** Denoisr also speaks the UCI protocol, so it works with any UCI-compatible GUI (CuteChess, Arena, Lucas Chess, etc.) if you prefer. See the UCI section below.
-```
+> **Tip:** Denoisr also speaks the UCI protocol, so it works with any UCI-compatible GUI (CuteChess, Arena, Lucas Chess, etc.) if you prefer:
+>
+> \`\`\`bash
+> uv run denoisr-play --checkpoint outputs/random_model.pt --mode single
+> \`\`\`
+>
+> Then type `uci`, `isready`, `position startpos`, `go movetime 1000`, etc.
 
-Replace the "Connect the engine to the GUI" section with:
-
-```markdown
 ### 4. Play a game
 
 In the GUI:
@@ -2083,7 +2101,7 @@ In the GUI:
 The engine responds automatically after each of your moves.
 ```
 
-Update the benchmarking section to mention the GUI match mode as an alternative to cutechess-cli:
+In the "Benchmarking with cutechess-cli" section (## Benchmarking..., currently line 312), prepend the GUI match mode before the existing cutechess-cli instructions:
 
 ```markdown
 ## Benchmarking
@@ -2101,10 +2119,18 @@ uv run denoisr-gui --checkpoint outputs/phase3.pt --mode diffusion
 For headless benchmarking, the `denoisr-benchmark` command wraps cutechess-cli:
 ```
 
-Update the commands table:
+Update the "All available commands" table (currently line 403) to add:
 
 ```markdown
 | `uv run denoisr-gui`           | Chess GUI for play and engine-vs-engine matches |
+```
+
+Note: The table already has `denoisr-export-mlx` (added recently). Place `denoisr-gui` after it.
+
+Update the "Project structure" tree (currently line 436) to add the gui package:
+
+```markdown
+│   ├── gui/           # Built-in chess GUI (play, match, Elo/SPRT)
 ```
 
 **Step 4: Verify the entry point works**

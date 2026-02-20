@@ -13,6 +13,7 @@ Replace the external CuteChess dependency with a built-in chess GUI that support
 - **Click-click** move input with legal move highlighting
 - **Pure Python** benchmarking — no cutechess-cli dependency
 - Existing UCI engine (`denoisr-play`) and `uci.py` are untouched
+- MLX engine (`mlx_engine.py`) is out of scope for v1 — it lacks a UCI wrapper and uses safetensors, not `.pt` checkpoints. The GUI launches engines as UCI subprocesses via `denoisr-play`.
 
 ## Architecture
 
@@ -201,6 +202,14 @@ uv run denoisr-gui --checkpoint outputs/phase3.pt --mode diffusion
 - `test_match_engine.py` — integration tests with a mock UCI engine (echo-based)
 - `test_board_widget.py` — programmatic tests: set_board renders correct squares, click sequences produce correct moves
 - Match engine is fully testable headless (no Tkinter needed)
+
+## Relationship to MLX Engine
+
+The project now has an MLX inference engine (`src/denoisr/inference/mlx_engine.py`) for native Apple Silicon performance, loaded via safetensors. However, it has no UCI loop wrapper — it's used directly in Python. The GUI v1 only supports UCI-based engines (launched as subprocesses). Adding MLX support would require either:
+1. A `denoisr-play-mlx` UCI wrapper script, or
+2. In-process MLX integration in the GUI (bypassing UCI subprocess)
+
+This is deferred to a future iteration.
 
 ## What This Replaces
 
