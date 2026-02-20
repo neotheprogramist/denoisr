@@ -11,6 +11,7 @@ Text logs written:
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -49,7 +50,7 @@ class TrainingLogger:
         """Log per-batch training metrics."""
         self._writer.add_scalar("loss/total", loss, step)
         for key, value in breakdown.items():
-            if key == "total":
+            if key in ("total", "overflow"):
                 continue
             if key == "grad_norm":
                 self._writer.add_scalar("gradients/norm", value, step)
@@ -152,8 +153,11 @@ class TrainingLogger:
         if not grad_norms:
             return
 
-        gn_avg = mean(grad_norms)
-        gn_peak = max(grad_norms)
+        finite_norms = [n for n in grad_norms if math.isfinite(n)]
+        if not finite_norms:
+            return
+        gn_avg = mean(finite_norms)
+        gn_peak = max(finite_norms)
         self._writer.add_scalar("dynamics/grad_norm_avg", gn_avg, epoch)
         self._writer.add_scalar("dynamics/grad_norm_peak", gn_peak, epoch)
 

@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import torch
@@ -58,9 +59,13 @@ class SupervisedTrainer:
 
         self._warmup_epochs = warmup_epochs
         self._base_lrs: list[float] = [float(g["lr"]) for g in param_groups]  # type: ignore[arg-type]
+        # Start at 1/N of peak LR; warmup will ramp up from here
+        for g, base_lr in zip(param_groups, self._base_lrs):
+            g["lr"] = base_lr / max(self._warmup_epochs, 1)
         self._scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=max(1, total_epochs - warmup_epochs), eta_min=min_lr
         )
+        self._scheduler.base_lrs = list(self._base_lrs)
         self._epoch = 0
 
     def _forward_backward(
@@ -68,7 +73,7 @@ class SupervisedTrainer:
         boards: torch.Tensor,
         target_policies: torch.Tensor,
         target_values: torch.Tensor,
-    ) -> tuple[float, dict[str, float]]:
+    ) -> tuple[float, dict[str, float | bool]]:
         """Core training step on device-resident tensors."""
         self.encoder.train()
         self.backbone.train()
@@ -102,12 +107,14 @@ class SupervisedTrainer:
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        breakdown["grad_norm"] = total_norm.item()
+        grad_norm = total_norm.item()
+        breakdown["grad_norm"] = grad_norm
+        breakdown["overflow"] = not math.isfinite(grad_norm)
         return total_loss.item(), breakdown
 
     def train_step(
         self, batch: list[TrainingExample]
-    ) -> tuple[float, dict[str, float]]:
+    ) -> tuple[float, dict[str, float | bool]]:
         boards = torch.stack([ex.board.data for ex in batch]).to(self.device)
         target_policies = torch.stack([ex.policy.data for ex in batch]).to(
             self.device
@@ -124,7 +131,7 @@ class SupervisedTrainer:
         boards: torch.Tensor,
         target_policies: torch.Tensor,
         target_values: torch.Tensor,
-    ) -> tuple[float, dict[str, float]]:
+    ) -> tuple[float, dict[str, float | bool]]:
         """Train step accepting pre-stacked tensors (from DataLoader)."""
         return self._forward_backward(
             boards.to(self.device, non_blocking=True),

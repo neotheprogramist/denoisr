@@ -109,16 +109,16 @@ class TestSupervisedTrainer:
         assert total_norm.item() < 100.0
 
     def test_scheduler_reduces_lr(self, trainer: SupervisedTrainer) -> None:
-        """After stepping the scheduler, learning rates should decrease."""
-        initial_lrs = [g["lr"] for g in trainer.optimizer.param_groups]
+        """After warmup + cosine decay, LRs should be below peak."""
+        peak_lrs = trainer._base_lrs
         batch = _make_batch(8)
-        # Simulate several epochs
-        for _ in range(5):
+        # Run through warmup + 5 cosine decay steps
+        for _ in range(trainer._warmup_epochs + 5):
             trainer.train_step(batch)
             trainer.scheduler_step()
         current_lrs = [g["lr"] for g in trainer.optimizer.param_groups]
-        # At least one group should have a lower LR
-        assert any(c < i for c, i in zip(current_lrs, initial_lrs))
+        # After cosine decay, LRs should be below peak
+        assert all(c < p for c, p in zip(current_lrs, peak_lrs))
 
 
 class TestSupervisedTrainerGrokfast:

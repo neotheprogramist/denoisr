@@ -287,6 +287,7 @@ def main() -> None:
             monitor.reset()
             step_losses: list[float] = []
             step_grad_norms: list[float] = []
+            overflow_count = 0
             data_time = 0.0
             compute_time = 0.0
 
@@ -314,7 +315,10 @@ def main() -> None:
                     )
                     logger.log_grok_metrics(global_step, grok_metrics)
                 step_losses.append(loss)
-                step_grad_norms.append(breakdown.get("grad_norm", 0.0))
+                if breakdown.get("overflow", False):
+                    overflow_count += 1
+                else:
+                    step_grad_norms.append(breakdown.get("grad_norm", 0.0))
                 if global_step % 100 == 0:
                     logger.log_gpu(global_step)
                     monitor.sample()
@@ -373,6 +377,7 @@ def main() -> None:
                 "samples/s": f"{samples_per_sec:.0f}",
                 "epoch_time": f"{epoch_duration:.1f}s",
                 "data_pct": f"{data_time / total_time:.0%}" if total_time > 0 else "0%",
+                "overflows": str(overflow_count),
             }
             if "cpu_percent_avg" in resource_metrics:
                 summary["cpu"] = f"{resource_metrics['cpu_percent_avg']:.0f}%/{resource_metrics['cpu_percent_peak']:.0f}%"
