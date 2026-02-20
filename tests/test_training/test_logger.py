@@ -139,3 +139,36 @@ class TestTrainingLogger:
         with TrainingLogger(log_dir=tmp_path, run_name="ctx") as logger:
             logger.log_train_step(step=0, loss=1.0, breakdown={"total": 1.0})
         assert (tmp_path / "ctx").is_dir()
+
+
+class TestGrokLogging:
+    def test_log_grok_metrics_writes_scalars(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        logger = TrainingLogger(log_dir=tmp_path, run_name="test")
+        metrics = {
+            "grok/weight_norm_total": 42.0,
+            "grok/erank/layer_0": 15.3,
+            "grok/state": 0.0,
+        }
+        logger.log_grok_metrics(step=100, metrics=metrics)
+        logger.close()
+        event_files = list(
+            (tmp_path / "test").glob("events.out.tfevents.*")
+        )
+        assert len(event_files) >= 1
+
+    def test_log_grok_state_transition_writes_text(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        logger = TrainingLogger(log_dir=tmp_path, run_name="test")
+        logger.log_grok_state_transition(
+            step=5000,
+            old_state="BASELINE",
+            new_state="ONSET_DETECTED",
+            trigger="weight_norm decreased 6.2%",
+        )
+        logger.close()
+        text = (tmp_path / "test" / "metrics.log").read_text()
+        assert "GROKKING" in text
+        assert "ONSET_DETECTED" in text

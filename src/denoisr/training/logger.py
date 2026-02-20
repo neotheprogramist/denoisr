@@ -201,6 +201,23 @@ class TrainingLogger:
             for key, value in hparams.items():
                 f.write(f"{key}={value}\n")
 
+    def log_grok_metrics(self, step: int, metrics: dict[str, float]) -> None:
+        """Log grokking detection metrics to TensorBoard."""
+        for key, value in metrics.items():
+            self._writer.add_scalar(key, value, step)
+
+    def log_grok_state_transition(
+        self,
+        step: int,
+        old_state: str,
+        new_state: str,
+        trigger: str,
+    ) -> None:
+        """Log grokking state transition to text log."""
+        self._write_text(
+            f"GROKKING step={step}\t{old_state}->{new_state}\ttrigger={trigger}"
+        )
+
     def _write_text(self, line: str) -> None:
         """Append a line to the text log file."""
         self._log_file.write(line + "\n")
