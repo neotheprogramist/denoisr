@@ -35,64 +35,34 @@ uv run denoisr-init --output outputs/random_model.pt
 
 This creates a checkpoint with random weights (~340M parameters). The engine will make legal moves, but they'll be essentially random.
 
-### 3. Install a chess GUI
+### 3. Play against the engine
 
-Denoisr speaks the UCI protocol, so it works with any UCI-compatible chess GUI. We recommend **CuteChess**:
-
-**macOS (Homebrew):**
+Denoisr includes a built-in chess GUI — no external software needed:
 
 ```bash
-brew install --cask cutechess
+uv run denoisr-gui --checkpoint outputs/random_model.pt
 ```
 
-**Linux (Flatpak):**
+This opens a window where you can play against the engine with click-to-move interaction.
 
-```bash
-flatpak install flathub io.github.cutechess.cutechess
-```
-
-**Linux (build from source):**
-
-```bash
-sudo apt install qt6-base-dev cmake g++
-git clone https://github.com/cutechess/cutechess.git
-cd cutechess && cmake . && make -j$(nproc)
-sudo make install
-```
-
-**Windows:**
-Download the latest release from [github.com/cutechess/cutechess/releases](https://github.com/cutechess/cutechess/releases).
-
-Other UCI-compatible GUIs also work: Arena, Banksia, Lucas Chess, PyChess, or any GUI that supports adding custom UCI engines.
-
-### 4. Connect the engine to the GUI
-
-In CuteChess:
-
-1. Go to **Tools > Settings > Engines**
-2. Click **+** (Add)
-3. Set **Name** to `Denoisr (random)`
-4. Set **Command** to the full path of the engine launcher, for example:
-   ```
-   /path/to/denoisr/.venv/bin/denoisr-play
-   ```
-5. Set **Arguments** to:
-   ```
-   --checkpoint outputs/random_model.pt --mode single
-   ```
-6. Set **Protocol** to **UCI**
-7. Set **Working Directory** to your denoisr project root
-8. Click **OK**
-
-Now start a new game (**Game > New**) and select `Denoisr (random)` as one of the players. Play a few games to see how the untrained engine behaves — it makes legal moves but has no chess understanding.
-
-> **Tip:** If you prefer the terminal, you can also interact with the engine directly via UCI:
+> **Tip:** Denoisr also speaks the UCI protocol, so it works with any UCI-compatible GUI (CuteChess, Arena, Lucas Chess, etc.) if you prefer:
 >
 > ```bash
 > uv run denoisr-play --checkpoint outputs/random_model.pt --mode single
 > ```
 >
 > Then type `uci`, `isready`, `position startpos`, `go movetime 1000`, etc.
+
+### 4. Play a game
+
+In the GUI:
+1. The checkpoint is pre-filled from the command line (or use **Browse** to select one)
+2. Choose **single** or **diffusion** mode
+3. Choose your color (white or black)
+4. Click **New Game**
+5. Click a piece, then click its destination to make moves
+
+The engine responds automatically after each of your moves.
 
 ## Full training pipeline
 
@@ -309,7 +279,17 @@ Set up a match between them (**Game > New**, select both engines) to see the Elo
 | `--mode`            | `single`   | `single` (fast) or `diffusion` (stronger)      |
 | `--denoising-steps` | `20`       | Denoising iterations (more = stronger, slower) |
 
-## Benchmarking with cutechess-cli
+## Benchmarking
+
+### GUI match mode (no external tools needed)
+
+Switch to **Match** mode in the GUI to run engine-vs-engine matches with live Elo/SPRT tracking:
+
+```bash
+uv run denoisr-gui --checkpoint outputs/phase3.pt --mode diffusion
+```
+
+### cutechess-cli (advanced)
 
 Measure Elo against a reference engine using SPRT for statistical confidence:
 
@@ -411,6 +391,7 @@ Training proceeds in three phases, each gated on measurable quality thresholds t
 | `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing |
 | `uv run denoisr-play`          | UCI chess engine (single-pass or diffusion)         |
 | `uv run denoisr-benchmark`     | Elo benchmarking via cutechess-cli                  |
+| `uv run denoisr-gui`           | Chess GUI for play and engine-vs-engine matches     |
 
 All commands support `--help` for full flag documentation:
 
@@ -441,6 +422,7 @@ denoisr/
 │   ├── data/           # Encoders, PGN streaming, Stockfish oracle, dataset
 │   ├── nn/             # Neural network modules (encoder, backbone, heads, world model, diffusion)
 │   ├── training/       # Loss, trainers, MCTS, self-play, replay buffer, reanalyse, orchestrator
+│   ├── gui/           # Built-in chess GUI (play, match, Elo/SPRT)
 │   ├── inference/      # Chess engines (single-pass, diffusion-enhanced), UCI protocol
 │   ├── evaluation/     # cutechess-cli benchmarking harness
 │   └── scripts/        # CLI entry points for all phases + inference + benchmarking

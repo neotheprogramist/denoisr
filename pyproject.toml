@@ -22,6 +22,7 @@ denoisr-train-phase3 = "denoisr.scripts.train_phase3:main"
 denoisr-play = "denoisr.scripts.play:main"
 denoisr-benchmark = "denoisr.scripts.benchmark:main"
 denoisr-export-mlx = "denoisr.scripts.export_mlx:main"
+denoisr-gui = "denoisr.scripts.gui:main"
 
 [build-system]
 requires = ["hatchling"]
