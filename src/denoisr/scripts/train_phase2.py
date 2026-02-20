@@ -41,6 +41,7 @@ from denoisr.scripts.config import (
 )
 from denoisr.training.diffusion_trainer import DiffusionTrainer
 from denoisr.training.logger import TrainingLogger
+from denoisr.training.phase2_trainer import TrajectoryBatch
 from denoisr.training.resource_monitor import ResourceMonitor
 
 log = logging.getLogger(__name__)
@@ -51,37 +52,96 @@ def extract_trajectories(
     encoder: SimpleBoardEncoder | ExtendedBoardEncoder,
     seq_len: int,
     max_trajectories: int,
-) -> list[torch.Tensor]:
-    """Extract consecutive board-state trajectories from PGN games."""
+) -> TrajectoryBatch:
+    """Extract enriched consecutive board-state trajectories from PGN."""
     streamer = SimplePGNStreamer()
-    trajectories: list[torch.Tensor] = []
 
-    pbar = tqdm(total=max_trajectories, desc="Extracting trajectories", unit="traj", smoothing=0.3)
+    all_boards: list[torch.Tensor] = []
+    all_actions_from: list[torch.Tensor] = []
+    all_actions_to: list[torch.Tensor] = []
+    all_policies: list[torch.Tensor] = []
+    all_values: list[torch.Tensor] = []
+    all_rewards: list[torch.Tensor] = []
+
+    pbar = tqdm(
+        total=max_trajectories, desc="Extracting trajectories",
+        unit="traj", smoothing=0.3,
+    )
 
     for record in streamer.stream(pgn_path):
         if len(record.actions) < seq_len:
             continue
 
+        # WDL from game result
+        if record.result == 1.0:
+            wdl = torch.tensor([1.0, 0.0, 0.0])
+        elif record.result == -1.0:
+            wdl = torch.tensor([0.0, 0.0, 1.0])
+        else:
+            wdl = torch.tensor([0.0, 1.0, 0.0])
+
+        # +1 White wins, -1 Black wins, 0 draw
+        result_signal = record.result  # already 1.0/-1.0/0.0
+
         board = chess.Board()
         boards: list[torch.Tensor] = [encoder.encode(board).data]
+        from_sqs: list[int] = []
+        to_sqs: list[int] = []
 
         for action in record.actions:
+            from_sqs.append(action.from_square)
+            to_sqs.append(action.to_square)
             move = chess.Move(
-                action.from_square, action.to_square, action.promotion
+                action.from_square, action.to_square,
+                action.promotion,
             )
             board.push(move)
             boards.append(encoder.encode(board).data)
 
         for start in range(0, len(boards) - seq_len, seq_len):
-            chunk = boards[start : start + seq_len]
-            trajectories.append(torch.stack(chunk))
+            chunk_boards = boards[start : start + seq_len]
+            chunk_from = from_sqs[start : start + seq_len - 1]
+            chunk_to = to_sqs[start : start + seq_len - 1]
+
+            policies = torch.zeros(seq_len - 1, 64, 64)
+            for j in range(seq_len - 1):
+                policies[j, chunk_from[j], chunk_to[j]] = 1.0
+
+            rewards = torch.zeros(seq_len - 1)
+            for j in range(seq_len - 1):
+                game_pos = start + j
+                side_sign = 1.0 if game_pos % 2 == 0 else -1.0
+                rewards[j] = result_signal * side_sign
+
+            all_boards.append(torch.stack(chunk_boards))
+            all_actions_from.append(
+                torch.tensor(chunk_from, dtype=torch.long),
+            )
+            all_actions_to.append(
+                torch.tensor(chunk_to, dtype=torch.long),
+            )
+            all_policies.append(policies)
+            all_values.append(wdl)
+            all_rewards.append(rewards)
+
             pbar.update(1)
-            if len(trajectories) >= max_trajectories:
-                pbar.close()
-                return trajectories
+            if len(all_boards) >= max_trajectories:
+                break
+        if len(all_boards) >= max_trajectories:
+            break
 
     pbar.close()
-    return trajectories
+    if not all_boards:
+        raise ValueError("No valid trajectories extracted from PGN")
+
+    return TrajectoryBatch(
+        boards=torch.stack(all_boards),
+        actions_from=torch.stack(all_actions_from),
+        actions_to=torch.stack(all_actions_to),
+        policies=torch.stack(all_policies),
+        values=torch.stack(all_values),
+        rewards=torch.stack(all_rewards),
+    )
 
 
 def main() -> None:
