@@ -132,7 +132,7 @@ def run_match(
                     uci: str,
                     _gn: int = gn,
                 ) -> None:
-                    on_move(_gn, board, uci)  # type: ignore[misc]
+                    on_move(_gn, board, uci)
 
             result = play_game(
                 white=white,

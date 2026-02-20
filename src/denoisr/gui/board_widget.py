@@ -130,7 +130,7 @@ class BoardWidget(tk.Canvas):
         self._last_move = move
         self._draw()
 
-    def _on_click(self, event: tk.Event) -> None:  # type: ignore[type-arg]
+    def _on_click(self, event: tk.Event) -> None:
         if not self._interactive:
             return
 

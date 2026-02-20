@@ -1,6 +1,5 @@
 # tests/test_gui/test_board_widget.py
 import chess
-import pytest
 
 from denoisr.gui.board_widget import (
     PIECE_SYMBOLS,

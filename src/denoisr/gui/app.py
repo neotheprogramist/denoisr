@@ -7,7 +7,7 @@ import queue
 import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import chess
 
@@ -30,7 +30,7 @@ class DenoisrApp:
         self._board = chess.Board()
         self._engine: UCIEngine | None = None
         self._engine_thread: threading.Thread | None = None
-        self._move_queue: queue.Queue[chess.Move | str | tuple[str, ...]] = (
+        self._move_queue: queue.Queue[Any] = (
             queue.Queue()
         )
         self._moves: list[str] = []
