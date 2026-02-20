@@ -66,7 +66,7 @@ def measure_accuracy(
         for i in range(0, total, batch_size):
             batch = examples[i : i + batch_size]
             boards = torch.stack([ex.board.data for ex in batch]).to(device)
-            targets = torch.stack([ex.policy.data for ex in batch])
+            targets = torch.stack([ex.policy.data for ex in batch]).to(device)
 
             latent = trainer.encoder(boards)
             features = trainer.backbone(latent)
