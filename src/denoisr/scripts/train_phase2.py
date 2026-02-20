@@ -8,11 +8,11 @@ Gate to Phase 3: diffusion-conditioned accuracy > single-step by >5pp.
 """
 
 import argparse
-import random
 from pathlib import Path
 
 import chess
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from denoisr.data.board_encoder import SimpleBoardEncoder
@@ -32,6 +32,7 @@ from denoisr.scripts.config import (
     detect_device,
     load_checkpoint,
     maybe_compile,
+    resolve_gradient_checkpointing,
     save_checkpoint,
 )
 from denoisr.training.diffusion_trainer import DiffusionTrainer
@@ -99,6 +100,7 @@ def main() -> None:
 
     # --- Load Phase 1 ---
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
+    cfg = resolve_gradient_checkpointing(cfg, args, device)
     print(f"Loaded Phase 1 checkpoint: d_s={cfg.d_s}, layers={cfg.num_layers}")
 
     encoder = build_encoder(cfg).to(device)
@@ -140,22 +142,26 @@ def main() -> None:
     bs = args.batch_size
     best_loss = float("inf")
 
+    all_trajectories = torch.stack(trajectories)  # [N, T, C, 8, 8]
+    dataset = TensorDataset(all_trajectories)
+    loader = DataLoader(
+        dataset, batch_size=bs, shuffle=True,
+        num_workers=2, pin_memory=(device.type == "cuda"),
+        persistent_workers=True,
+    )
+
     for epoch in range(args.epochs):
-        random.shuffle(trajectories)
         epoch_loss = 0.0
         num_batches = 0
 
         pbar = tqdm(
-            range(0, len(trajectories), bs),
+            loader,
             desc=f"Epoch {epoch+1}/{args.epochs}",
             leave=False,
             smoothing=0.3,
         )
-        for i in pbar:
-            chunk = trajectories[i : i + bs]
-            if len(chunk) < 2:
-                continue
-            batch = torch.stack(chunk).to(device)
+        for (batch,) in pbar:
+            batch = batch.to(device, non_blocking=True)
             loss = diff_trainer.train_step(batch)
             epoch_loss += loss
             num_batches += 1

@@ -1,7 +1,8 @@
 """Shared model configuration and construction helpers."""
 
+import argparse
 from argparse import ArgumentParser, Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -120,10 +121,27 @@ def add_model_args(parser: ArgumentParser) -> None:
     g.add_argument("--proj-dim", type=int, default=256, help="consistency projector dimension")
     g.add_argument(
         "--gradient-checkpointing",
-        action="store_true",
-        default=False,
-        help="Enable gradient checkpointing (saves VRAM, slightly slower)",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable gradient checkpointing (saves VRAM, slightly slower; default: auto, True on CUDA)",
     )
+
+
+def resolve_gradient_checkpointing(
+    cfg: ModelConfig, args: Namespace, device: torch.device,
+) -> ModelConfig:
+    """Override checkpoint config's gradient_checkpointing with CLI/device default.
+
+    --gradient-checkpointing → True
+    --no-gradient-checkpointing → False
+    neither → True on CUDA, False otherwise
+    """
+    gc = args.gradient_checkpointing
+    if gc is None:
+        gc = device.type == "cuda"
+    if gc != cfg.gradient_checkpointing:
+        return replace(cfg, gradient_checkpointing=gc)
+    return cfg
 
 
 def config_from_args(args: Namespace) -> ModelConfig:
@@ -137,7 +155,7 @@ def config_from_args(args: Namespace) -> ModelConfig:
         world_model_layers=args.world_model_layers,
         diffusion_layers=args.diffusion_layers,
         proj_dim=args.proj_dim,
-        gradient_checkpointing=args.gradient_checkpointing,
+        gradient_checkpointing=args.gradient_checkpointing or False,
     )
 
 

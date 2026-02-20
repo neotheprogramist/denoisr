@@ -23,6 +23,7 @@ from denoisr.scripts.config import (
     detect_device,
     load_checkpoint,
     maybe_compile,
+    resolve_gradient_checkpointing,
     save_checkpoint,
 )
 from denoisr.scripts.generate_data import unstack_examples
@@ -91,6 +92,7 @@ def main() -> None:
 
     # --- Load checkpoint ---
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
+    cfg = resolve_gradient_checkpointing(cfg, args, device)
     print(f"Loaded checkpoint: d_s={cfg.d_s}, heads={cfg.num_heads}, layers={cfg.num_layers}")
 
     encoder = build_encoder(cfg).to(device)

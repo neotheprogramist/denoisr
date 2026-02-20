@@ -29,6 +29,7 @@ class DiffusionTrainer:
 
         params = list(diffusion.parameters())
         self.optimizer = torch.optim.AdamW(params, lr=lr)
+        self.max_grad_norm = 1.0
         self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
         self._autocast_device = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
         self._autocast_enabled = self.device.type == "cuda"
@@ -74,6 +75,11 @@ class DiffusionTrainer:
 
         self.optimizer.zero_grad()
         self.scaler.scale(loss).backward()  # type: ignore[no-untyped-call]
+        self.scaler.unscale_(self.optimizer)
+        torch.nn.utils.clip_grad_norm_(
+            [p for group in self.optimizer.param_groups for p in group["params"]],
+            self.max_grad_norm,
+        )
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
