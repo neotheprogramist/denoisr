@@ -31,8 +31,11 @@ from denoisr.scripts.config import (
     save_checkpoint,
     training_config_from_args,
 )
+from denoisr.data.holdout_splitter import StratifiedHoldoutSplitter
 from denoisr.scripts.generate_data import unstack_examples
 from denoisr.training.dataset import ChessDataset
+from denoisr.training.grok_tracker import GrokTracker
+from denoisr.training.grokfast import GrokfastFilter
 from denoisr.training.logger import TrainingLogger
 from denoisr.training.loss import ChessLossComputer
 from denoisr.training.resource_monitor import ResourceMonitor
@@ -142,10 +145,33 @@ def main() -> None:
     log.info("examples=%d  source=%s", len(all_examples), args.data)
     random.shuffle(all_examples)
 
-    holdout_n = max(1, int(len(all_examples) * args.holdout_frac))
-    holdout = all_examples[:holdout_n]
-    train = all_examples[holdout_n:]
-    log.info("train=%d  holdout=%d", len(train), holdout_n)
+    holdout_sets: dict[str, list[TrainingExample]] = {}
+    if tcfg.grok_tracking:
+        splitter = StratifiedHoldoutSplitter(
+            holdout_frac=args.holdout_frac,
+            endgame_threshold=6,
+        )
+        splits = splitter.split(all_examples)
+        train = splits.train
+        holdout_sets = {
+            "random": splits.random,
+            "game_level": splits.game_level,
+            "opening_family": splits.opening_family,
+            "piece_count": splits.piece_count,
+        }
+        holdout_sets = {k: v for k, v in holdout_sets.items() if v}
+        holdout = splits.random  # Primary holdout for phase gate
+        log.info(
+            "train=%d  holdout splits: %s",
+            len(train),
+            ", ".join(f"{k}={len(v)}" for k, v in holdout_sets.items()),
+        )
+    else:
+        holdout_n = max(1, int(len(all_examples) * args.holdout_frac))
+        holdout = all_examples[:holdout_n]
+        train = all_examples[holdout_n:]
+        holdout_sets = {"random": holdout}
+        log.info("train=%d  holdout=%d", len(train), holdout_n)
 
     loss_fn = ChessLossComputer(
         policy_weight=tcfg.policy_weight,
@@ -153,6 +179,15 @@ def main() -> None:
         use_harmony_dream=tcfg.use_harmony_dream,
         harmony_ema_decay=tcfg.harmony_ema_decay,
     )
+
+    # --- Grokfast filter (opt-in) ---
+    grokfast_filter: GrokfastFilter | None = None
+    if tcfg.grokfast:
+        grokfast_filter = GrokfastFilter(
+            alpha=tcfg.grokfast_alpha,
+            lamb=tcfg.grokfast_lamb,
+        )
+        log.info("grokfast enabled  alpha=%.3f  lamb=%.1f", tcfg.grokfast_alpha, tcfg.grokfast_lamb)
 
     trainer = SupervisedTrainer(
         encoder=encoder,
@@ -168,7 +203,22 @@ def main() -> None:
         weight_decay=tcfg.weight_decay,
         encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
         min_lr=tcfg.min_lr,
+        grokfast_filter=grokfast_filter,
     )
+
+    # --- Grok tracker (opt-in) ---
+    grok_tracker: GrokTracker | None = None
+    if tcfg.grok_tracking:
+        grok_tracker = GrokTracker(
+            encoder=encoder,
+            backbone=backbone,
+            policy_head=policy_head,
+            value_head=value_head,
+            erank_freq=tcfg.grok_erank_freq,
+            spectral_freq=tcfg.grok_spectral_freq,
+            onset_threshold=tcfg.grok_onset_threshold,
+        )
+        log.info("grok tracking enabled  erank_freq=%d  spectral_freq=%d", tcfg.grok_erank_freq, tcfg.grok_spectral_freq)
 
     monitor = ResourceMonitor()
 
@@ -257,6 +307,11 @@ def main() -> None:
                 compute_time += time.monotonic() - compute_start
 
                 logger.log_train_step(global_step, loss, breakdown)
+                if grok_tracker is not None:
+                    grok_metrics = grok_tracker.step(
+                        global_step, breakdown, breakdown.get("grad_norm", 0.0)
+                    )
+                    logger.log_grok_metrics(global_step, grok_metrics)
                 step_losses.append(loss)
                 step_grad_norms.append(breakdown.get("grad_norm", 0.0))
                 if global_step % 100 == 0:
@@ -287,6 +342,20 @@ def main() -> None:
             logger.log_resource_metrics(epoch, resource_metrics)
             logger.log_training_dynamics(epoch, step_losses, step_grad_norms)
             logger.log_pipeline_timing(epoch, data_time, compute_time)
+
+            # --- Grokking detection: evaluate all holdout splits ---
+            if grok_tracker is not None:
+                holdout_results: dict[str, tuple[float, float]] = {}
+                for split_name, split_examples in holdout_sets.items():
+                    if split_examples:
+                        split_top1, _ = measure_accuracy(
+                            trainer, split_examples, device
+                        )
+                        holdout_results[split_name] = (split_top1, avg_loss)
+                grok_epoch_metrics = grok_tracker.epoch(
+                    epoch, avg_loss, holdout_results
+                )
+                logger.log_grok_metrics(epoch, grok_epoch_metrics)
 
             # --- Consolidated epoch summary via logging ---
             total_time = data_time + compute_time
@@ -335,6 +404,9 @@ def main() -> None:
                     f"{top1:.1%}", f"{tcfg.phase1_gate:.0%}",
                 )
                 break
+
+    if grok_tracker is not None:
+        grok_tracker.close()
 
     log.info("best_top1=%s", f"{best_acc:.1%}")
 
