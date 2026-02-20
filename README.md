@@ -168,6 +168,7 @@ Training automatically stops when top-1 accuracy exceeds **30%** (Phase 1 gate).
 | `--epochs`       | `100`               | Maximum epochs                                                 |
 | `--lr`           | `1e-4`              | Learning rate                                                  |
 | `--output`       | `outputs/phase1.pt` | Checkpoint path                                                |
+| `--run-name`     | auto timestamp      | TensorBoard run name (see [Training logs](#training-logs))     |
 
 ### Step 5: Phase 2 — Diffusion bootstrapping
 
@@ -202,6 +203,7 @@ Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 pe
 | `--epochs`           | `200`               | Training epochs                    |
 | `--lr`               | `1e-4`              | Learning rate                      |
 | `--output`           | `outputs/phase2.pt` | Checkpoint path                    |
+| `--run-name`         | auto timestamp      | TensorBoard run name               |
 
 ### Step 6: Phase 3 — RL self-play
 
@@ -235,6 +237,81 @@ Gen 51/1000: buffer=5100 alpha=0.00 temp=0.220 W/D/L=48/21/31 reanalysed=450
 | `--alpha-generations` | `50`                | Generations to transition MCTS→diffusion |
 | `--save-every`        | `10`                | Checkpoint every N generations           |
 | `--output`            | `outputs/phase3.pt` | Checkpoint path                          |
+
+### Training logs
+
+Both Phase 1 and Phase 2 write logs to `logs/<run-name>/` with every training run. Logs include TensorBoard event files for interactive visualization and plain-text files for quick inspection.
+
+**Name your runs** with `--run-name` to compare experiments:
+
+```bash
+uv run denoisr-train-phase1 --checkpoint outputs/random_model.pt \
+    --data outputs/training_data.pt --run-name lr1e-4_bs64
+```
+
+Without `--run-name`, a timestamp like `2026-02-20_14-30-15` is generated automatically.
+
+#### What gets logged
+
+| Metric | Frequency | Phase |
+| --- | --- | --- |
+| `loss/total`, `loss/policy`, `loss/value` | Every batch | 1 |
+| `gradients/norm` (pre-clip L2 norm) | Every batch | 1, 2 |
+| `accuracy/top1`, `accuracy/top5` | Every epoch | 1 |
+| `lr` (learning rate) | Every epoch | 1 |
+| `diffusion/loss`, `diffusion/curriculum_steps` | Every epoch | 2 |
+| `timing/epoch_duration_s`, `timing/samples_per_sec` | Every epoch | 1, 2 |
+| `gpu/memory_allocated_mb`, `gpu/memory_reserved_mb` | Every 100 steps | 1, 2 |
+| Hyperparameters (lr, batch_size, d_s, num_heads, ...) | Once at start | 1, 2 |
+
+#### Visualize with TensorBoard
+
+```bash
+uvx tensorboard --logdir logs/
+```
+
+Then open http://localhost:6006 in your browser. The **Scalars** tab shows loss curves, accuracy, and timing. The **HParams** tab lets you compare runs side-by-side.
+
+#### Read text logs directly
+
+Every run also writes human-readable files — no viewer needed:
+
+```bash
+# Hyperparameter config
+cat logs/lr1e-4_bs64/hparams.txt
+
+# Epoch-by-epoch metrics (tab-separated, greppable)
+cat logs/lr1e-4_bs64/metrics.log
+
+# Compare two runs
+diff logs/lr1e-4_bs64/metrics.log logs/lr1e-3_bs256/metrics.log
+
+# Pretty-print as columns
+column -t -s $'\t' logs/lr1e-4_bs64/metrics.log
+```
+
+Example `metrics.log` output:
+
+```
+epoch=0   avg_loss=6.566337   top1=0.0000   top5=0.0000   lr=1.00e-04
+epoch=0   duration_s=3.83     samples_per_sec=496.1
+epoch=1   avg_loss=6.273363   top1=0.0000   top5=0.0000   lr=2.00e-04
+epoch=1   duration_s=2.26     samples_per_sec=841.7
+```
+
+#### Log directory layout
+
+```
+logs/
+├── lr1e-4_bs64/
+│   ├── events.out.tfevents.*   # TensorBoard binary
+│   ├── metrics.log             # Human-readable epoch metrics
+│   └── hparams.txt             # Hyperparameter snapshot
+├── lr1e-3_bs256/
+│   └── ...
+└── 2026-02-20_14-30-15/        # Auto-generated when no --run-name
+    └── ...
+```
 
 ## Play with the trained model
 
@@ -432,8 +509,9 @@ denoisr/
 │   ├── inference/      # Chess engines (single-pass, diffusion-enhanced), UCI protocol
 │   ├── evaluation/     # cutechess-cli benchmarking harness
 │   └── scripts/        # CLI entry points for all phases + inference + benchmarking
-├── tests/              # 197 tests mirroring src/ structure
+├── tests/              # 295 tests mirroring src/ structure
 ├── fixtures/           # Sample PGN files for testing
 ├── docs/plans/         # Architecture design and implementation plans
+├── logs/               # TensorBoard + text training logs (gitignored)
 └── outputs/            # Training artifacts (gitignored)
 ```
