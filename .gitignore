@@ -17,6 +17,9 @@ checkpoints/
 # Training outputs
 outputs/
 
+# TensorBoard logs
+logs/
+
 # Downloaded models
 models/
 
