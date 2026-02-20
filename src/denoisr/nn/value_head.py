@@ -6,8 +6,8 @@ class ChessValueHead(nn.Module):
     """WDLP value head: Win/Draw/Loss probabilities + ply prediction.
 
     Pools 64 square tokens into a single board representation, then
-    produces WDL probabilities (via softmax) and a non-negative ply
-    estimate (via softplus).
+    produces WDL logits (softmax applied only via `infer()` for inference)
+    and a non-negative ply estimate (via softplus).
     """
 
     def __init__(self, d_s: int) -> None:
@@ -18,6 +18,12 @@ class ChessValueHead(nn.Module):
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         pooled = self.norm(x.mean(dim=1))
-        wdl = torch.softmax(self.wdl_linear(pooled), dim=-1)
+        with torch.amp.autocast("cuda", enabled=False):
+            wdl_logits = self.wdl_linear(pooled.float())
         ply = torch.nn.functional.softplus(self.ply_linear(pooled))
-        return wdl, ply
+        return wdl_logits, ply
+
+    def infer(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        """Return WDL probabilities + ply for inference callers."""
+        wdl_logits, ply = self.forward(x)
+        return torch.softmax(wdl_logits, dim=-1), ply

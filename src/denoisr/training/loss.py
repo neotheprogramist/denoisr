@@ -66,7 +66,7 @@ class ChessLossComputer:
         log_probs = log_probs.masked_fill(~legal_mask, 0.0)
         policy_loss = -(target_flat * log_probs).sum(dim=-1).mean()
 
-        pred_log = torch.log(pred_value.clamp(min=1e-8))
+        pred_log = F.log_softmax(pred_value, dim=-1)
         value_loss = -(target_value * pred_log).sum(dim=-1).mean()
 
         losses = {"policy": policy_loss, "value": value_loss}
