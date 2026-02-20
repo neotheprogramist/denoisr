@@ -4,7 +4,7 @@ from torch.nn import functional as F
 
 
 class ChessLossComputer:
-    """6-term loss computer with optional HarmonyDream balancing.
+    """7-term loss computer with optional HarmonyDream balancing.
 
     Core losses (always active):
     1. Policy: cross-entropy between predicted logits and target distribution
@@ -15,6 +15,7 @@ class ChessLossComputer:
     4. Diffusion: MSE between predicted and actual noise
     5. Reward: MSE between predicted and actual reward
     6. Ply: Huber loss on game-length prediction
+    7. State: world model state prediction loss
 
     HarmonyDream (optional): tracks EMA of per-loss magnitudes and
     adjusts coefficients inversely proportional to balance contributions.
@@ -28,6 +29,7 @@ class ChessLossComputer:
         diffusion_weight: float = 1.0,
         reward_weight: float = 1.0,
         ply_weight: float = 0.1,
+        state_weight: float = 1.0,
         use_harmony_dream: bool = False,
         harmony_ema_decay: float = 0.99,
     ) -> None:
@@ -38,6 +40,7 @@ class ChessLossComputer:
             "diffusion": diffusion_weight,
             "reward": reward_weight,
             "ply": ply_weight,
+            "state": state_weight,
         }
         self._use_harmony = use_harmony_dream
         self._ema_decay = harmony_ema_decay
@@ -71,7 +74,7 @@ class ChessLossComputer:
 
         losses = {"policy": policy_loss, "value": value_loss}
 
-        for name in ("consistency", "diffusion", "reward", "ply"):
+        for name in ("consistency", "diffusion", "reward", "ply", "state"):
             key = f"{name}_loss"
             if key in auxiliary_losses:
                 losses[name] = auxiliary_losses[key]

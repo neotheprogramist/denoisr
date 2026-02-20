@@ -159,6 +159,42 @@ class TestChessLossComputer:
         assert not torch.isnan(total)
         assert not torch.isinf(total)
 
+    def test_state_loss_included_in_total(self) -> None:
+        loss_fn = ChessLossComputer()
+        pred_policy = torch.randn(2, 64, 64)
+        pred_value = torch.randn(2, 3)
+        target_policy = torch.zeros(2, 64, 64)
+        target_policy[:, 0, 0] = 1.0
+        target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
+
+        total_base, _ = loss_fn.compute(
+            pred_policy, pred_value, target_policy, target_value
+        )
+        total_with_state, breakdown = loss_fn.compute(
+            pred_policy, pred_value, target_policy, target_value,
+            state_loss=torch.tensor(0.5),
+        )
+        assert total_with_state.item() > total_base.item()
+        assert "state" in breakdown
+
+    def test_state_weight_scales_state_loss(self) -> None:
+        loss_fn = ChessLossComputer(state_weight=2.0)
+        pred_policy = torch.randn(2, 64, 64)
+        pred_value = torch.randn(2, 3)
+        target_policy = torch.zeros(2, 64, 64)
+        target_policy[:, 0, 0] = 1.0
+        target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
+
+        total_w1, _ = ChessLossComputer(state_weight=1.0).compute(
+            pred_policy, pred_value, target_policy, target_value,
+            state_loss=torch.tensor(1.0),
+        )
+        total_w2, _ = loss_fn.compute(
+            pred_policy, pred_value, target_policy, target_value,
+            state_loss=torch.tensor(1.0),
+        )
+        assert abs(total_w2.item() - total_w1.item() - 1.0) < 0.01
+
     def test_harmony_dream_adjusts_coefficients(self) -> None:
         loss_fn = ChessLossComputer(use_harmony_dream=True)
         pred_policy = torch.randn(2, 64, 64)
