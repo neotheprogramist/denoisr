@@ -36,6 +36,8 @@ class DenoisrApp:
         self._moves: list[str] = []
         self._human_color = chess.WHITE
         self._match_running = False
+        self._stop_event = threading.Event()
+        self._startup_generation = 0
 
         self._build_ui()
         self._poll_queue()
@@ -233,6 +235,7 @@ class DenoisrApp:
 
     def _new_game(self) -> None:
         self._stop_game()
+        self._stop_event = threading.Event()
         if self._mode_var.get() == "match":
             self._start_match()
             return
@@ -257,13 +260,19 @@ class DenoisrApp:
 
         # Start engine in background to avoid freezing the GUI
         self._status_var.set("Starting engine...")
+        gen = self._startup_generation
 
         def _start_engine() -> None:
             try:
                 engine = UCIEngine(config)
                 engine.start(timeout=120.0)
+                if self._startup_generation != gen:
+                    engine.quit()
+                    return
                 self._move_queue.put(("engine_ready", engine))
             except Exception as e:
+                if self._startup_generation != gen:
+                    return
                 self._move_queue.put(f"error:Engine failed: {e}")
 
         threading.Thread(target=_start_engine, daemon=True).start()
@@ -271,6 +280,8 @@ class DenoisrApp:
     def _stop_game(self) -> None:
         self._board_widget.set_interactive(False)
         self._match_running = False
+        self._stop_event.set()
+        self._startup_generation += 1
         if self._engine is not None:
             self._engine.quit()
             self._engine = None
@@ -458,12 +469,17 @@ class DenoisrApp:
 
             self._move_queue.put(("match_stats", stats))
 
+        delay = self._delay_var.get()
+        stop = self._stop_event
+
         def run_in_bg() -> None:
             try:
                 run_match(
                     config,
                     on_game_complete=on_game_complete,
                     on_move=on_move,
+                    stop_event=stop,
+                    move_delay_ms=delay,
                 )
                 self._move_queue.put(("match_done",))
             except Exception as e:
