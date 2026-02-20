@@ -376,7 +376,7 @@ class DenoisrApp:
                     elif kind == "match_stats":
                         self._set_match_stats(item[1])
                     elif kind == "match_done":
-                        self._set_status("Match complete")
+                        self._set_status(item[1])
                         self._match_running = False
                         self._set_controls_enabled(True)
                 elif isinstance(item, str) and item.startswith("error:"):
@@ -476,6 +476,8 @@ class DenoisrApp:
 
         def on_game_complete(game_num: int, result: GameResult) -> None:
             nonlocal wins, draws, losses
+            if result.result == "*":
+                return  # Cancelled game, don't tally
             # Tally from engine1 perspective
             if result.engine1_color == "white":
                 if result.result == "1-0":
@@ -524,7 +526,10 @@ class DenoisrApp:
                     stop_event=stop,
                     move_delay_ms=delay,
                 )
-                self._move_queue.put(("match_done",))
+                if stop.is_set():
+                    self._move_queue.put(("match_done", "Match stopped"))
+                else:
+                    self._move_queue.put(("match_done", "Match complete"))
             except Exception as e:
                 self._move_queue.put(f"error:Match failed: {e}")
 
