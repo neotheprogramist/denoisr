@@ -8,6 +8,7 @@ Gate to Phase 2: policy top-1 accuracy > 30% on held-out positions.
 
 import argparse
 import random
+import time
 from pathlib import Path
 
 import torch
@@ -29,6 +30,7 @@ from denoisr.scripts.config import (
 )
 from denoisr.scripts.generate_data import unstack_examples
 from denoisr.training.dataset import ChessDataset
+from denoisr.training.logger import TrainingLogger
 from denoisr.training.loss import ChessLossComputer
 from denoisr.training.supervised_trainer import SupervisedTrainer
 from denoisr.types import TrainingExample
@@ -88,6 +90,12 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--output", type=str, default="outputs/phase1.pt")
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="TensorBoard run name (default: timestamp)",
+    )
     add_model_args(parser)
     args = parser.parse_args()
 
@@ -143,6 +151,8 @@ def main() -> None:
         warmup_epochs=3,
     )
 
+    logger = TrainingLogger(Path("logs"), run_name=args.run_name)
+
     # --- Build DataLoader from stacked tensors ---
     bs = args.batch_size
     train_boards = torch.stack([ex.board.data for ex in train])
@@ -173,9 +183,26 @@ def main() -> None:
     # --- Train ---
     best_acc = 0.0
 
+    logger.log_hparams(
+        {
+            "lr": args.lr,
+            "batch_size": bs,
+            "d_s": cfg.d_s,
+            "num_heads": cfg.num_heads,
+            "num_layers": cfg.num_layers,
+            "ffn_dim": cfg.ffn_dim,
+            "num_planes": cfg.num_planes,
+            "gradient_checkpointing": cfg.gradient_checkpointing,
+        },
+        {"best_top1": 0.0},
+    )
+
+    global_step = 0
+
     for epoch in range(args.epochs):
         epoch_loss = 0.0
         num_batches = 0
+        epoch_start = time.monotonic()
 
         pbar = tqdm(
             train_loader,
@@ -187,6 +214,10 @@ def main() -> None:
             loss, breakdown = trainer.train_step_tensors(
                 boards_batch, policies_batch, values_batch
             )
+            logger.log_train_step(global_step, loss, breakdown)
+            if global_step % 100 == 0:
+                logger.log_gpu(global_step)
+            global_step += 1
             epoch_loss += loss
             num_batches += 1
             pbar.set_postfix(
@@ -197,8 +228,14 @@ def main() -> None:
         pbar.close()
         trainer.scheduler_step()
 
+        epoch_duration = time.monotonic() - epoch_start
+        samples_per_sec = len(train) / epoch_duration
         avg_loss = epoch_loss / max(num_batches, 1)
         top1, top5 = measure_accuracy(trainer, holdout, device)
+        current_lr = trainer.optimizer.param_groups[0]["lr"]
+
+        logger.log_epoch(epoch, avg_loss, top1, top5, current_lr)
+        logger.log_epoch_timing(epoch, epoch_duration, samples_per_sec)
 
         print(
             f"Epoch {epoch+1}/{args.epochs}: "
@@ -223,6 +260,7 @@ def main() -> None:
             print("Ready for Phase 2.")
             break
 
+    logger.close()
     print(f"Best top-1 accuracy: {best_acc:.1%}")
 
 
