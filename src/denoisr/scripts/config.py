@@ -241,6 +241,19 @@ class TrainingConfig:
     # Trades search depth for broader coverage of the replay buffer.
     reanalyse_simulations: int = 100
 
+    # -- Grokking detection ---------------------------------------------------
+
+    grok_tracking: bool = False
+    grok_erank_freq: int = 1000
+    grok_spectral_freq: int = 5000
+    grok_onset_threshold: float = 0.95
+
+    # -- Grokfast acceleration ------------------------------------------------
+
+    grokfast: bool = False
+    grokfast_alpha: float = 0.98
+    grokfast_lamb: float = 2.0
+
 
 def detect_device() -> torch.device:
     if torch.backends.mps.is_available():
@@ -443,6 +456,37 @@ def add_training_args(parser: ArgumentParser) -> None:
         "--phase2-gate", type=float, default=5.0,
         help="diffusion improvement pp to pass Phase 2 gate (default: 5.0)",
     )
+    # Grokking detection
+    g.add_argument(
+        "--grok-tracking",
+        action=argparse.BooleanOptionalAction, default=False,
+        help="enable grokking detection metrics (default: off)",
+    )
+    g.add_argument(
+        "--grok-erank-freq", type=int, default=1000,
+        help="effective rank computation frequency in steps (default: 1000)",
+    )
+    g.add_argument(
+        "--grok-spectral-freq", type=int, default=5000,
+        help="spectral norm / HTSR alpha frequency in steps (default: 5000)",
+    )
+    g.add_argument(
+        "--grok-onset-threshold", type=float, default=0.95,
+        help="weight norm ratio for onset detection (default: 0.95)",
+    )
+    g.add_argument(
+        "--grokfast",
+        action=argparse.BooleanOptionalAction, default=False,
+        help="enable Grokfast EMA gradient filtering (default: off)",
+    )
+    g.add_argument(
+        "--grokfast-alpha", type=float, default=0.98,
+        help="Grokfast EMA decay rate (default: 0.98)",
+    )
+    g.add_argument(
+        "--grokfast-lamb", type=float, default=2.0,
+        help="Grokfast amplification factor (default: 2.0)",
+    )
 
 
 def add_phase3_args(parser: ArgumentParser) -> None:
@@ -503,6 +547,13 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         num_workers=args.num_workers,
         phase1_gate=args.phase1_gate,
         phase2_gate=args.phase2_gate,
+        grok_tracking=args.grok_tracking,
+        grok_erank_freq=args.grok_erank_freq,
+        grok_spectral_freq=args.grok_spectral_freq,
+        grok_onset_threshold=args.grok_onset_threshold,
+        grokfast=args.grokfast,
+        grokfast_alpha=args.grokfast_alpha,
+        grokfast_lamb=args.grokfast_lamb,
     )
 
 
