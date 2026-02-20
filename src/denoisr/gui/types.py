@@ -37,7 +37,7 @@ class GameResult:
     engine1_color: str
 
     def __post_init__(self) -> None:
-        valid_results = {"1-0", "0-1", "1/2-1/2"}
+        valid_results = {"1-0", "0-1", "1/2-1/2", "*"}
         if self.result not in valid_results:
             raise ValueError(
                 f"result must be one of {valid_results}, got {self.result!r}"

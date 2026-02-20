@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,8 @@ def play_game(
     max_moves: int = 500,
     on_move: Callable[[chess.Board, str], None] | None = None,
     engine1_color: str = "white",
+    stop_event: threading.Event | None = None,
+    move_delay_ms: int = 0,
 ) -> GameResult:
     """Play a single game between two UCI engines.
 
@@ -36,6 +39,14 @@ def play_game(
     for _ in range(max_moves):
         if board.is_game_over():
             break
+
+        if stop_event is not None and stop_event.is_set():
+            return GameResult(
+                moves=tuple(moves),
+                result="*",
+                reason="stopped",
+                engine1_color=engine1_color,
+            )
 
         current = white if board.turn == chess.WHITE else black
 
@@ -82,6 +93,19 @@ def play_game(
         if on_move is not None:
             on_move(board, uci_move)
 
+        if move_delay_ms > 0:
+            if stop_event is not None:
+                stop_event.wait(timeout=move_delay_ms / 1000)
+                if stop_event.is_set():
+                    return GameResult(
+                        moves=tuple(moves),
+                        result="*",
+                        reason="stopped",
+                        engine1_color=engine1_color,
+                    )
+            else:
+                time.sleep(move_delay_ms / 1000)
+
     # Determine result
     result_str, reason = _game_outcome(board, len(moves) >= max_moves)
     return GameResult(
@@ -97,6 +121,8 @@ def run_match(
     max_moves_per_game: int = 500,
     on_game_complete: Callable[[int, GameResult], None] | None = None,
     on_move: Callable[[int, chess.Board, str], None] | None = None,
+    stop_event: threading.Event | None = None,
+    move_delay_ms: int = 0,
 ) -> list[GameResult]:
     """Run a multi-game match between two engines.
 
@@ -105,6 +131,9 @@ def run_match(
     results: list[GameResult] = []
 
     for game_num in range(config.games):
+        if stop_event is not None and stop_event.is_set():
+            break
+
         # Alternate colors: even games engine1=white, odd games engine1=black
         engine1_is_white = game_num % 2 == 0
 
@@ -141,6 +170,8 @@ def run_match(
                 max_moves=max_moves_per_game,
                 on_move=move_cb,
                 engine1_color=e1_color,
+                stop_event=stop_event,
+                move_delay_ms=move_delay_ms,
             )
 
         results.append(result)

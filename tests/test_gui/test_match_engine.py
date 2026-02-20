@@ -1,11 +1,12 @@
 # tests/test_gui/test_match_engine.py
 import sys
+import threading
 from pathlib import Path
 
 import chess
 
 from denoisr.gui.match_engine import play_game, run_match
-from denoisr.gui.types import EngineConfig, MatchConfig, TimeControl
+from denoisr.gui.types import EngineConfig, GameResult, MatchConfig, TimeControl
 from denoisr.gui.uci_engine import UCIEngine
 
 MOCK_ENGINE = str(Path(__file__).parent / "mock_engine.py")
@@ -85,3 +86,42 @@ class TestRunMatch:
         results = run_match(config, max_moves_per_game=200)
         colors = [r.engine1_color for r in results]
         assert colors == ["white", "black"]
+
+
+def test_play_game_stops_on_event() -> None:
+    """play_game should return '*' result when stop_event is set."""
+    config = _mock_config()
+    tc = TimeControl(base_seconds=60.0, increment=0.0)
+
+    stop = threading.Event()
+    stop.set()  # Pre-set: should stop immediately
+
+    with UCIEngine(config) as white, UCIEngine(config) as black:
+        white.start()
+        black.start()
+        result = play_game(white, black, tc, stop_event=stop)
+
+    assert result.result == "*"
+    assert result.reason == "stopped"
+
+
+def test_run_match_stops_between_games() -> None:
+    """run_match should stop between games when stop_event is set."""
+    config = _mock_config()
+    tc = TimeControl(base_seconds=60.0, increment=0.0)
+
+    stop = threading.Event()
+    games_played: list[int] = []
+
+    def on_complete(game_num: int, result: GameResult) -> None:
+        games_played.append(game_num)
+        stop.set()  # Stop after first game
+
+    match_config = MatchConfig(
+        engine1=config, engine2=config, games=10, time_control=tc
+    )
+    results = run_match(
+        match_config, on_game_complete=on_complete, stop_event=stop
+    )
+
+    assert len(results) == 1  # Only first game completed
