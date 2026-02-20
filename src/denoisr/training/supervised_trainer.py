@@ -5,6 +5,7 @@ from torch import nn
 from torch.amp import GradScaler  # type: ignore[attr-defined]
 from torch.amp import autocast  # type: ignore[attr-defined]
 
+from denoisr.training.grokfast import GrokfastFilter
 from denoisr.training.loss import ChessLossComputer
 from denoisr.types import TrainingExample
 
@@ -31,6 +32,7 @@ class SupervisedTrainer:
         weight_decay: float = 1e-4,
         encoder_lr_multiplier: float = 0.3,
         min_lr: float = 1e-6,
+        grokfast_filter: GrokfastFilter | None = None,
     ) -> None:
         self.encoder = encoder
         self.backbone = backbone
@@ -38,6 +40,7 @@ class SupervisedTrainer:
         self.value_head = value_head
         self.loss_fn = loss_fn
         self.device = device or torch.device("cpu")
+        self._grokfast_filter = grokfast_filter
         self.max_grad_norm = max_grad_norm
         self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
         self._autocast_device = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
@@ -84,6 +87,14 @@ class SupervisedTrainer:
         self.optimizer.zero_grad()
         self.scaler.scale(total_loss).backward()  # type: ignore[no-untyped-call]
         self.scaler.unscale_(self.optimizer)
+        if self._grokfast_filter is not None:
+            for module in [
+                self.encoder,
+                self.backbone,
+                self.policy_head,
+                self.value_head,
+            ]:
+                self._grokfast_filter.apply(module)
         total_norm = torch.nn.utils.clip_grad_norm_(
             [p for group in self.optimizer.param_groups for p in group["params"]],
             self.max_grad_norm,
