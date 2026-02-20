@@ -80,13 +80,14 @@ class SupervisedTrainer:
         self.optimizer.zero_grad()
         self.scaler.scale(total_loss).backward()  # type: ignore[no-untyped-call]
         self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(
+        total_norm = torch.nn.utils.clip_grad_norm_(
             [p for group in self.optimizer.param_groups for p in group["params"]],
             self.max_grad_norm,
         )
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
+        breakdown["grad_norm"] = total_norm.item()
         return total_loss.item(), breakdown
 
     def train_step(

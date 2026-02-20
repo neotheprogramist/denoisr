@@ -162,7 +162,7 @@ def main() -> None:
         )
         for (batch,) in pbar:
             batch = batch.to(device, non_blocking=True)
-            loss = diff_trainer.train_step(batch)
+            loss, _breakdown = diff_trainer.train_step(batch)
             epoch_loss += loss
             num_batches += 1
             pbar.set_postfix(loss=f"{loss:.4f}")

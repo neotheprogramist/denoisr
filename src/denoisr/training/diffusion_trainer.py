@@ -39,7 +39,7 @@ class DiffusionTrainer:
         self._current_max_steps = int(self._current_max_steps_f)
         self._curriculum_growth = 1.02
 
-    def train_step(self, trajectories: Tensor) -> float:
+    def train_step(self, trajectories: Tensor) -> tuple[float, dict[str, float]]:
         """Train on a batch of board tensor trajectories.
 
         trajectories: [B, T, C, 8, 8] where T is consecutive board states.
@@ -76,14 +76,15 @@ class DiffusionTrainer:
         self.optimizer.zero_grad()
         self.scaler.scale(loss).backward()  # type: ignore[no-untyped-call]
         self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(
+        total_norm = torch.nn.utils.clip_grad_norm_(
             [p for group in self.optimizer.param_groups for p in group["params"]],
             self.max_grad_norm,
         )
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        return loss.item()
+        breakdown = {"grad_norm": total_norm.item()}
+        return loss.item(), breakdown
 
     def advance_curriculum(self) -> None:
         """Call once per epoch to increase diffusion step difficulty."""
