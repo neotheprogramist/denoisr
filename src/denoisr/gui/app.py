@@ -138,9 +138,10 @@ class DenoisrApp:
             row=1, column=1, sticky="nsew", pady=(8, 0)
         )
 
+        bg = ttk.Style().lookup("TLabelframe", "background") or "SystemButtonFace"
         self._status_text = tk.Text(
             status_frame, height=3, wrap=tk.WORD, state=tk.DISABLED,
-            relief=tk.FLAT, bg=status_frame.cget("background"),
+            relief=tk.FLAT, bg=bg,
         )
         self._status_text.pack(anchor="w", fill=tk.X)
         self._set_status("Set checkpoint, then New Game")
@@ -224,8 +225,7 @@ class DenoisrApp:
         # Match stats display
         self._match_stats_text = tk.Text(
             self._match_frame, height=5, wrap=tk.WORD, state=tk.DISABLED,
-            width=28, relief=tk.FLAT,
-            bg=self._match_frame.cget("background"),
+            width=28, relief=tk.FLAT, bg=bg,
         )
         self._match_stats_text.grid(
             row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0),
