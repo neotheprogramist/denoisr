@@ -11,6 +11,7 @@ import random
 from pathlib import Path
 
 import torch
+from torch.amp import autocast  # type: ignore[attr-defined]
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -46,7 +47,10 @@ def measure_accuracy(
     trainer.backbone.eval()
     trainer.policy_head.eval()
 
-    with torch.no_grad():
+    autocast_device = device.type if device.type in ("cuda", "cpu") else "cpu"
+    autocast_enabled = device.type == "cuda"
+
+    with torch.no_grad(), autocast(autocast_device, enabled=autocast_enabled):
         for ex in examples:
             board = ex.board.data.unsqueeze(0).to(device)
             latent = trainer.encoder(board)
