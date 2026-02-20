@@ -7,6 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
     "chess>=1.11.2",
     "numpy>=2.4.2",
+    "safetensors>=0.7.0",
     "torch>=2.10.0",
     "tqdm>=4.67.3",
     "zstandard>=0.25.0",
@@ -20,6 +21,7 @@ denoisr-train-phase2 = "denoisr.scripts.train_phase2:main"
 denoisr-train-phase3 = "denoisr.scripts.train_phase3:main"
 denoisr-play = "denoisr.scripts.play:main"
 denoisr-benchmark = "denoisr.scripts.benchmark:main"
+denoisr-export-mlx = "denoisr.scripts.export_mlx:main"
 
 [build-system]
 requires = ["hatchling"]
