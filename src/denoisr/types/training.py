@@ -34,9 +34,13 @@ class TrainingExample:
     board: BoardTensor
     policy: PolicyTarget
     value: ValueTarget
+    game_id: int | None = None
+    eco_code: str | None = None
+    piece_count: int | None = None
 
 
 @dataclass(frozen=True)
 class GameRecord:
     actions: tuple[Action, ...]
     result: float
+    eco_code: str | None = None

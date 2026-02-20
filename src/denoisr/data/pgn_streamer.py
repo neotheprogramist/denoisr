@@ -42,8 +42,9 @@ class SimplePGNStreamer:
             result = _RESULT_MAP.get(result_str)
             if result is None:
                 continue
+            eco_code = game.headers.get("ECO")
             actions = tuple(
                 Action(m.from_square, m.to_square, m.promotion)
                 for m in game.mainline_moves()
             )
-            yield GameRecord(actions=actions, result=result)
+            yield GameRecord(actions=actions, result=result, eco_code=eco_code)
