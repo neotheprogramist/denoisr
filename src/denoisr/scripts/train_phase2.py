@@ -8,6 +8,7 @@ Gate to Phase 3: diffusion-conditioned accuracy > single-step by >5pp.
 """
 
 import argparse
+import time
 from pathlib import Path
 
 import chess
@@ -36,6 +37,7 @@ from denoisr.scripts.config import (
     save_checkpoint,
 )
 from denoisr.training.diffusion_trainer import DiffusionTrainer
+from denoisr.training.logger import TrainingLogger
 
 
 def extract_trajectories(
@@ -92,6 +94,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--output", type=str, default="outputs/phase2.pt")
+    parser.add_argument("--run-name", type=str, default=None, help="TensorBoard run name (default: timestamp)")
     add_model_args(parser)
     args = parser.parse_args()
 
@@ -150,48 +153,62 @@ def main() -> None:
         persistent_workers=True,
     )
 
-    for epoch in range(args.epochs):
-        epoch_loss = 0.0
-        num_batches = 0
+    with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
+        global_step = 0
 
-        pbar = tqdm(
-            loader,
-            desc=f"Epoch {epoch+1}/{args.epochs}",
-            leave=False,
-            smoothing=0.3,
-        )
-        for (batch,) in pbar:
-            batch = batch.to(device, non_blocking=True)
-            loss, _breakdown = diff_trainer.train_step(batch)
-            epoch_loss += loss
-            num_batches += 1
-            pbar.set_postfix(loss=f"{loss:.4f}")
-        pbar.close()
+        for epoch in range(args.epochs):
+            epoch_loss = 0.0
+            num_batches = 0
+            epoch_start = time.monotonic()
 
-        diff_trainer.advance_curriculum()
-        avg_loss = epoch_loss / max(num_batches, 1)
-        print(
-            f"Epoch {epoch+1}/{args.epochs}: "
-            f"avg_diffusion_loss={avg_loss:.4f} "
-            f"curriculum_steps={diff_trainer._current_max_steps}"
-        )
+            pbar = tqdm(
+                loader,
+                desc=f"Epoch {epoch+1}/{args.epochs}",
+                leave=False,
+                smoothing=0.3,
+            )
+            for (batch,) in pbar:
+                batch = batch.to(device, non_blocking=True)
+                loss, breakdown = diff_trainer.train_step(batch)
+                logger.log_train_step(global_step, loss, breakdown)
+                if global_step % 100 == 0:
+                    logger.log_gpu(global_step)
+                global_step += 1
+                epoch_loss += loss
+                num_batches += 1
+                pbar.set_postfix(loss=f"{loss:.4f}")
+            pbar.close()
 
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            save_checkpoint(
-                Path(args.output),
-                cfg,
-                encoder=encoder.state_dict(),
-                backbone=backbone.state_dict(),
-                policy_head=policy_head.state_dict(),
-                value_head=value_head.state_dict(),
-                world_model=world_model.state_dict(),
-                diffusion=diffusion.state_dict(),
-                consistency=consistency.state_dict(),
+            diff_trainer.advance_curriculum()
+            epoch_duration = time.monotonic() - epoch_start
+            num_samples = len(dataset)
+            avg_loss = epoch_loss / max(num_batches, 1)
+
+            logger.log_diffusion(epoch, avg_loss, diff_trainer._current_max_steps)
+            logger.log_epoch_timing(epoch, epoch_duration, num_samples / epoch_duration)
+
+            print(
+                f"Epoch {epoch+1}/{args.epochs}: "
+                f"avg_diffusion_loss={avg_loss:.4f} "
+                f"curriculum_steps={diff_trainer._current_max_steps}"
             )
 
-    print(f"Best diffusion loss: {best_loss:.4f}")
-    print("Evaluate diffusion vs single-step accuracy to check Phase 2 gate (>5pp).")
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                save_checkpoint(
+                    Path(args.output),
+                    cfg,
+                    encoder=encoder.state_dict(),
+                    backbone=backbone.state_dict(),
+                    policy_head=policy_head.state_dict(),
+                    value_head=value_head.state_dict(),
+                    world_model=world_model.state_dict(),
+                    diffusion=diffusion.state_dict(),
+                    consistency=consistency.state_dict(),
+                )
+
+        print(f"Best diffusion loss: {best_loss:.4f}")
+        print("Evaluate diffusion vs single-step accuracy to check Phase 2 gate (>5pp).")
 
 
 if __name__ == "__main__":
