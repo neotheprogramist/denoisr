@@ -17,6 +17,8 @@ from tqdm import tqdm
 from denoisr.game.chess_game import ChessGame
 from denoisr.scripts.config import (
     add_model_args,
+    add_phase3_args,
+    add_training_args,
     build_backbone,
     build_board_encoder,
     build_consistency,
@@ -26,6 +28,7 @@ from denoisr.scripts.config import (
     build_value_head,
     build_world_model,
     detect_device,
+    full_training_config_from_args,
     load_checkpoint,
     save_checkpoint,
 )
@@ -53,9 +56,12 @@ def main() -> None:
     parser.add_argument("--output", type=str, default="outputs/phase3.pt")
     parser.add_argument("--save-every", type=int, default=10)
     add_model_args(parser)
+    add_training_args(parser)
+    add_phase3_args(parser)
     args = parser.parse_args()
 
     device = detect_device()
+    tcfg = full_training_config_from_args(args)
     print(f"Device: {device}")
 
     # --- Load Phase 2 ---
@@ -106,13 +112,15 @@ def main() -> None:
     board_encoder = build_board_encoder(cfg)
 
     temp_schedule = TemperatureSchedule(
-        base=1.0, explore_moves=30, generation_decay=0.97
+        base=tcfg.temperature_base,
+        explore_moves=tcfg.temperature_explore_moves,
+        generation_decay=tcfg.temperature_generation_decay,
     )
     sp_config = SelfPlayConfig(
         num_simulations=args.mcts_sims,
-        max_moves=300,
-        temperature=1.0,
-        c_puct=1.4,
+        max_moves=tcfg.max_moves,
+        temperature=tcfg.temperature_base,
+        c_puct=tcfg.c_puct,
         temp_schedule=temp_schedule,
     )
 
@@ -131,12 +139,16 @@ def main() -> None:
         encode_fn=encode_fn,
         game=game,
         board_encoder=board_encoder,
-        num_simulations=100,
+        num_simulations=tcfg.reanalyse_simulations,
     )
 
     buffer = PriorityReplayBuffer(capacity=args.buffer_capacity)
     orchestrator = PhaseOrchestrator(
-        PhaseConfig(alpha_generations=args.alpha_generations)
+        PhaseConfig(
+            phase1_gate=tcfg.phase1_gate,
+            phase2_gate=tcfg.phase2_gate,
+            alpha_generations=args.alpha_generations,
+        )
     )
     # Advance to phase 3 (gates already passed)
     orchestrator.check_gate({"top1_accuracy": 1.0})

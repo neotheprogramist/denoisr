@@ -21,6 +21,9 @@ class DiffusionTrainer:
         schedule: CosineNoiseSchedule,
         lr: float = 1e-4,
         device: torch.device | None = None,
+        max_grad_norm: float = 1.0,
+        curriculum_initial_fraction: float = 0.25,
+        curriculum_growth: float = 1.02,
     ) -> None:
         self.encoder = encoder
         self.diffusion = diffusion
@@ -29,15 +32,16 @@ class DiffusionTrainer:
 
         params = list(diffusion.parameters())
         self.optimizer = torch.optim.AdamW(params, lr=lr)
-        self.max_grad_norm = 1.0
+        self.max_grad_norm = max_grad_norm
         self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
         self._autocast_device = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
         self._autocast_enabled = self.device.type == "cuda"
 
         self._curriculum_max_steps = schedule.num_timesteps
-        self._current_max_steps_f = float(max(1, schedule.num_timesteps // 4))
-        self._current_max_steps = int(self._current_max_steps_f)
-        self._curriculum_growth = 1.02
+        initial_steps = max(1, int(schedule.num_timesteps * curriculum_initial_fraction))
+        self._current_max_steps_f = float(initial_steps)
+        self._current_max_steps = initial_steps
+        self._curriculum_growth = curriculum_growth
 
     def train_step(self, trajectories: Tensor) -> tuple[float, dict[str, float]]:
         """Train on a batch of board tensor trajectories.

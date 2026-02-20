@@ -1,4 +1,9 @@
-"""Shared model configuration and construction helpers."""
+"""Shared model and training configuration with construction helpers.
+
+All tunable hyperparameters live here in two frozen dataclasses:
+- ModelConfig: architecture params, saved in checkpoints, needed at inference
+- TrainingConfig: optimization params, used only during training
+"""
 
 import argparse
 from argparse import ArgumentParser, Namespace
@@ -20,18 +25,221 @@ from denoisr.nn.value_head import ChessValueHead
 from denoisr.nn.world_model import ChessWorldModel
 
 
+# ---------------------------------------------------------------------------
+# Model architecture config (saved in checkpoints)
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class ModelConfig:
+    # Number of input feature planes from the board encoder.
+    # 12 = simple (one plane per piece type), 110 = extended (AlphaVile-style
+    # with attack maps, pin maps, mobility, and game-phase features).
     num_planes: int = 110
+
+    # Latent dimension per square token. All transformer layers, heads, and
+    # projections use this width. Larger = more capacity but quadratic in
+    # attention memory. 256 balances strength vs. training speed.
     d_s: int = 256
+
+    # Number of attention heads in the policy backbone. Must divide d_s.
+    # More heads = finer-grained attention patterns. 8 is standard for d=256.
     num_heads: int = 8
+
+    # Depth of the main policy backbone transformer. More layers = deeper
+    # positional reasoning. 15 matches Lc0 BT4 architecture.
     num_layers: int = 15
+
+    # Feed-forward hidden dimension inside transformer blocks.
+    # Typically 4× d_s. Wider FFN = more per-position processing capacity.
     ffn_dim: int = 1024
+
+    # Number of discrete DDPM diffusion timesteps. More steps = finer noise
+    # schedule = better sample quality, but slower generation. 100 is standard.
     num_timesteps: int = 100
+
+    # Depth of the world model transformer (UniZero-style latent dynamics).
+    # Fewer layers than backbone since it predicts one-step transitions.
     world_model_layers: int = 12
+
+    # Depth of the DiT diffusion denoiser. Fewer layers since it operates
+    # in latent space (already compressed by the encoder).
     diffusion_layers: int = 6
+
+    # Projection dimension for the consistency loss (SimSiam-style).
+    # Prevents latent-space collapse by enforcing representation diversity.
     proj_dim: int = 256
+
+    # Trade VRAM for compute by recomputing activations during backward pass.
+    # Enables training larger models on limited GPU memory at ~30% speed cost.
     gradient_checkpointing: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Training hyperparameter config (NOT saved in checkpoints)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    """All tunable training hyperparameters across all phases.
+
+    Optimization, loss weighting, curriculum, data loading, and phase
+    transition gates are centralized here so nothing is hardcoded in
+    trainer classes or training scripts.
+    """
+
+    # -- Optimization -------------------------------------------------------
+
+    # Maximum L2 norm for gradient clipping. Prevents training instability
+    # from occasional large gradient spikes (e.g. unusual positions).
+    # 1.0 is standard for transformers; increase if grad_norm is frequently
+    # clipped (visible in TensorBoard under gradients/norm).
+    max_grad_norm: float = 1.0
+
+    # AdamW weight decay coefficient. Acts as L2 regularization to prevent
+    # overfitting. 1e-4 is mild — increase to 1e-2 for smaller datasets,
+    # decrease to 0 if underfitting.
+    weight_decay: float = 1e-4
+
+    # Learning rate multiplier for the encoder and backbone relative to
+    # task-specific heads (policy, value). Lower values preserve pretrained
+    # representations when fine-tuning. E.g. 0.3 means encoder/backbone
+    # learn at 30% of the head learning rate.
+    encoder_lr_multiplier: float = 0.3
+
+    # Minimum learning rate at the end of cosine annealing. Prevents LR
+    # from reaching exactly 0, which would completely stall learning.
+    # Should be 10-100× smaller than the base LR.
+    min_lr: float = 1e-6
+
+    # Number of initial epochs with linearly increasing LR (0 → target).
+    # Prevents destructively large parameter updates when weights are
+    # still random. 3-5 epochs is typical for transformer training.
+    warmup_epochs: int = 3
+
+    # -- Loss weights -------------------------------------------------------
+    # These control the relative importance of each training objective.
+    # Higher weight = model prioritizes that objective more.
+
+    # Weight for policy (move prediction) cross-entropy loss.
+    # Set higher than value_weight because learning correct moves is the
+    # primary objective — value estimation is secondary supervision.
+    policy_weight: float = 2.0
+
+    # Weight for value (win/draw/loss) cross-entropy loss.
+    # Lower than policy because position evaluation is less critical than
+    # move selection in early training phases.
+    value_weight: float = 0.5
+
+    # Weight for consistency loss (SimSiam negative cosine similarity).
+    # Prevents the world model's latent space from collapsing to a
+    # constant — ensures distinct positions map to distinct latents.
+    consistency_weight: float = 1.0
+
+    # Weight for diffusion denoising loss (MSE between predicted/actual noise).
+    # Trains the imagination module to generate plausible future trajectories.
+    diffusion_weight: float = 1.0
+
+    # Weight for reward prediction loss (MSE between predicted/actual reward).
+    # Teaches the world model to predict game outcomes from latent states.
+    reward_weight: float = 1.0
+
+    # Weight for ply (game length) prediction loss (Huber loss).
+    # Auxiliary signal — lower weight since game length is less important
+    # than move quality or position evaluation.
+    ply_weight: float = 0.1
+
+    # -- HarmonyDream loss balancing -----------------------------------------
+
+    # Enable HarmonyDream dynamic loss balancing (Ma et al., ICML 2024).
+    # When active, loss coefficients auto-adjust inversely proportional
+    # to each loss's EMA magnitude, keeping all objectives balanced.
+    # Recommended for Phase 2+ when all 6 losses are active.
+    use_harmony_dream: bool = False
+
+    # EMA decay for tracking per-loss magnitudes in HarmonyDream.
+    # Higher = smoother, slower adaptation. 0.99 means ~100 steps to
+    # converge to a new loss scale after a distribution shift.
+    harmony_ema_decay: float = 0.99
+
+    # -- Diffusion curriculum -----------------------------------------------
+
+    # Fraction of total diffusion timesteps used at the start of training.
+    # Training begins with easier denoising tasks (fewer corruption steps)
+    # and gradually increases. 0.25 means start with T/4 steps.
+    curriculum_initial_fraction: float = 0.25
+
+    # Per-epoch multiplier for the curriculum step count. Each epoch,
+    # max_steps *= curriculum_growth until reaching num_timesteps.
+    # 1.02 = ~2% growth per epoch, reaching full difficulty in ~70 epochs.
+    curriculum_growth: float = 1.02
+
+    # -- Data loading -------------------------------------------------------
+
+    # Number of DataLoader worker processes for parallel data loading.
+    # Higher values overlap CPU preprocessing with GPU compute.
+    # Set to 0 for debugging (single-process), 2-4 for typical training.
+    num_workers: int = 2
+
+    # -- Phase gates --------------------------------------------------------
+
+    # Top-1 policy accuracy threshold to advance from Phase 1 to Phase 2.
+    # The model must predict the best move at least this often before
+    # diffusion training is worthwhile. 30% is well above random (~1%).
+    phase1_gate: float = 0.30
+
+    # Percentage-point improvement in accuracy from diffusion-conditioned
+    # vs single-step inference required to advance from Phase 2 to Phase 3.
+    # Ensures the diffusion module actually helps before starting RL.
+    phase2_gate: float = 5.0
+
+    # -- Phase 3: MCTS → diffusion transition -------------------------------
+
+    # Number of generations over which the MCTS→diffusion alpha mixing
+    # transitions from 0 (pure MCTS) to 1 (pure diffusion).
+    # Shorter = faster transition but risk of instability.
+    alpha_generations: int = 50
+
+    # UCB exploration constant for MCTS. Controls exploration vs exploitation
+    # in tree search. Higher = more exploration of less-visited nodes.
+    # 1.4 is standard (√2 ≈ 1.414 from UCB1 theory).
+    c_puct: float = 1.4
+
+    # Dirichlet noise alpha for MCTS root exploration. Smaller values
+    # concentrate noise on fewer moves (sharper). 0.3 is standard for chess
+    # (vs 0.03 for Go which has more moves per position).
+    dirichlet_alpha: float = 0.3
+
+    # Fraction of root prior replaced by Dirichlet noise. Controls how much
+    # random exploration overrides the policy network at the root.
+    # 0.25 means 75% policy, 25% noise.
+    dirichlet_epsilon: float = 0.25
+
+    # -- Phase 3: Temperature schedule --------------------------------------
+
+    # Base temperature for self-play move selection. Higher = more random
+    # exploration. Decays across generations by temperature_generation_decay.
+    temperature_base: float = 1.0
+
+    # Number of moves at the start of each game that use the full temperature.
+    # After this many moves, temperature drops to 0 (greedy selection).
+    # 30 covers most opening theory for diverse opening repertoire.
+    temperature_explore_moves: int = 30
+
+    # Per-generation decay for the base temperature. As training progresses,
+    # self-play becomes more exploitative (lower temperature).
+    # 0.97 = ~50% temperature after 23 generations.
+    temperature_generation_decay: float = 0.97
+
+    # Maximum moves per self-play game before declaring a draw.
+    # Prevents infinite games in positions the model can't resolve.
+    max_moves: int = 300
+
+    # Number of MCTS simulations for MuZero Reanalyse.
+    # Lower than main MCTS sims since reanalyse runs on many old games.
+    # Trades search depth for broader coverage of the replay buffer.
+    reanalyse_simulations: int = 100
 
 
 def detect_device() -> torch.device:
@@ -109,36 +317,216 @@ def build_schedule(cfg: ModelConfig) -> CosineNoiseSchedule:
 
 
 def add_model_args(parser: ArgumentParser) -> None:
+    """Register CLI flags for model architecture hyperparameters."""
     g = parser.add_argument_group("model")
-    g.add_argument("--num-planes", type=int, default=110, help="board encoder planes")
-    g.add_argument("--d-s", type=int, default=256, help="latent dimension")
-    g.add_argument("--num-heads", type=int, default=8)
-    g.add_argument("--num-layers", type=int, default=15, help="backbone layers")
-    g.add_argument("--ffn-dim", type=int, default=1024)
-    g.add_argument("--num-timesteps", type=int, default=100)
-    g.add_argument("--world-model-layers", type=int, default=12)
-    g.add_argument("--diffusion-layers", type=int, default=6)
-    g.add_argument("--proj-dim", type=int, default=256, help="consistency projector dimension")
+    g.add_argument(
+        "--num-planes", type=int, default=110,
+        help="board encoder feature planes: 12=simple, 110=extended (default: 110)",
+    )
+    g.add_argument(
+        "--d-s", type=int, default=256,
+        help="latent dimension per square token (default: 256)",
+    )
+    g.add_argument(
+        "--num-heads", type=int, default=8,
+        help="attention heads in backbone (default: 8, must divide d_s)",
+    )
+    g.add_argument(
+        "--num-layers", type=int, default=15,
+        help="policy backbone transformer depth (default: 15)",
+    )
+    g.add_argument(
+        "--ffn-dim", type=int, default=1024,
+        help="feed-forward hidden dim, typically 4×d_s (default: 1024)",
+    )
+    g.add_argument(
+        "--num-timesteps", type=int, default=100,
+        help="DDPM diffusion timesteps (default: 100)",
+    )
+    g.add_argument(
+        "--world-model-layers", type=int, default=12,
+        help="world model transformer depth (default: 12)",
+    )
+    g.add_argument(
+        "--diffusion-layers", type=int, default=6,
+        help="DiT diffusion denoiser depth (default: 6)",
+    )
+    g.add_argument(
+        "--proj-dim", type=int, default=256,
+        help="consistency projector dimension (default: 256)",
+    )
     g.add_argument(
         "--gradient-checkpointing",
         action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Enable gradient checkpointing (saves VRAM, slightly slower; default: auto, True on CUDA)",
+        default=False,
+        help="enable gradient checkpointing (saves VRAM, ~30%% slower; default: off)",
+    )
+
+
+def add_training_args(parser: ArgumentParser) -> None:
+    """Register CLI flags for all training hyperparameters."""
+    g = parser.add_argument_group("training")
+    g.add_argument(
+        "--max-grad-norm", type=float, default=1.0,
+        help="gradient clipping L2 norm threshold (default: 1.0)",
+    )
+    g.add_argument(
+        "--weight-decay", type=float, default=1e-4,
+        help="AdamW weight decay (default: 1e-4)",
+    )
+    g.add_argument(
+        "--encoder-lr-multiplier", type=float, default=0.3,
+        help="LR multiplier for encoder/backbone vs heads (default: 0.3)",
+    )
+    g.add_argument(
+        "--min-lr", type=float, default=1e-6,
+        help="minimum LR at end of cosine annealing (default: 1e-6)",
+    )
+    g.add_argument(
+        "--warmup-epochs", type=int, default=3,
+        help="linear warmup epochs before cosine decay (default: 3)",
+    )
+    g.add_argument(
+        "--policy-weight", type=float, default=2.0,
+        help="loss weight for policy cross-entropy (default: 2.0)",
+    )
+    g.add_argument(
+        "--value-weight", type=float, default=0.5,
+        help="loss weight for value cross-entropy (default: 0.5)",
+    )
+    g.add_argument(
+        "--consistency-weight", type=float, default=1.0,
+        help="loss weight for consistency (default: 1.0)",
+    )
+    g.add_argument(
+        "--diffusion-weight", type=float, default=1.0,
+        help="loss weight for diffusion denoising (default: 1.0)",
+    )
+    g.add_argument(
+        "--reward-weight", type=float, default=1.0,
+        help="loss weight for reward prediction (default: 1.0)",
+    )
+    g.add_argument(
+        "--ply-weight", type=float, default=0.1,
+        help="loss weight for game-length prediction (default: 0.1)",
+    )
+    g.add_argument(
+        "--harmony-dream",
+        action=argparse.BooleanOptionalAction, default=False,
+        help="enable HarmonyDream dynamic loss balancing (default: off)",
+    )
+    g.add_argument(
+        "--harmony-ema-decay", type=float, default=0.99,
+        help="EMA decay for HarmonyDream loss tracking (default: 0.99)",
+    )
+    g.add_argument(
+        "--curriculum-initial-fraction", type=float, default=0.25,
+        help="fraction of diffusion steps at curriculum start (default: 0.25)",
+    )
+    g.add_argument(
+        "--curriculum-growth", type=float, default=1.02,
+        help="per-epoch multiplier for curriculum steps (default: 1.02)",
+    )
+    g.add_argument(
+        "--num-workers", type=int, default=2,
+        help="DataLoader worker processes (default: 2)",
+    )
+    g.add_argument(
+        "--phase1-gate", type=float, default=0.30,
+        help="top-1 accuracy to pass Phase 1 gate (default: 0.30)",
+    )
+    g.add_argument(
+        "--phase2-gate", type=float, default=5.0,
+        help="diffusion improvement pp to pass Phase 2 gate (default: 5.0)",
+    )
+
+
+def add_phase3_args(parser: ArgumentParser) -> None:
+    """Register Phase 3-specific CLI flags for self-play and MCTS."""
+    g = parser.add_argument_group("phase3")
+    g.add_argument(
+        "--c-puct", type=float, default=1.4,
+        help="MCTS UCB exploration constant (default: 1.4)",
+    )
+    g.add_argument(
+        "--dirichlet-alpha", type=float, default=0.3,
+        help="Dirichlet noise alpha for root exploration (default: 0.3)",
+    )
+    g.add_argument(
+        "--dirichlet-epsilon", type=float, default=0.25,
+        help="fraction of root prior replaced by Dirichlet noise (default: 0.25)",
+    )
+    g.add_argument(
+        "--temperature-base", type=float, default=1.0,
+        help="base temperature for move selection (default: 1.0)",
+    )
+    g.add_argument(
+        "--temperature-explore-moves", type=int, default=30,
+        help="moves per game using full temperature (default: 30)",
+    )
+    g.add_argument(
+        "--temperature-generation-decay", type=float, default=0.97,
+        help="per-generation temperature decay (default: 0.97)",
+    )
+    g.add_argument(
+        "--max-moves", type=int, default=300,
+        help="maximum moves per self-play game (default: 300)",
+    )
+    g.add_argument(
+        "--reanalyse-simulations", type=int, default=100,
+        help="MCTS sims for MuZero Reanalyse (default: 100)",
+    )
+
+
+def training_config_from_args(args: Namespace) -> TrainingConfig:
+    """Build TrainingConfig from parsed CLI arguments."""
+    return TrainingConfig(
+        max_grad_norm=args.max_grad_norm,
+        weight_decay=args.weight_decay,
+        encoder_lr_multiplier=args.encoder_lr_multiplier,
+        min_lr=args.min_lr,
+        warmup_epochs=args.warmup_epochs,
+        policy_weight=args.policy_weight,
+        value_weight=args.value_weight,
+        consistency_weight=args.consistency_weight,
+        diffusion_weight=args.diffusion_weight,
+        reward_weight=args.reward_weight,
+        ply_weight=args.ply_weight,
+        use_harmony_dream=args.harmony_dream,
+        harmony_ema_decay=args.harmony_ema_decay,
+        curriculum_initial_fraction=args.curriculum_initial_fraction,
+        curriculum_growth=args.curriculum_growth,
+        num_workers=args.num_workers,
+        phase1_gate=args.phase1_gate,
+        phase2_gate=args.phase2_gate,
+    )
+
+
+def full_training_config_from_args(args: Namespace) -> TrainingConfig:
+    """Build TrainingConfig including Phase 3 args from parsed CLI arguments."""
+    base = training_config_from_args(args)
+    return replace(
+        base,
+        c_puct=args.c_puct,
+        dirichlet_alpha=args.dirichlet_alpha,
+        dirichlet_epsilon=args.dirichlet_epsilon,
+        temperature_base=args.temperature_base,
+        temperature_explore_moves=args.temperature_explore_moves,
+        temperature_generation_decay=args.temperature_generation_decay,
+        max_moves=args.max_moves,
+        reanalyse_simulations=args.reanalyse_simulations,
     )
 
 
 def resolve_gradient_checkpointing(
     cfg: ModelConfig, args: Namespace, device: torch.device,
 ) -> ModelConfig:
-    """Override checkpoint config's gradient_checkpointing with CLI/device default.
+    """Override checkpoint config's gradient_checkpointing with CLI flag.
 
-    --gradient-checkpointing → True
-    --no-gradient-checkpointing → False
-    neither → True on CUDA, False otherwise
+    --gradient-checkpointing → True (saves VRAM, ~30% slower)
+    --no-gradient-checkpointing or default → False (optimize training speed)
     """
     gc = args.gradient_checkpointing
-    if gc is None:
-        gc = device.type == "cuda"
     if gc != cfg.gradient_checkpointing:
         return replace(cfg, gradient_checkpointing=gc)
     return cfg
@@ -155,7 +543,7 @@ def config_from_args(args: Namespace) -> ModelConfig:
         world_model_layers=args.world_model_layers,
         diffusion_layers=args.diffusion_layers,
         proj_dim=args.proj_dim,
-        gradient_checkpointing=args.gradient_checkpointing or False,
+        gradient_checkpointing=args.gradient_checkpointing,
     )
 
 

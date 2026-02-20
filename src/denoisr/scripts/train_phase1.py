@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from denoisr.scripts.config import (
     add_model_args,
+    add_training_args,
     build_backbone,
     build_encoder,
     build_policy_head,
@@ -27,6 +28,7 @@ from denoisr.scripts.config import (
     maybe_compile,
     resolve_gradient_checkpointing,
     save_checkpoint,
+    training_config_from_args,
 )
 from denoisr.scripts.generate_data import unstack_examples
 from denoisr.training.dataset import ChessDataset
@@ -97,9 +99,11 @@ def main() -> None:
         help="TensorBoard run name (default: timestamp)",
     )
     add_model_args(parser)
+    add_training_args(parser)
     args = parser.parse_args()
 
     device = detect_device()
+    tcfg = training_config_from_args(args)
     print(f"Device: {device}")
 
     # --- Load checkpoint ---
@@ -134,9 +138,10 @@ def main() -> None:
     print(f"Train: {len(train)}, Holdout: {holdout_n}")
 
     loss_fn = ChessLossComputer(
-        policy_weight=2.0,
-        value_weight=0.5,
-        use_harmony_dream=False,
+        policy_weight=tcfg.policy_weight,
+        value_weight=tcfg.value_weight,
+        use_harmony_dream=tcfg.use_harmony_dream,
+        harmony_ema_decay=tcfg.harmony_ema_decay,
     )
 
     trainer = SupervisedTrainer(
@@ -148,7 +153,11 @@ def main() -> None:
         lr=args.lr,
         device=device,
         total_epochs=args.epochs,
-        warmup_epochs=3,
+        warmup_epochs=tcfg.warmup_epochs,
+        max_grad_norm=tcfg.max_grad_norm,
+        weight_decay=tcfg.weight_decay,
+        encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
+        min_lr=tcfg.min_lr,
     )
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
@@ -173,7 +182,7 @@ def main() -> None:
                 train_dataset,
                 batch_size=bs,
                 shuffle=True,
-                num_workers=2,
+                num_workers=tcfg.num_workers,
                 pin_memory=(device.type == "cuda"),
                 persistent_workers=True,
             )
@@ -186,12 +195,22 @@ def main() -> None:
             {
                 "lr": args.lr,
                 "batch_size": bs,
+                "epochs": args.epochs,
                 "d_s": cfg.d_s,
                 "num_heads": cfg.num_heads,
                 "num_layers": cfg.num_layers,
                 "ffn_dim": cfg.ffn_dim,
                 "num_planes": cfg.num_planes,
                 "gradient_checkpointing": cfg.gradient_checkpointing,
+                "max_grad_norm": tcfg.max_grad_norm,
+                "weight_decay": tcfg.weight_decay,
+                "encoder_lr_multiplier": tcfg.encoder_lr_multiplier,
+                "min_lr": tcfg.min_lr,
+                "warmup_epochs": tcfg.warmup_epochs,
+                "policy_weight": tcfg.policy_weight,
+                "value_weight": tcfg.value_weight,
+                "use_harmony_dream": tcfg.use_harmony_dream,
+                "num_workers": tcfg.num_workers,
             },
             {"best_top1": 0.0},
         )
@@ -254,8 +273,8 @@ def main() -> None:
                 )
 
             # Phase gate check
-            if top1 > 0.30:
-                print(f"PHASE 1 GATE PASSED: top-1 accuracy {top1:.1%} > 30%")
+            if top1 > tcfg.phase1_gate:
+                print(f"PHASE 1 GATE PASSED: top-1 accuracy {top1:.1%} > {tcfg.phase1_gate:.0%}")
                 print("Ready for Phase 2.")
                 break
 

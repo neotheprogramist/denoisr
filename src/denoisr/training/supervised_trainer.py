@@ -27,6 +27,10 @@ class SupervisedTrainer:
         device: torch.device | None = None,
         total_epochs: int = 100,
         warmup_epochs: int = 3,
+        max_grad_norm: float = 1.0,
+        weight_decay: float = 1e-4,
+        encoder_lr_multiplier: float = 0.3,
+        min_lr: float = 1e-6,
     ) -> None:
         self.encoder = encoder
         self.backbone = backbone
@@ -34,25 +38,25 @@ class SupervisedTrainer:
         self.value_head = value_head
         self.loss_fn = loss_fn
         self.device = device or torch.device("cpu")
-        self.max_grad_norm = 1.0
+        self.max_grad_norm = max_grad_norm
         self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
         self._autocast_device = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
         self._autocast_enabled = self.device.type == "cuda"
 
         param_groups = [
-            {"params": list(encoder.parameters()), "lr": lr * 0.3},
-            {"params": list(backbone.parameters()), "lr": lr * 0.3},
+            {"params": list(encoder.parameters()), "lr": lr * encoder_lr_multiplier},
+            {"params": list(backbone.parameters()), "lr": lr * encoder_lr_multiplier},
             {"params": list(policy_head.parameters()), "lr": lr},
             {"params": list(value_head.parameters()), "lr": lr},
         ]
         self.optimizer = torch.optim.AdamW(
-            param_groups, weight_decay=1e-4
+            param_groups, weight_decay=weight_decay
         )
 
         self._warmup_epochs = warmup_epochs
         self._base_lrs: list[float] = [float(g["lr"]) for g in param_groups]  # type: ignore[arg-type]
         self._scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=max(1, total_epochs - warmup_epochs), eta_min=1e-6
+            self.optimizer, T_max=max(1, total_epochs - warmup_epochs), eta_min=min_lr
         )
         self._epoch = 0
 

@@ -21,6 +21,7 @@ from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.scripts.config import (
     add_model_args,
+    add_training_args,
     build_backbone,
     build_board_encoder,
     build_consistency,
@@ -35,6 +36,7 @@ from denoisr.scripts.config import (
     maybe_compile,
     resolve_gradient_checkpointing,
     save_checkpoint,
+    training_config_from_args,
 )
 from denoisr.training.diffusion_trainer import DiffusionTrainer
 from denoisr.training.logger import TrainingLogger
@@ -96,9 +98,11 @@ def main() -> None:
     parser.add_argument("--output", type=str, default="outputs/phase2.pt")
     parser.add_argument("--run-name", type=str, default=None, help="TensorBoard run name (default: timestamp)")
     add_model_args(parser)
+    add_training_args(parser)
     args = parser.parse_args()
 
     device = detect_device()
+    tcfg = training_config_from_args(args)
     print(f"Device: {device}")
 
     # --- Load Phase 1 ---
@@ -132,6 +136,9 @@ def main() -> None:
         schedule=schedule,
         lr=args.lr,
         device=device,
+        max_grad_norm=tcfg.max_grad_norm,
+        curriculum_initial_fraction=tcfg.curriculum_initial_fraction,
+        curriculum_growth=tcfg.curriculum_growth,
     )
 
     # --- Extract trajectories ---
@@ -149,7 +156,7 @@ def main() -> None:
     dataset = TensorDataset(all_trajectories)
     loader = DataLoader(
         dataset, batch_size=bs, shuffle=True,
-        num_workers=2, pin_memory=(device.type == "cuda"),
+        num_workers=tcfg.num_workers, pin_memory=(device.type == "cuda"),
         persistent_workers=True,
     )
 
@@ -158,10 +165,17 @@ def main() -> None:
             {
                 "lr": args.lr,
                 "batch_size": bs,
+                "epochs": args.epochs,
                 "seq_len": args.seq_len,
                 "max_trajectories": args.max_trajectories,
                 "d_s": cfg.d_s,
                 "num_layers": cfg.num_layers,
+                "diffusion_layers": cfg.diffusion_layers,
+                "num_timesteps": cfg.num_timesteps,
+                "max_grad_norm": tcfg.max_grad_norm,
+                "curriculum_initial_fraction": tcfg.curriculum_initial_fraction,
+                "curriculum_growth": tcfg.curriculum_growth,
+                "num_workers": tcfg.num_workers,
             },
             {"best_diffusion_loss": float("inf")},
         )

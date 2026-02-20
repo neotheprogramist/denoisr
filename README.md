@@ -56,6 +56,7 @@ This opens a window where you can play against the engine with click-to-move int
 ### 4. Play a game
 
 In the GUI:
+
 1. The checkpoint is pre-filled from the command line (or use **Browse** to select one)
 2. Choose **single** or **diffusion** mode
 3. Choose your color (white or black)
@@ -170,6 +171,8 @@ Training automatically stops when top-1 accuracy exceeds **30%** (Phase 1 gate).
 | `--output`       | `outputs/phase1.pt` | Checkpoint path                                                |
 | `--run-name`     | auto timestamp      | TensorBoard run name (see [Training logs](#training-logs))     |
 
+Plus all [model architecture](#model-architecture-modelconfig) and [training optimization](#training-optimization-trainingconfig) flags.
+
 ### Step 5: Phase 2 — Diffusion bootstrapping
 
 Trains the diffusion module to denoise future trajectories, with the Phase 1 encoder frozen:
@@ -205,6 +208,8 @@ Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 pe
 | `--output`           | `outputs/phase2.pt` | Checkpoint path                    |
 | `--run-name`         | auto timestamp      | TensorBoard run name               |
 
+Plus all [model architecture](#model-architecture-modelconfig), [training optimization](#training-optimization-trainingconfig), and [diffusion curriculum](#diffusion-curriculum) flags.
+
 ### Step 6: Phase 3 — RL self-play
 
 The engine improves beyond human/Stockfish supervision by playing against itself:
@@ -238,6 +243,8 @@ Gen 51/1000: buffer=5100 alpha=0.00 temp=0.220 W/D/L=48/21/31 reanalysed=450
 | `--save-every`        | `10`                | Checkpoint every N generations           |
 | `--output`            | `outputs/phase3.pt` | Checkpoint path                          |
 
+Plus all [model architecture](#model-architecture-modelconfig), [training optimization](#training-optimization-trainingconfig), and [Phase 3 self-play](#phase-3-self-play-and-mcts-phase-3-only) flags.
+
 ### Training logs
 
 Both Phase 1 and Phase 2 write logs to `logs/<run-name>/` with every training run. Logs include TensorBoard event files for interactive visualization and plain-text files for quick inspection.
@@ -253,16 +260,16 @@ Without `--run-name`, a timestamp like `2026-02-20_14-30-15` is generated automa
 
 #### What gets logged
 
-| Metric | Frequency | Phase |
-| --- | --- | --- |
-| `loss/total`, `loss/policy`, `loss/value` | Every batch | 1 |
-| `gradients/norm` (pre-clip L2 norm) | Every batch | 1, 2 |
-| `accuracy/top1`, `accuracy/top5` | Every epoch | 1 |
-| `lr` (learning rate) | Every epoch | 1 |
-| `diffusion/loss`, `diffusion/curriculum_steps` | Every epoch | 2 |
-| `timing/epoch_duration_s`, `timing/samples_per_sec` | Every epoch | 1, 2 |
-| `gpu/memory_allocated_mb`, `gpu/memory_reserved_mb` | Every 100 steps | 1, 2 |
-| Hyperparameters (lr, batch_size, d_s, num_heads, ...) | Once at start | 1, 2 |
+| Metric                                                | Frequency       | Phase |
+| ----------------------------------------------------- | --------------- | ----- |
+| `loss/total`, `loss/policy`, `loss/value`             | Every batch     | 1     |
+| `gradients/norm` (pre-clip L2 norm)                   | Every batch     | 1, 2  |
+| `accuracy/top1`, `accuracy/top5`                      | Every epoch     | 1     |
+| `lr` (learning rate)                                  | Every epoch     | 1     |
+| `diffusion/loss`, `diffusion/curriculum_steps`        | Every epoch     | 2     |
+| `timing/epoch_duration_s`, `timing/samples_per_sec`   | Every epoch     | 1, 2  |
+| `gpu/memory_allocated_mb`, `gpu/memory_reserved_mb`   | Every 100 steps | 1, 2  |
+| Hyperparameters (lr, batch_size, d_s, num_heads, ...) | Once at start   | 1, 2  |
 
 #### Visualize with TensorBoard
 
@@ -313,6 +320,120 @@ logs/
     └── ...
 ```
 
+### Hyperparameters
+
+All hyperparameters are configurable via CLI flags. They are centralized in `src/denoisr/scripts/config.py` as two frozen dataclasses:
+
+- **`ModelConfig`** — architecture parameters saved in checkpoints (needed at inference)
+- **`TrainingConfig`** — optimization parameters used only during training
+
+Pass `--help` to any training command to see all available flags with defaults.
+
+#### Model architecture (`ModelConfig`)
+
+These control the neural network structure. Changing them creates a new architecture — you cannot load a checkpoint trained with different values.
+
+| Flag                       | Default | What it controls                                                                                                                  |
+| -------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `--num-planes`             | `110`   | Board encoder feature planes. 12 = simple (one per piece type), 110 = extended (AlphaVile-style with attack maps, pins, mobility) |
+| `--d-s`                    | `256`   | Latent dimension per square token. All transformer layers use this width. Larger = more capacity but quadratic attention memory   |
+| `--num-heads`              | `8`     | Attention heads in the policy backbone. Must divide `d_s`. More heads = finer-grained attention patterns                          |
+| `--num-layers`             | `15`    | Policy backbone transformer depth. More layers = deeper positional reasoning. Matches Lc0 BT4                                     |
+| `--ffn-dim`                | `1024`  | Feed-forward hidden dim inside transformer blocks. Typically 4× `d_s`                                                             |
+| `--num-timesteps`          | `100`   | DDPM diffusion timesteps. More = finer noise schedule = better generation quality, but slower                                     |
+| `--world-model-layers`     | `12`    | World model transformer depth for latent dynamics prediction                                                                      |
+| `--diffusion-layers`       | `6`     | DiT denoiser depth. Fewer layers since it operates in latent space                                                                |
+| `--proj-dim`               | `256`   | Consistency projector dimension for SimSiam collapse prevention                                                                   |
+| `--gradient-checkpointing` | off     | Trade compute for VRAM by recomputing activations in backward pass (~30% slower)                                                  |
+
+#### Training optimization (`TrainingConfig`)
+
+These control how the model learns. Safe to change between runs without architectural incompatibility.
+
+| Flag                      | Default | What it controls                                                                                                                                                    |
+| ------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--lr`                    | `1e-4`  | Base learning rate for task heads (policy, value). The single most impactful hyperparameter                                                                         |
+| `--max-grad-norm`         | `1.0`   | Gradient clipping L2 threshold. Prevents instability from large gradient spikes. Check `gradients/norm` in TensorBoard — if frequently clipped, consider increasing |
+| `--weight-decay`          | `1e-4`  | AdamW L2 regularization. Increase to 1e-2 for small datasets, decrease to 0 if underfitting                                                                         |
+| `--encoder-lr-multiplier` | `0.3`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 0.3 = encoder learns at 30% of head LR                               |
+| `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
+| `--warmup-epochs`         | `3`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
+| `--num-workers`           | `2`     | DataLoader worker processes. Set 0 for debugging, 2-4 for training                                                                                                  |
+
+#### Loss weights
+
+These control the relative importance of each training objective. Higher weight = model prioritizes that loss more.
+
+| Flag                   | Default | What it controls                                                                                   |
+| ---------------------- | ------- | -------------------------------------------------------------------------------------------------- |
+| `--policy-weight`      | `2.0`   | Policy (move prediction) cross-entropy. Set higher because correct moves matter most               |
+| `--value-weight`       | `0.5`   | Value (win/draw/loss) cross-entropy. Lower than policy — evaluation is secondary in early training |
+| `--consistency-weight` | `1.0`   | SimSiam consistency loss. Prevents latent-space collapse in the world model                        |
+| `--diffusion-weight`   | `1.0`   | Diffusion denoising MSE. Trains imagination of future trajectories                                 |
+| `--reward-weight`      | `1.0`   | Reward prediction MSE. Teaches outcome prediction from latent states                               |
+| `--ply-weight`         | `0.1`   | Game length prediction Huber loss. Auxiliary signal, low weight                                    |
+| `--harmony-dream`      | off     | Enable HarmonyDream dynamic loss balancing (auto-adjusts weights inversely to loss magnitudes)     |
+| `--harmony-ema-decay`  | `0.99`  | EMA decay for HarmonyDream tracking. Higher = smoother adaptation                                  |
+
+#### Diffusion curriculum
+
+The diffusion module trains with a curriculum: start with easy (few-step) denoising, gradually increase to full difficulty.
+
+| Flag                            | Default | What it controls                                                                          |
+| ------------------------------- | ------- | ----------------------------------------------------------------------------------------- |
+| `--curriculum-initial-fraction` | `0.25`  | Fraction of timesteps used at training start. 0.25 = begin with T/4 steps                 |
+| `--curriculum-growth`           | `1.02`  | Per-epoch step count multiplier. 1.02 = +2%/epoch, reaching full difficulty in ~70 epochs |
+
+#### Phase gates
+
+Training advances through phases only when measurable quality thresholds are met.
+
+| Flag            | Default | What it controls                                                                     |
+| --------------- | ------- | ------------------------------------------------------------------------------------ |
+| `--phase1-gate` | `0.30`  | Top-1 accuracy to pass Phase 1 → 2. 30% is well above random (~1%)                   |
+| `--phase2-gate` | `5.0`   | Percentage-point accuracy improvement from diffusion vs single-step, for Phase 2 → 3 |
+
+#### Phase 3: Self-play and MCTS (Phase 3 only)
+
+| Flag                             | Default | What it controls                                                                          |
+| -------------------------------- | ------- | ----------------------------------------------------------------------------------------- |
+| `--c-puct`                       | `1.4`   | MCTS exploration constant (UCB). Higher = more exploration. 1.4 ≈ √2 from UCB1 theory     |
+| `--dirichlet-alpha`              | `0.3`   | Root noise concentration. Smaller = sharper noise. 0.3 is chess-standard (vs 0.03 for Go) |
+| `--dirichlet-epsilon`            | `0.25`  | Fraction of root prior replaced by noise. 0.25 = 75% policy, 25% exploration              |
+| `--temperature-base`             | `1.0`   | Move selection temperature. Higher = more random. Decays across generations               |
+| `--temperature-explore-moves`    | `30`    | Moves per game at full temperature, then greedy. Covers opening diversity                 |
+| `--temperature-generation-decay` | `0.97`  | Per-generation temperature decay. 0.97 = ~50% temp after 23 generations                   |
+| `--max-moves`                    | `300`   | Maximum moves per self-play game before draw                                              |
+| `--reanalyse-simulations`        | `100`   | MCTS sims for MuZero Reanalyse (fewer than main MCTS for broader coverage)                |
+
+#### Example: tuning for faster convergence
+
+```bash
+# Aggressive learning with higher LR, more warmup, stronger policy focus
+uv run denoisr-train-phase1 \
+    --checkpoint outputs/random_model.pt \
+    --data outputs/training_data.pt \
+    --lr 3e-4 \
+    --warmup-epochs 5 \
+    --policy-weight 3.0 \
+    --value-weight 0.3 \
+    --encoder-lr-multiplier 0.1 \
+    --run-name aggressive-lr3e-4
+```
+
+#### Example: training on limited VRAM
+
+```bash
+# Reduce memory usage with gradient checkpointing and fewer workers
+uv run denoisr-train-phase1 \
+    --checkpoint outputs/random_model.pt \
+    --data outputs/training_data.pt \
+    --batch-size 16 \
+    --gradient-checkpointing \
+    --num-workers 0 \
+    --run-name low-vram
+```
+
 ## Play with the trained model
 
 After training, add the trained engine to your chess GUI and compare it against the random model:
@@ -350,11 +471,11 @@ uv run denoisr-gui --checkpoint outputs/phase3.pt --mode single
 uv run denoisr-gui --checkpoint outputs/phase3.pt --mode diffusion
 ```
 
-| Checkpoint            | Mode        | Expected strength            |
-| --------------------- | ----------- | ---------------------------- |
-| `random_model.pt`     | `single`    | Random legal moves           |
-| `phase3.pt`           | `single`    | Fast, moderate strength      |
-| `phase3.pt`           | `diffusion` | Stronger, uses imagination   |
+| Checkpoint        | Mode        | Expected strength          |
+| ----------------- | ----------- | -------------------------- |
+| `random_model.pt` | `single`    | Random legal moves         |
+| `phase3.pt`       | `single`    | Fast, moderate strength    |
+| `phase3.pt`       | `diffusion` | Stronger, uses imagination |
 
 | Flag                | Default    | Description                                    |
 | ------------------- | ---------- | ---------------------------------------------- |
