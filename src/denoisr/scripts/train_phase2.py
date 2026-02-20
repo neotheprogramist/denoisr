@@ -8,6 +8,7 @@ Gate to Phase 3: diffusion-conditioned accuracy > single-step by >5pp.
 """
 
 import argparse
+import logging
 import time
 from pathlib import Path
 
@@ -40,6 +41,9 @@ from denoisr.scripts.config import (
 )
 from denoisr.training.diffusion_trainer import DiffusionTrainer
 from denoisr.training.logger import TrainingLogger
+from denoisr.training.resource_monitor import ResourceMonitor
+
+log = logging.getLogger(__name__)
 
 
 def extract_trajectories(
@@ -101,14 +105,20 @@ def main() -> None:
     add_training_args(parser)
     args = parser.parse_args()
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+    )
+
     device = detect_device()
     tcfg = training_config_from_args(args)
-    print(f"Device: {device}")
+    use_tqdm = args.tqdm
+    log.info("device=%s", device)
 
     # --- Load Phase 1 ---
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
     cfg = resolve_gradient_checkpointing(cfg, args, device)
-    print(f"Loaded Phase 1 checkpoint: d_s={cfg.d_s}, layers={cfg.num_layers}")
+    log.info("checkpoint loaded  d_s=%d  layers=%d", cfg.d_s, cfg.num_layers)
 
     encoder = build_encoder(cfg).to(device)
     backbone = build_backbone(cfg).to(device)
@@ -146,7 +156,7 @@ def main() -> None:
     trajectories = extract_trajectories(
         Path(args.pgn), board_encoder, args.seq_len, args.max_trajectories
     )
-    print(f"Extracted {len(trajectories)} trajectories of length {args.seq_len}")
+    log.info("trajectories=%d  seq_len=%d", len(trajectories), args.seq_len)
 
     # --- Train diffusion ---
     bs = args.batch_size
@@ -159,6 +169,8 @@ def main() -> None:
         num_workers=tcfg.num_workers, pin_memory=(device.type == "cuda"),
         persistent_workers=True,
     )
+
+    monitor = ResourceMonitor()
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
         logger.log_hparams(
@@ -186,23 +198,39 @@ def main() -> None:
             epoch_loss = 0.0
             num_batches = 0
             epoch_start = time.monotonic()
+            monitor.reset()
+            step_losses: list[float] = []
+            step_grad_norms: list[float] = []
+            data_time = 0.0
+            compute_time = 0.0
 
             pbar = tqdm(
                 loader,
                 desc=f"Epoch {epoch+1}/{args.epochs}",
                 leave=False,
                 smoothing=0.3,
+                disable=not use_tqdm,
             )
+            data_start = time.monotonic()
             for (batch,) in pbar:
+                data_time += time.monotonic() - data_start
+
                 batch = batch.to(device, non_blocking=True)
+                compute_start = time.monotonic()
                 loss, breakdown = diff_trainer.train_step(batch)
+                compute_time += time.monotonic() - compute_start
+
                 logger.log_train_step(global_step, loss, breakdown)
+                step_losses.append(loss)
+                step_grad_norms.append(breakdown.get("grad_norm", 0.0))
                 if global_step % 100 == 0:
                     logger.log_gpu(global_step)
+                    monitor.sample()
                 global_step += 1
                 epoch_loss += loss
                 num_batches += 1
                 pbar.set_postfix(loss=f"{loss:.4f}")
+                data_start = time.monotonic()
             pbar.close()
 
             diff_trainer.advance_curriculum()
@@ -213,11 +241,34 @@ def main() -> None:
             logger.log_diffusion(epoch, avg_loss, diff_trainer.current_max_steps)
             logger.log_epoch_timing(epoch, epoch_duration, num_samples / epoch_duration)
 
-            print(
-                f"Epoch {epoch+1}/{args.epochs}: "
-                f"avg_diffusion_loss={avg_loss:.4f} "
-                f"curriculum_steps={diff_trainer.current_max_steps}"
-            )
+            resource_metrics = monitor.summarize()
+            logger.log_resource_metrics(epoch, resource_metrics)
+            logger.log_training_dynamics(epoch, step_losses, step_grad_norms)
+            logger.log_pipeline_timing(epoch, data_time, compute_time)
+
+            # --- Consolidated epoch summary via logging ---
+            total_time = data_time + compute_time
+            summary: dict[str, str] = {
+                "epoch": f"{epoch+1}/{args.epochs}",
+                "diffusion_loss": f"{avg_loss:.4f}",
+                "curriculum_steps": str(diff_trainer.current_max_steps),
+                "grad_norm_avg": f"{sum(step_grad_norms)/len(step_grad_norms):.3f}" if step_grad_norms else "n/a",
+                "grad_norm_peak": f"{max(step_grad_norms):.3f}" if step_grad_norms else "n/a",
+                "samples/s": f"{num_samples / epoch_duration:.0f}",
+                "epoch_time": f"{epoch_duration:.1f}s",
+                "data_pct": f"{data_time / total_time:.0%}" if total_time > 0 else "0%",
+            }
+            if "cpu_percent_avg" in resource_metrics:
+                summary["cpu"] = f"{resource_metrics['cpu_percent_avg']:.0f}%/{resource_metrics['cpu_percent_peak']:.0f}%"
+            if "ram_mb_avg" in resource_metrics:
+                summary["ram"] = f"{resource_metrics['ram_mb_avg']:.0f}mb"
+            if "gpu_util_avg" in resource_metrics:
+                summary["gpu"] = f"{resource_metrics['gpu_util_avg']:.0f}%/{resource_metrics['gpu_util_peak']:.0f}%"
+            if "gpu_temp_avg" in resource_metrics:
+                summary["gpu_temp"] = f"{resource_metrics['gpu_temp_avg']:.0f}C"
+            if "gpu_power_avg" in resource_metrics:
+                summary["gpu_power"] = f"{resource_metrics['gpu_power_avg']:.0f}W"
+            logger.log_epoch_summary(summary)
 
             if avg_loss < best_loss:
                 best_loss = avg_loss
@@ -233,8 +284,8 @@ def main() -> None:
                     consistency=consistency.state_dict(),
                 )
 
-        print(f"Best diffusion loss: {best_loss:.4f}")
-        print("Evaluate diffusion vs single-step accuracy to check Phase 2 gate (>5pp).")
+        log.info("best_diffusion_loss=%s", f"{best_loss:.4f}")
+        log.info("Evaluate diffusion vs single-step accuracy to check Phase 2 gate (>5pp).")
 
 
 if __name__ == "__main__":

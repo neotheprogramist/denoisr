@@ -7,6 +7,7 @@ Gate to Phase 2: policy top-1 accuracy > 30% on held-out positions.
 """
 
 import argparse
+import logging
 import random
 import time
 from pathlib import Path
@@ -34,8 +35,11 @@ from denoisr.scripts.generate_data import unstack_examples
 from denoisr.training.dataset import ChessDataset
 from denoisr.training.logger import TrainingLogger
 from denoisr.training.loss import ChessLossComputer
+from denoisr.training.resource_monitor import ResourceMonitor
 from denoisr.training.supervised_trainer import SupervisedTrainer
 from denoisr.types import TrainingExample
+
+log = logging.getLogger(__name__)
 
 
 def measure_accuracy(
@@ -102,14 +106,20 @@ def main() -> None:
     add_training_args(parser)
     args = parser.parse_args()
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+    )
+
     device = detect_device()
     tcfg = training_config_from_args(args)
-    print(f"Device: {device}")
+    use_tqdm = args.tqdm
+    log.info("device=%s", device)
 
     # --- Load checkpoint ---
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
     cfg = resolve_gradient_checkpointing(cfg, args, device)
-    print(f"Loaded checkpoint: d_s={cfg.d_s}, heads={cfg.num_heads}, layers={cfg.num_layers}")
+    log.info("checkpoint loaded  d_s=%d  heads=%d  layers=%d", cfg.d_s, cfg.num_heads, cfg.num_layers)
 
     encoder = build_encoder(cfg).to(device)
     backbone = build_backbone(cfg).to(device)
@@ -129,13 +139,13 @@ def main() -> None:
     # --- Load pre-generated data ---
     raw = torch.load(Path(args.data), weights_only=True)
     all_examples = unstack_examples(raw)
-    print(f"Loaded {len(all_examples)} training examples from {args.data}")
+    log.info("examples=%d  source=%s", len(all_examples), args.data)
     random.shuffle(all_examples)
 
     holdout_n = max(1, int(len(all_examples) * args.holdout_frac))
     holdout = all_examples[:holdout_n]
     train = all_examples[holdout_n:]
-    print(f"Train: {len(train)}, Holdout: {holdout_n}")
+    log.info("train=%d  holdout=%d", len(train), holdout_n)
 
     loss_fn = ChessLossComputer(
         policy_weight=tcfg.policy_weight,
@@ -159,6 +169,8 @@ def main() -> None:
         encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
         min_lr=tcfg.min_lr,
     )
+
+    monitor = ResourceMonitor()
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
         # --- Build DataLoader from stacked tensors ---
@@ -221,20 +233,35 @@ def main() -> None:
             epoch_loss = 0.0
             num_batches = 0
             epoch_start = time.monotonic()
+            monitor.reset()
+            step_losses: list[float] = []
+            step_grad_norms: list[float] = []
+            data_time = 0.0
+            compute_time = 0.0
 
             pbar = tqdm(
                 train_loader,
                 desc=f"Epoch {epoch+1}/{args.epochs}",
                 leave=False,
                 smoothing=0.3,
+                disable=not use_tqdm,
             )
+            data_start = time.monotonic()
             for boards_batch, policies_batch, values_batch in pbar:
+                data_time += time.monotonic() - data_start
+
+                compute_start = time.monotonic()
                 loss, breakdown = trainer.train_step_tensors(
                     boards_batch, policies_batch, values_batch
                 )
+                compute_time += time.monotonic() - compute_start
+
                 logger.log_train_step(global_step, loss, breakdown)
+                step_losses.append(loss)
+                step_grad_norms.append(breakdown.get("grad_norm", 0.0))
                 if global_step % 100 == 0:
                     logger.log_gpu(global_step)
+                    monitor.sample()
                 global_step += 1
                 epoch_loss += loss
                 num_batches += 1
@@ -243,6 +270,7 @@ def main() -> None:
                     policy=f"{breakdown['policy']:.4f}",
                     value=f"{breakdown['value']:.4f}",
                 )
+                data_start = time.monotonic()
             pbar.close()
             trainer.scheduler_step()
 
@@ -255,10 +283,38 @@ def main() -> None:
             logger.log_epoch(epoch, avg_loss, top1, top5, current_lr)
             logger.log_epoch_timing(epoch, epoch_duration, samples_per_sec)
 
-            print(
-                f"Epoch {epoch+1}/{args.epochs}: "
-                f"avg_loss={avg_loss:.4f} top1={top1:.1%} top5={top5:.1%}"
-            )
+            resource_metrics = monitor.summarize()
+            logger.log_resource_metrics(epoch, resource_metrics)
+            logger.log_training_dynamics(epoch, step_losses, step_grad_norms)
+            logger.log_pipeline_timing(epoch, data_time, compute_time)
+
+            # --- Consolidated epoch summary via logging ---
+            total_time = data_time + compute_time
+            summary: dict[str, str] = {
+                "epoch": f"{epoch+1}/{args.epochs}",
+                "loss": f"{avg_loss:.4f}",
+                "policy_loss": f"{breakdown['policy']:.4f}",
+                "value_loss": f"{breakdown['value']:.4f}",
+                "top1": f"{top1:.1%}",
+                "top5": f"{top5:.1%}",
+                "lr": f"{current_lr:.2e}",
+                "grad_norm_avg": f"{sum(step_grad_norms)/len(step_grad_norms):.3f}" if step_grad_norms else "n/a",
+                "grad_norm_peak": f"{max(step_grad_norms):.3f}" if step_grad_norms else "n/a",
+                "samples/s": f"{samples_per_sec:.0f}",
+                "epoch_time": f"{epoch_duration:.1f}s",
+                "data_pct": f"{data_time / total_time:.0%}" if total_time > 0 else "0%",
+            }
+            if "cpu_percent_avg" in resource_metrics:
+                summary["cpu"] = f"{resource_metrics['cpu_percent_avg']:.0f}%/{resource_metrics['cpu_percent_peak']:.0f}%"
+            if "ram_mb_avg" in resource_metrics:
+                summary["ram"] = f"{resource_metrics['ram_mb_avg']:.0f}mb"
+            if "gpu_util_avg" in resource_metrics:
+                summary["gpu"] = f"{resource_metrics['gpu_util_avg']:.0f}%/{resource_metrics['gpu_util_peak']:.0f}%"
+            if "gpu_temp_avg" in resource_metrics:
+                summary["gpu_temp"] = f"{resource_metrics['gpu_temp_avg']:.0f}C"
+            if "gpu_power_avg" in resource_metrics:
+                summary["gpu_power"] = f"{resource_metrics['gpu_power_avg']:.0f}W"
+            logger.log_epoch_summary(summary)
 
             if top1 > best_acc:
                 best_acc = top1
@@ -274,11 +330,13 @@ def main() -> None:
 
             # Phase gate check
             if top1 > tcfg.phase1_gate:
-                print(f"PHASE 1 GATE PASSED: top-1 accuracy {top1:.1%} > {tcfg.phase1_gate:.0%}")
-                print("Ready for Phase 2.")
+                log.info(
+                    "PHASE 1 GATE PASSED: top-1 accuracy %s > %s — ready for Phase 2",
+                    f"{top1:.1%}", f"{tcfg.phase1_gate:.0%}",
+                )
                 break
 
-    print(f"Best top-1 accuracy: {best_acc:.1%}")
+    log.info("best_top1=%s", f"{best_acc:.1%}")
 
 
 if __name__ == "__main__":

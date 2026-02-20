@@ -432,6 +432,10 @@ def add_training_args(parser: ArgumentParser) -> None:
         help="DataLoader worker processes (default: 2)",
     )
     g.add_argument(
+        "--tqdm", action="store_true", default=False,
+        help="show tqdm progress bars (default: off, structured log lines instead)",
+    )
+    g.add_argument(
         "--phase1-gate", type=float, default=0.30,
         help="top-1 accuracy to pass Phase 1 gate (default: 0.30)",
     )

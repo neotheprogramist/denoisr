@@ -268,6 +268,14 @@ Without `--run-name`, a timestamp like `2026-02-20_14-30-15` is generated automa
 | `lr` (learning rate)                                  | Every epoch     | 1     |
 | `diffusion/loss`, `diffusion/curriculum_steps`        | Every epoch     | 2     |
 | `timing/epoch_duration_s`, `timing/samples_per_sec`   | Every epoch     | 1, 2  |
+| `resources/cpu_percent_avg`, `cpu_percent_peak`       | Every epoch     | 1, 2  |
+| `resources/ram_mb_avg`, `ram_mb_peak`                 | Every epoch     | 1, 2  |
+| `resources/gpu_util_avg`, `gpu_util_peak`             | Every epoch     | 1, 2  |
+| `resources/gpu_mem_mb_avg`, `gpu_mem_mb_peak`         | Every epoch     | 1, 2  |
+| `resources/gpu_temp_avg`, `gpu_power_avg`             | Every epoch     | 1, 2  |
+| `dynamics/grad_norm_avg`, `grad_norm_peak`            | Every epoch     | 1, 2  |
+| `dynamics/loss_stddev`                                | Every epoch     | 1, 2  |
+| `pipeline/data_wait_frac`, `compute_frac`             | Every epoch     | 1, 2  |
 | `gpu/memory_allocated_mb`, `gpu/memory_reserved_mb`   | Every 100 steps | 1, 2  |
 | Hyperparameters (lr, batch_size, d_s, num_heads, ...) | Once at start   | 1, 2  |
 
@@ -302,8 +310,24 @@ Example `metrics.log` output:
 ```
 epoch=0   avg_loss=6.566337   top1=0.0000   top5=0.0000   lr=1.00e-04
 epoch=0   duration_s=3.83     samples_per_sec=496.1
-epoch=1   avg_loss=6.273363   top1=0.0000   top5=0.0000   lr=2.00e-04
-epoch=1   duration_s=2.26     samples_per_sec=841.7
+epoch=0   cpu_avg=45.2%   cpu_peak=98.1%   ram_avg=2341mb   ram_peak=2567mb
+epoch=0   grad_norm_avg=0.342   grad_norm_peak=1.000   loss_std=0.0512
+epoch=0   data_wait_s=0.45   data_wait_frac=0.12   compute_frac=0.88
+```
+
+#### Agent-friendly mode (default)
+
+By default, training scripts suppress tqdm progress bars and emit one structured log line per epoch via Python's `logging` module. This is designed for automated agents that monitor training and react to metrics:
+
+```
+epoch=1/100  loss=6.5663  policy_loss=5.8901  value_loss=0.6762  top1=0.0%  top5=0.0%  lr=1.00e-04  grad_norm_avg=0.342  grad_norm_peak=1.000  samples/s=496  epoch_time=3.8s  data_pct=12%  cpu=45%/98%  ram=2341mb
+```
+
+To enable tqdm progress bars for interactive use:
+
+```bash
+uv run denoisr-train-phase1 --checkpoint outputs/random_model.pt \
+    --data outputs/training_data.pt --tqdm
 ```
 
 #### Log directory layout
@@ -359,6 +383,7 @@ These control how the model learns. Safe to change between runs without architec
 | `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
 | `--warmup-epochs`         | `3`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
 | `--num-workers`           | `2`     | DataLoader worker processes. Set 0 for debugging, 2-4 for training                                                                                                  |
+| `--tqdm`                  | off     | Show tqdm progress bars. Off by default for agent-friendly structured log output                                                                                    |
 
 #### Loss weights
 
