@@ -86,6 +86,11 @@ class DiffusionTrainer:
         breakdown = {"grad_norm": total_norm.item()}
         return loss.item(), breakdown
 
+    @property
+    def current_max_steps(self) -> int:
+        """Current curriculum diffusion step limit."""
+        return self._current_max_steps
+
     def advance_curriculum(self) -> None:
         """Call once per epoch to increase diffusion step difficulty."""
         self._current_max_steps_f = min(

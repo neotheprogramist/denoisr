@@ -154,6 +154,18 @@ def main() -> None:
     )
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
+        logger.log_hparams(
+            {
+                "lr": args.lr,
+                "batch_size": bs,
+                "seq_len": args.seq_len,
+                "max_trajectories": args.max_trajectories,
+                "d_s": cfg.d_s,
+                "num_layers": cfg.num_layers,
+            },
+            {"best_diffusion_loss": float("inf")},
+        )
+
         global_step = 0
 
         for epoch in range(args.epochs):
@@ -184,13 +196,13 @@ def main() -> None:
             num_samples = len(dataset)
             avg_loss = epoch_loss / max(num_batches, 1)
 
-            logger.log_diffusion(epoch, avg_loss, diff_trainer._current_max_steps)
+            logger.log_diffusion(epoch, avg_loss, diff_trainer.current_max_steps)
             logger.log_epoch_timing(epoch, epoch_duration, num_samples / epoch_duration)
 
             print(
                 f"Epoch {epoch+1}/{args.epochs}: "
                 f"avg_diffusion_loss={avg_loss:.4f} "
-                f"curriculum_steps={diff_trainer._current_max_steps}"
+                f"curriculum_steps={diff_trainer.current_max_steps}"
             )
 
             if avg_loss < best_loss:
