@@ -274,7 +274,7 @@ Without `--run-name`, a timestamp like `2026-02-20_14-30-15` is generated automa
 #### Visualize with TensorBoard
 
 ```bash
-uvx tensorboard --logdir logs/
+uvx --with 'setuptools<71' tensorboard --logdir logs/
 ```
 
 Then open http://localhost:6006 in your browser. The **Scalars** tab shows loss curves, accuracy, and timing. The **HParams** tab lets you compare runs side-by-side.
