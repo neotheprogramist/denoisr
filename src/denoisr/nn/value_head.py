@@ -18,7 +18,7 @@ class ChessValueHead(nn.Module):
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         pooled = self.norm(x.mean(dim=1))
-        with torch.amp.autocast("cuda", enabled=False):
+        with torch.amp.autocast("cuda", enabled=False):  # type: ignore[attr-defined]
             wdl_logits = self.wdl_linear(pooled.float())
         ply = torch.nn.functional.softplus(self.ply_linear(pooled))
         return wdl_logits, ply
