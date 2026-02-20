@@ -5,14 +5,20 @@
 .env
 .env.local
 
-# Data files
-data/
+# Data files (top-level only, not src/denoisr/data/)
+/data/
 
 # Plot outputs
 plots/
 
 # Model checkpoints
 checkpoints/
+
+# Training outputs
+outputs/
+
+# TensorBoard logs
+logs/
 
 # Downloaded models
 models/
