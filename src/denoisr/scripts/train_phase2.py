@@ -39,9 +39,13 @@ from denoisr.scripts.config import (
     save_checkpoint,
     training_config_from_args,
 )
-from denoisr.training.diffusion_trainer import DiffusionTrainer
 from denoisr.training.logger import TrainingLogger
-from denoisr.training.phase2_trainer import TrajectoryBatch
+from denoisr.training.loss import ChessLossComputer
+from denoisr.training.phase2_trainer import (
+    Phase2Trainer,
+    TrajectoryBatch,
+    evaluate_phase2_gate,
+)
 from denoisr.training.resource_monitor import ResourceMonitor
 
 log = logging.getLogger(__name__)
@@ -146,7 +150,7 @@ def extract_trajectories(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Phase 2: Diffusion bootstrapping"
+        description="Phase 2: World model + diffusion bootstrapping"
     )
     parser.add_argument(
         "--checkpoint", required=True, help="Phase 1 checkpoint path"
@@ -160,15 +164,15 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--output", type=str, default="outputs/phase2.pt")
-    parser.add_argument("--run-name", type=str, default=None, help="TensorBoard run name (default: timestamp)")
+    parser.add_argument(
+        "--run-name", type=str, default=None,
+        help="TensorBoard run name (default: timestamp)",
+    )
     add_model_args(parser)
     add_training_args(parser)
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     device = detect_device()
     tcfg = training_config_from_args(args)
@@ -178,7 +182,9 @@ def main() -> None:
     # --- Load Phase 1 ---
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
     cfg = resolve_gradient_checkpointing(cfg, args, device)
-    log.info("checkpoint loaded  d_s=%d  layers=%d", cfg.d_s, cfg.num_layers)
+    log.info(
+        "checkpoint loaded  d_s=%d  layers=%d", cfg.d_s, cfg.num_layers,
+    )
 
     encoder = build_encoder(cfg).to(device)
     backbone = build_backbone(cfg).to(device)
@@ -192,51 +198,80 @@ def main() -> None:
 
     # --- Build Phase 2 modules ---
     world_model = build_world_model(cfg).to(device)
-    diffusion = build_diffusion(cfg).to(device)
+    diffusion_mod = build_diffusion(cfg).to(device)
     consistency = build_consistency(cfg).to(device)
     schedule = build_schedule(cfg).to(device)
 
     encoder = maybe_compile(encoder, device)
     backbone = maybe_compile(backbone, device)
-    diffusion = maybe_compile(diffusion, device)
+    diffusion_mod = maybe_compile(diffusion_mod, device)
 
-    diff_trainer = DiffusionTrainer(
+    loss_fn = ChessLossComputer(
+        policy_weight=tcfg.policy_weight,
+        value_weight=tcfg.value_weight,
+        consistency_weight=tcfg.consistency_weight,
+        diffusion_weight=tcfg.diffusion_weight,
+        reward_weight=tcfg.reward_weight,
+        ply_weight=tcfg.ply_weight,
+        use_harmony_dream=tcfg.use_harmony_dream,
+        harmony_ema_decay=tcfg.harmony_ema_decay,
+    )
+
+    trainer = Phase2Trainer(
         encoder=encoder,
-        diffusion=diffusion,
+        backbone=backbone,
+        policy_head=policy_head,
+        value_head=value_head,
+        world_model=world_model,
+        diffusion=diffusion_mod,
+        consistency=consistency,
         schedule=schedule,
+        loss_fn=loss_fn,
         lr=args.lr,
         device=device,
         max_grad_norm=tcfg.max_grad_norm,
+        encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
+        weight_decay=tcfg.weight_decay,
         curriculum_initial_fraction=tcfg.curriculum_initial_fraction,
         curriculum_growth=tcfg.curriculum_growth,
     )
 
-    # --- Extract trajectories ---
+    # --- Extract enriched trajectories ---
     board_encoder = build_board_encoder(cfg)
-    trajectories = extract_trajectories(
-        Path(args.pgn), board_encoder, args.seq_len, args.max_trajectories
+    trajectory_data = extract_trajectories(
+        Path(args.pgn), board_encoder,
+        args.seq_len, args.max_trajectories,
     )
-    log.info("trajectories=%d  seq_len=%d", len(trajectories), args.seq_len)
+    N = trajectory_data.boards.shape[0]
+    log.info("trajectories=%d  seq_len=%d", N, args.seq_len)
 
-    # --- Train diffusion ---
-    bs = args.batch_size
-    best_loss = float("inf")
+    # --- Train/holdout split (95/5) ---
+    n_holdout = max(1, int(N * 0.05))
+    n_train = N - n_holdout
 
-    all_trajectories = torch.stack(trajectories)  # [N, T, C, 8, 8]
-    dataset = TensorDataset(all_trajectories)
+    train_dataset = TensorDataset(
+        trajectory_data.boards[:n_train],
+        trajectory_data.actions_from[:n_train],
+        trajectory_data.actions_to[:n_train],
+        trajectory_data.policies[:n_train],
+        trajectory_data.values[:n_train],
+        trajectory_data.rewards[:n_train],
+    )
     loader = DataLoader(
-        dataset, batch_size=bs, shuffle=True,
-        num_workers=tcfg.num_workers, pin_memory=(device.type == "cuda"),
+        train_dataset, batch_size=args.batch_size, shuffle=True,
+        num_workers=tcfg.num_workers,
+        pin_memory=(device.type == "cuda"),
         persistent_workers=True,
     )
 
     monitor = ResourceMonitor()
+    best_loss = float("inf")
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
         logger.log_hparams(
             {
                 "lr": args.lr,
-                "batch_size": bs,
+                "batch_size": args.batch_size,
                 "epochs": args.epochs,
                 "seq_len": args.seq_len,
                 "max_trajectories": args.max_trajectories,
@@ -245,11 +280,9 @@ def main() -> None:
                 "diffusion_layers": cfg.diffusion_layers,
                 "num_timesteps": cfg.num_timesteps,
                 "max_grad_norm": tcfg.max_grad_norm,
-                "curriculum_initial_fraction": tcfg.curriculum_initial_fraction,
-                "curriculum_growth": tcfg.curriculum_growth,
-                "num_workers": tcfg.num_workers,
+                "harmony_dream": tcfg.use_harmony_dream,
             },
-            {"best_diffusion_loss": float("inf")},
+            {"best_total_loss": float("inf")},
         )
 
         global_step = 0
@@ -267,22 +300,31 @@ def main() -> None:
             pbar = tqdm(
                 loader,
                 desc=f"Epoch {epoch+1}/{args.epochs}",
-                leave=False,
-                smoothing=0.3,
+                leave=False, smoothing=0.3,
                 disable=not use_tqdm,
             )
             data_start = time.monotonic()
-            for (batch,) in pbar:
+            for boards, af, at, pols, vals, rews in pbar:
                 data_time += time.monotonic() - data_start
 
-                batch = batch.to(device, non_blocking=True)
+                batch = TrajectoryBatch(
+                    boards=boards.to(device, non_blocking=True),
+                    actions_from=af.to(device, non_blocking=True),
+                    actions_to=at.to(device, non_blocking=True),
+                    policies=pols.to(device, non_blocking=True),
+                    values=vals.to(device, non_blocking=True),
+                    rewards=rews.to(device, non_blocking=True),
+                )
+
                 compute_start = time.monotonic()
-                loss, breakdown = diff_trainer.train_step(batch)
+                loss, breakdown = trainer.train_step(batch)
                 compute_time += time.monotonic() - compute_start
 
                 logger.log_train_step(global_step, loss, breakdown)
                 step_losses.append(loss)
-                step_grad_norms.append(breakdown.get("grad_norm", 0.0))
+                step_grad_norms.append(
+                    breakdown.get("grad_norm", 0.0),
+                )
                 if global_step % 100 == 0:
                     logger.log_gpu(global_step)
                     monitor.sample()
@@ -293,59 +335,104 @@ def main() -> None:
                 data_start = time.monotonic()
             pbar.close()
 
-            diff_trainer.advance_curriculum()
+            trainer.advance_curriculum()
             epoch_duration = time.monotonic() - epoch_start
-            num_samples = len(dataset)
+            num_samples = len(train_dataset)
             avg_loss = epoch_loss / max(num_batches, 1)
 
-            logger.log_diffusion(epoch, avg_loss, diff_trainer.current_max_steps)
-            logger.log_epoch_timing(epoch, epoch_duration, num_samples / epoch_duration)
+            logger.log_diffusion(
+                epoch, avg_loss, trainer.current_max_steps,
+            )
+            logger.log_epoch_timing(
+                epoch, epoch_duration,
+                num_samples / epoch_duration,
+            )
 
             resource_metrics = monitor.summarize()
             logger.log_resource_metrics(epoch, resource_metrics)
-            logger.log_training_dynamics(epoch, step_losses, step_grad_norms)
-            logger.log_pipeline_timing(epoch, data_time, compute_time)
+            logger.log_training_dynamics(
+                epoch, step_losses, step_grad_norms,
+            )
+            logger.log_pipeline_timing(
+                epoch, data_time, compute_time,
+            )
 
-            # --- Consolidated epoch summary via logging ---
             total_time = data_time + compute_time
             summary: dict[str, str] = {
                 "epoch": f"{epoch+1}/{args.epochs}",
-                "diffusion_loss": f"{avg_loss:.4f}",
-                "curriculum_steps": str(diff_trainer.current_max_steps),
-                "grad_norm_avg": f"{sum(step_grad_norms)/len(step_grad_norms):.3f}" if step_grad_norms else "n/a",
-                "grad_norm_peak": f"{max(step_grad_norms):.3f}" if step_grad_norms else "n/a",
+                "total_loss": f"{avg_loss:.4f}",
+                "curriculum_steps": str(trainer.current_max_steps),
+                "grad_norm_avg": (
+                    f"{sum(step_grad_norms)/len(step_grad_norms):.3f}"
+                    if step_grad_norms else "n/a"
+                ),
                 "samples/s": f"{num_samples / epoch_duration:.0f}",
                 "epoch_time": f"{epoch_duration:.1f}s",
-                "data_pct": f"{data_time / total_time:.0%}" if total_time > 0 else "0%",
+                "data_pct": (
+                    f"{data_time / total_time:.0%}"
+                    if total_time > 0 else "0%"
+                ),
             }
-            if "cpu_percent_avg" in resource_metrics:
-                summary["cpu"] = f"{resource_metrics['cpu_percent_avg']:.0f}%/{resource_metrics['cpu_percent_peak']:.0f}%"
-            if "ram_mb_avg" in resource_metrics:
-                summary["ram"] = f"{resource_metrics['ram_mb_avg']:.0f}mb"
-            if "gpu_util_avg" in resource_metrics:
-                summary["gpu"] = f"{resource_metrics['gpu_util_avg']:.0f}%/{resource_metrics['gpu_util_peak']:.0f}%"
-            if "gpu_temp_avg" in resource_metrics:
-                summary["gpu_temp"] = f"{resource_metrics['gpu_temp_avg']:.0f}C"
-            if "gpu_power_avg" in resource_metrics:
-                summary["gpu_power"] = f"{resource_metrics['gpu_power_avg']:.0f}W"
+            if tcfg.use_harmony_dream:
+                for k, v in loss_fn.get_coefficients().items():
+                    summary[f"hd_{k}"] = f"{v:.3f}"
             logger.log_epoch_summary(summary)
 
             if avg_loss < best_loss:
                 best_loss = avg_loss
                 save_checkpoint(
-                    Path(args.output),
-                    cfg,
+                    Path(args.output), cfg,
                     encoder=encoder.state_dict(),
                     backbone=backbone.state_dict(),
                     policy_head=policy_head.state_dict(),
                     value_head=value_head.state_dict(),
                     world_model=world_model.state_dict(),
-                    diffusion=diffusion.state_dict(),
+                    diffusion=diffusion_mod.state_dict(),
                     consistency=consistency.state_dict(),
                 )
 
-        log.info("best_diffusion_loss=%s", f"{best_loss:.4f}")
-        log.info("Evaluate diffusion vs single-step accuracy to check Phase 2 gate (>5pp).")
+        # --- Phase 2 gate ---
+        log.info(
+            "Phase 2 gate on holdout (%d samples)...", n_holdout,
+        )
+        holdout_boards = trajectory_data.boards[
+            n_train:, 0
+        ].to(device)
+        holdout_from = trajectory_data.actions_from[
+            n_train:, 0
+        ].to(device)
+        holdout_to = trajectory_data.actions_to[
+            n_train:, 0
+        ].to(device)
+
+        single_acc, diff_acc, delta = evaluate_phase2_gate(
+            encoder=encoder,
+            backbone=backbone,
+            policy_head=policy_head,
+            diffusion=diffusion_mod,
+            schedule=schedule,
+            boards=holdout_boards,
+            target_from=holdout_from,
+            target_to=holdout_to,
+            device=device,
+        )
+        log.info(
+            "Phase 2 gate: single=%.1f%%  diffusion=%.1f%%  "
+            "delta=%.1fpp  threshold=%.1fpp",
+            single_acc * 100, diff_acc * 100,
+            delta, tcfg.phase2_gate,
+        )
+        if delta > tcfg.phase2_gate:
+            log.info(
+                "Phase 2 gate PASSED (delta %.1fpp > %.1fpp)",
+                delta, tcfg.phase2_gate,
+            )
+        else:
+            log.warning(
+                "Phase 2 gate NOT PASSED (delta %.1fpp <= %.1fpp)."
+                " Checkpoint saved -- user decides.",
+                delta, tcfg.phase2_gate,
+            )
 
 
 if __name__ == "__main__":
