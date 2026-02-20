@@ -95,6 +95,43 @@ class SupervisedTrainer:
 
         return total_loss.item(), breakdown
 
+    def train_step_tensors(
+        self,
+        boards: torch.Tensor,
+        target_policies: torch.Tensor,
+        target_values: torch.Tensor,
+    ) -> tuple[float, dict[str, float]]:
+        """Train step accepting pre-stacked tensors (from DataLoader)."""
+        boards = boards.to(self.device)
+        target_policies = target_policies.to(self.device)
+        target_values = target_values.to(self.device)
+
+        self.encoder.train()
+        self.backbone.train()
+        self.policy_head.train()
+        self.value_head.train()
+
+        with autocast(self._autocast_device, enabled=self._autocast_enabled):
+            latent = self.encoder(boards)
+            features = self.backbone(latent)
+            pred_policy = self.policy_head(features)
+            pred_value, _pred_ply = self.value_head(features)
+            total_loss, breakdown = self.loss_fn.compute(
+                pred_policy, pred_value, target_policies, target_values
+            )
+
+        self.optimizer.zero_grad()
+        self.scaler.scale(total_loss).backward()  # type: ignore[no-untyped-call]
+        self.scaler.unscale_(self.optimizer)
+        torch.nn.utils.clip_grad_norm_(
+            [p for group in self.optimizer.param_groups for p in group["params"]],
+            self.max_grad_norm,
+        )
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+
+        return total_loss.item(), breakdown
+
     def scheduler_step(self) -> None:
         self._epoch += 1
         if self._epoch <= self._warmup_epochs:

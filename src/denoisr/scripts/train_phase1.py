@@ -11,6 +11,7 @@ import random
 from pathlib import Path
 
 import torch
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from denoisr.scripts.config import (
@@ -25,10 +26,10 @@ from denoisr.scripts.config import (
     save_checkpoint,
 )
 from denoisr.scripts.generate_data import unstack_examples
-from denoisr.training.augmentation import flip_board, flip_policy, flip_value
+from denoisr.training.dataset import ChessDataset
 from denoisr.training.loss import ChessLossComputer
 from denoisr.training.supervised_trainer import SupervisedTrainer
-from denoisr.types import BoardTensor, PolicyTarget, TrainingExample, ValueTarget
+from denoisr.types import TrainingExample
 
 
 def measure_accuracy(
@@ -136,39 +137,50 @@ def main() -> None:
         warmup_epochs=3,
     )
 
-    # --- Train ---
+    # --- Build DataLoader from stacked tensors ---
     bs = args.batch_size
+    train_boards = torch.stack([ex.board.data for ex in train])
+    train_policies = torch.stack([ex.policy.data for ex in train])
+    train_values = torch.tensor(
+        [[ex.value.win, ex.value.draw, ex.value.loss] for ex in train],
+        dtype=torch.float32,
+    )
+
+    train_dataset = ChessDataset(
+        train_boards,
+        train_policies,
+        train_values,
+        num_planes=cfg.num_planes,
+        augment=True,
+    )
+    train_loader: DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
+        DataLoader(
+            train_dataset,
+            batch_size=bs,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=(device.type == "cuda"),
+            persistent_workers=True,
+        )
+    )
+
+    # --- Train ---
     best_acc = 0.0
 
     for epoch in range(args.epochs):
-        random.shuffle(train)
         epoch_loss = 0.0
         num_batches = 0
 
         pbar = tqdm(
-            range(0, len(train), bs),
+            train_loader,
             desc=f"Epoch {epoch+1}/{args.epochs}",
             leave=False,
             smoothing=0.3,
         )
-        for i in pbar:
-            batch = train[i : i + bs]
-            if not batch:
-                break
-            augmented: list[TrainingExample] = []
-            for ex in batch:
-                if random.random() < 0.5:
-                    augmented.append(
-                        TrainingExample(
-                            board=BoardTensor(flip_board(ex.board.data, ex.board.data.shape[0])),
-                            policy=PolicyTarget(flip_policy(ex.policy.data)),
-                            value=ValueTarget(*flip_value(ex.value.win, ex.value.draw, ex.value.loss)),
-                        )
-                    )
-                else:
-                    augmented.append(ex)
-            batch = augmented
-            loss, breakdown = trainer.train_step(batch)
+        for boards_batch, policies_batch, values_batch in pbar:
+            loss, breakdown = trainer.train_step_tensors(
+                boards_batch, policies_batch, values_batch
+            )
             epoch_loss += loss
             num_batches += 1
             pbar.set_postfix(
