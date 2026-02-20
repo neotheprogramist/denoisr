@@ -2,8 +2,7 @@ import chess
 import torch
 from torch import nn
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
-from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
+from denoisr.data.protocols import BoardEncoder
 from denoisr.nn.diffusion import CosineNoiseSchedule
 
 
@@ -28,7 +27,7 @@ class DiffusionChessEngine:
         value_head: nn.Module,
         diffusion: nn.Module,
         schedule: CosineNoiseSchedule,
-        board_encoder: SimpleBoardEncoder | ExtendedBoardEncoder,
+        board_encoder: BoardEncoder,
         device: torch.device | None = None,
         num_denoising_steps: int = 10,
     ) -> None:
@@ -86,16 +85,27 @@ class DiffusionChessEngine:
         return latent
 
     def _diffusion_imagine(self, latent: torch.Tensor) -> torch.Tensor:
-        """Run iterative denoising to imagine future trajectories."""
+        """Run DDIM-style iterative denoising to imagine future trajectories."""
         x = torch.randn_like(latent)
-        step_size = max(1, self._schedule.num_timesteps // self._num_steps)
+        T = self._schedule.num_timesteps
+        step_size = max(1, T // self._num_steps)
 
         for i in range(self._num_steps):
-            t_val = max(0, self._schedule.num_timesteps - 1 - i * step_size)
+            t_val = max(0, T - 1 - i * step_size)
             t = torch.tensor([t_val], device=self._device)
             noise_pred = self._diffusion(x, t, latent)
-            ab = self._schedule.alpha_bar[t_val]
-            x = (x - (1 - ab).sqrt() * noise_pred) / ab.sqrt()
+
+            ab_t = self._schedule.alpha_bar[t_val]
+            # x₀ prediction from noise estimate
+            x0_pred = (x - (1 - ab_t).sqrt() * noise_pred) / ab_t.sqrt()
+
+            # DDIM step: re-noise to t_prev level
+            t_prev = max(0, t_val - step_size)
+            if t_prev > 0:
+                ab_prev = self._schedule.alpha_bar[t_prev]
+                x = ab_prev.sqrt() * x0_pred + (1 - ab_prev).sqrt() * noise_pred
+            else:
+                x = x0_pred
 
         return (latent + x) / 2
 

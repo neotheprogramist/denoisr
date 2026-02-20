@@ -2,14 +2,14 @@ import pytest
 import torch
 from hypothesis import given, strategies as st
 
-from denoisr.types.board import BOARD_SIZE, NUM_PLANES, BoardTensor
+from denoisr.types.board import BOARD_SIZE, NUM_PIECE_PLANES, BoardTensor
 
 
 class TestBoardTensor:
     def test_valid_shape(self) -> None:
-        data = torch.zeros(NUM_PLANES, BOARD_SIZE, BOARD_SIZE)
+        data = torch.zeros(NUM_PIECE_PLANES, BOARD_SIZE, BOARD_SIZE)
         bt = BoardTensor(data)
-        assert bt.data.shape == (NUM_PLANES, 8, 8)
+        assert bt.data.shape == (NUM_PIECE_PLANES, 8, 8)
 
     def test_rejects_wrong_ndim(self) -> None:
         with pytest.raises(ValueError, match="3D"):

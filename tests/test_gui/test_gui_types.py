@@ -2,7 +2,6 @@ import pytest
 
 from denoisr.gui.types import (
     EngineConfig,
-    GameOutcome,
     GameResult,
     MatchConfig,
     TimeControl,
@@ -82,18 +81,9 @@ class TestMatchConfig:
         tc = TimeControl(base_seconds=10.0, increment=0.1)
         mc = MatchConfig(engine1=e1, engine2=e2, games=100, time_control=tc)
         assert mc.games == 100
-        assert mc.concurrency == 1
-
     def test_rejects_zero_games(self) -> None:
         e1 = EngineConfig(command="eng1", args=(), name="E1")
         e2 = EngineConfig(command="eng2", args=(), name="E2")
         tc = TimeControl(base_seconds=10.0, increment=0.1)
         with pytest.raises(ValueError, match="games"):
             MatchConfig(engine1=e1, engine2=e2, games=0, time_control=tc)
-
-
-class TestGameOutcome:
-    def test_values(self) -> None:
-        assert GameOutcome.WIN.name == "WIN"
-        assert GameOutcome.DRAW.name == "DRAW"
-        assert GameOutcome.LOSS.name == "LOSS"

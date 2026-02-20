@@ -20,7 +20,7 @@ def _try_init_nvml() -> bool:
 
         pynvml.nvmlInit()
         return True
-    except Exception:
+    except (ImportError, OSError):
         return False
 
 
@@ -30,7 +30,7 @@ def _get_nvml_handle() -> object | None:
         import pynvml
 
         return pynvml.nvmlDeviceGetHandleByIndex(0)
-    except Exception:
+    except (ImportError, OSError):
         return None
 
 
@@ -104,7 +104,7 @@ class ResourceMonitor:
 
             power = pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle)
             self._gpu_power_samples.append(power / 1000.0)  # mW -> W
-        except Exception:
+        except (ImportError, OSError, RuntimeError):
             pass
 
     def summarize(self) -> dict[str, float]:

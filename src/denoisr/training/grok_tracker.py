@@ -46,6 +46,7 @@ class GrokTracker:
         erank_freq: int = 1000,
         spectral_freq: int = 5000,
         onset_threshold: float = 0.95,
+        on_state_transition: Callable[[int, str, str, str], None] | None = None,
     ) -> None:
         self._encoder = encoder
         self._backbone = backbone
@@ -54,6 +55,7 @@ class GrokTracker:
         self._erank_freq = erank_freq
         self._spectral_freq = spectral_freq
         self._onset_threshold = onset_threshold
+        self._on_state_transition = on_state_transition
 
         # State machine
         self._state = GrokState.BASELINE
@@ -328,6 +330,7 @@ class GrokTracker:
     def _transition_to(
         self, new_state: GrokState, step_or_epoch: int, trigger: str
     ) -> None:
+        old_state = self._state
         self._state = new_state
 
         # Adaptive frequency
@@ -347,6 +350,11 @@ class GrokTracker:
                 self._freq_multiplier,
                 max(1, self._erank_freq // self._freq_multiplier),
                 max(1, self._spectral_freq // self._freq_multiplier),
+            )
+
+        if self._on_state_transition is not None:
+            self._on_state_transition(
+                step_or_epoch, old_state.name, new_state.name, trigger
             )
 
     @property

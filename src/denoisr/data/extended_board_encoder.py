@@ -67,9 +67,9 @@ class ExtendedBoardEncoder:
         data[meta_start + 5] = min(board.halfmove_clock / 100.0, 1.0)
 
         # Repetition count (1 plane, normalized: 0, 0.5, 1.0)
-        if board.is_repetition(2):
+        if board.is_repetition(3):
             data[meta_start + 6] = 1.0
-        elif board.is_repetition(1):
+        elif board.is_repetition(2):
             data[meta_start + 6] = 0.5
 
         # Side to move (1 plane)
