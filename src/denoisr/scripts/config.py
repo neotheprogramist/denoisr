@@ -93,9 +93,9 @@ class TrainingConfig:
 
     # Maximum L2 norm for gradient clipping. Prevents training instability
     # from occasional large gradient spikes (e.g. unusual positions).
-    # 1.0 is standard for transformers; increase if grad_norm is frequently
-    # clipped (visible in TensorBoard under gradients/norm).
-    max_grad_norm: float = 1.0
+    # 5.0 is permissive for from-scratch training; decrease to 1.0 for
+    # fine-tuning (visible in TensorBoard under gradients/norm).
+    max_grad_norm: float = 5.0
 
     # AdamW weight decay coefficient. Acts as L2 regularization to prevent
     # overfitting. 1e-4 is mild — increase to 1e-2 for smaller datasets,
@@ -104,9 +104,9 @@ class TrainingConfig:
 
     # Learning rate multiplier for the encoder and backbone relative to
     # task-specific heads (policy, value). Lower values preserve pretrained
-    # representations when fine-tuning. E.g. 0.3 means encoder/backbone
-    # learn at 30% of the head learning rate.
-    encoder_lr_multiplier: float = 0.3
+    # representations when fine-tuning. 1.0 means encoder/backbone train
+    # at the same LR as heads (appropriate for from-scratch training).
+    encoder_lr_multiplier: float = 1.0
 
     # Minimum learning rate at the end of cosine annealing. Prevents LR
     # from reaching exactly 0, which would completely stall learning.
@@ -115,8 +115,8 @@ class TrainingConfig:
 
     # Number of initial epochs with linearly increasing LR (0 → target).
     # Prevents destructively large parameter updates when weights are
-    # still random. 3-5 epochs is typical for transformer training.
-    warmup_epochs: int = 3
+    # still random. 5 epochs compensates for higher peak LR (3e-4).
+    warmup_epochs: int = 5
 
     # -- Loss weights -------------------------------------------------------
     # These control the relative importance of each training objective.
@@ -380,24 +380,24 @@ def add_training_args(parser: ArgumentParser) -> None:
     """Register CLI flags for all training hyperparameters."""
     g = parser.add_argument_group("training")
     g.add_argument(
-        "--max-grad-norm", type=float, default=1.0,
-        help="gradient clipping L2 norm threshold (default: 1.0)",
+        "--max-grad-norm", type=float, default=5.0,
+        help="gradient clipping L2 norm threshold (default: 5.0)",
     )
     g.add_argument(
         "--weight-decay", type=float, default=1e-4,
         help="AdamW weight decay (default: 1e-4)",
     )
     g.add_argument(
-        "--encoder-lr-multiplier", type=float, default=0.3,
-        help="LR multiplier for encoder/backbone vs heads (default: 0.3)",
+        "--encoder-lr-multiplier", type=float, default=1.0,
+        help="LR multiplier for encoder/backbone vs heads (default: 1.0)",
     )
     g.add_argument(
         "--min-lr", type=float, default=1e-6,
         help="minimum LR at end of cosine annealing (default: 1e-6)",
     )
     g.add_argument(
-        "--warmup-epochs", type=int, default=3,
-        help="linear warmup epochs before cosine decay (default: 3)",
+        "--warmup-epochs", type=int, default=5,
+        help="linear warmup epochs before cosine decay (default: 5)",
     )
     g.add_argument(
         "--policy-weight", type=float, default=2.0,

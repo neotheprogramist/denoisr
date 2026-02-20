@@ -49,11 +49,8 @@ def measure_accuracy(
     trainer: SupervisedTrainer,
     examples: list[TrainingExample],
     device: torch.device,
+    batch_size: int = 256,
 ) -> tuple[float, float]:
-    correct_1 = 0
-    correct_5 = 0
-    total = 0
-
     trainer.encoder.eval()
     trainer.backbone.eval()
     trainer.policy_head.eval()
@@ -61,23 +58,27 @@ def measure_accuracy(
     autocast_device = device.type if device.type in ("cuda", "cpu") else "cpu"
     autocast_enabled = device.type == "cuda"
 
+    correct_1 = 0
+    correct_5 = 0
+    total = len(examples)
+
     with torch.no_grad(), autocast(autocast_device, enabled=autocast_enabled):
-        for ex in examples:
-            board = ex.board.data.unsqueeze(0).to(device)
-            latent = trainer.encoder(board)
+        for i in range(0, total, batch_size):
+            batch = examples[i : i + batch_size]
+            boards = torch.stack([ex.board.data for ex in batch]).to(device)
+            targets = torch.stack([ex.policy.data for ex in batch])
+
+            latent = trainer.encoder(boards)
             features = trainer.backbone(latent)
-            logits = trainer.policy_head(features).squeeze(0)
+            logits = trainer.policy_head(features)
 
-            pred_flat = logits.reshape(-1)
-            target_flat = ex.policy.data.reshape(-1)
-            target_idx = target_flat.argmax().item()
+            pred_flat = logits.reshape(len(batch), -1)
+            target_flat = targets.reshape(len(batch), -1)
+            target_idx = target_flat.argmax(dim=-1)  # (B,)
 
-            top5 = pred_flat.topk(5).indices.tolist()
-            if top5[0] == target_idx:
-                correct_1 += 1
-            if target_idx in top5:
-                correct_5 += 1
-            total += 1
+            top5 = pred_flat.topk(5, dim=-1).indices  # (B, 5)
+            correct_1 += (top5[:, 0] == target_idx).sum().item()
+            correct_5 += (top5 == target_idx.unsqueeze(1)).any(dim=1).sum().item()
 
     return correct_1 / max(total, 1), correct_5 / max(total, 1)
 
@@ -95,9 +96,9 @@ def main() -> None:
         help="Path to training data .pt file (create with denoisr-generate-data)",
     )
     parser.add_argument("--holdout-frac", type=float, default=0.05)
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--output", type=str, default="outputs/phase1.pt")
     parser.add_argument(
         "--run-name",
@@ -339,8 +340,11 @@ def main() -> None:
             avg_loss = epoch_loss / max(num_batches, 1)
             top1, top5 = measure_accuracy(trainer, holdout, device)
             current_lr = trainer.optimizer.param_groups[0]["lr"]
+            head_lr = trainer.optimizer.param_groups[2]["lr"]
 
             logger.log_epoch(epoch, avg_loss, top1, top5, current_lr)
+            logger._writer.add_scalar("lr/encoder", current_lr, epoch)
+            logger._writer.add_scalar("lr/head", head_lr, epoch)
             logger.log_epoch_timing(epoch, epoch_duration, samples_per_sec)
 
             resource_metrics = monitor.summarize()
@@ -371,7 +375,8 @@ def main() -> None:
                 "value_loss": f"{breakdown['value']:.4f}",
                 "top1": f"{top1:.1%}",
                 "top5": f"{top5:.1%}",
-                "lr": f"{current_lr:.2e}",
+                "lr_enc": f"{current_lr:.2e}",
+                "lr_head": f"{head_lr:.2e}",
                 "grad_norm_avg": f"{sum(step_grad_norms)/len(step_grad_norms):.3f}" if step_grad_norms else "n/a",
                 "grad_norm_peak": f"{max(step_grad_norms):.3f}" if step_grad_norms else "n/a",
                 "samples/s": f"{samples_per_sec:.0f}",
