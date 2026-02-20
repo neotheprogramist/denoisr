@@ -344,6 +344,72 @@ logs/
     └── ...
 ```
 
+### Grokking detection (Phase 1)
+
+Neural networks sometimes exhibit **grokking** — a phenomenon where the model memorizes training data first, then suddenly generalizes to held-out data much later. Denoisr includes opt-in grokking detection that monitors weight dynamics, representation structure, and structured holdout performance to detect and accelerate this transition.
+
+Enable with `--grok-tracking`:
+
+```bash
+uv run denoisr-train-phase1 \
+    --checkpoint outputs/random_model.pt \
+    --data outputs/training_data.pt \
+    --grok-tracking \
+    --run-name grok-experiment
+```
+
+When enabled, training automatically:
+
+1. **Splits holdout data** into 4 structured sets — random, game-level (entire games held out), opening-family (entire ECO letter groups), and piece-count (endgame positions) — to detect generalization across different axes
+2. **Computes Tier 1 metrics every step** — weight norms per module, gradient norms, train/holdout loss gap
+3. **Computes Tier 2 metrics periodically** — effective rank via SVD (every `--grok-erank-freq` steps), spectral norms and HTSR alpha power-law exponents (every `--grok-spectral-freq` steps)
+4. **Runs a 4-state machine** (BASELINE → ONSET_DETECTED → TRANSITIONING → GROKKED) that increases evaluation frequency 5-10x when grokking signals appear
+5. **Emits console alerts** via `logging.WARNING` when state transitions occur
+
+#### Grokking metrics in TensorBoard
+
+| Metric                              | Frequency          | What it measures                                                              |
+| ----------------------------------- | ------------------ | ----------------------------------------------------------------------------- |
+| `grok/weight_norm_total`            | Every step         | Total L2 norm across all parameters (drops during circuit formation)          |
+| `grok/weight_norm/{module}`         | Every step         | Per-module norms (encoder, backbone, policy_head, value_head)                 |
+| `grok/erank/layer_{i}`              | Every N steps      | Effective rank of layer activations (measures representation richness)        |
+| `grok/spectral_norm/layer_{i}/attn` | Every N steps      | Largest singular value of attention weights (stability indicator)             |
+| `grok/spectral_norm/layer_{i}/ffn`  | Every N steps      | Largest singular value of FFN weights                                         |
+| `grok/alpha/layer_{i}`              | Every N steps      | HTSR power-law exponent (lower = better generalization)                       |
+| `grok/holdout/{split}/accuracy`     | Every epoch        | Top-1 accuracy per holdout split                                              |
+| `grok/holdout/{split}/loss`         | Every epoch        | Loss per holdout split                                                        |
+| `grok/loss_gap`                     | Every epoch        | Train loss minus best holdout loss (memorization indicator)                   |
+| `grok/state`                        | Every step + epoch | Current state machine value (0=baseline, 1=onset, 2=transitioning, 3=grokked) |
+
+#### Grokfast acceleration
+
+To accelerate grokking ~50x, enable **Grokfast** — an EMA gradient filter that amplifies slow-varying gradient components (the generalizing signal) while leaving fast-varying components (memorization) alone:
+
+```bash
+uv run denoisr-train-phase1 \
+    --checkpoint outputs/random_model.pt \
+    --data outputs/training_data.pt \
+    --grok-tracking \
+    --grokfast \
+    --grokfast-alpha 0.98 \
+    --grokfast-lamb 2.0 \
+    --run-name grokfast-experiment
+```
+
+The filter is applied between gradient unscaling and gradient clipping in the training loop, so it works correctly with mixed precision training.
+
+#### Grokking detection flags
+
+| Flag                     | Default | What it controls                                                    |
+| ------------------------ | ------- | ------------------------------------------------------------------- |
+| `--grok-tracking`        | off     | Enable grokking detection metrics, structured holdouts, and alerts  |
+| `--grok-erank-freq`      | `1000`  | Effective rank computation frequency (steps). Lower = more data     |
+| `--grok-spectral-freq`   | `5000`  | Spectral norm / HTSR alpha frequency (steps)                        |
+| `--grok-onset-threshold` | `0.95`  | Weight norm ratio for onset detection (lower = more sensitive)      |
+| `--grokfast`             | off     | Enable Grokfast EMA gradient filtering (~50x grokking acceleration) |
+| `--grokfast-alpha`       | `0.98`  | EMA decay rate. Higher = smoother (more historical averaging)       |
+| `--grokfast-lamb`        | `2.0`   | Amplification factor. Higher = stronger boost to slow gradients     |
+
 ### Hyperparameters
 
 All hyperparameters are configurable via CLI flags. They are centralized in `src/denoisr/scripts/config.py` as two frozen dataclasses:
@@ -655,7 +721,7 @@ denoisr/
 │   ├── inference/      # Chess engines (single-pass, diffusion-enhanced), UCI protocol
 │   ├── evaluation/     # cutechess-cli benchmarking harness
 │   └── scripts/        # CLI entry points for all phases + inference + benchmarking
-├── tests/              # 295 tests mirroring src/ structure
+├── tests/              # 343 tests mirroring src/ structure
 ├── fixtures/           # Sample PGN files for testing
 ├── docs/plans/         # Architecture design and implementation plans
 ├── logs/               # TensorBoard + text training logs (gitignored)
