@@ -74,17 +74,24 @@ def format_bestmove(uci_move: str) -> str:
 
 
 def run_uci_loop(
-    engine_select_move_fn: "Callable[[chess.Board], chess.Move]",
+    engine_select_move_fn: Callable[[chess.Board], chess.Move],
+    *,
+    on_isready: Callable[[], None] | None = None,
 ) -> None:
     """Main UCI loop reading from stdin.
 
     Connect to any UCI-compatible GUI (CuteChess, Arena, etc.).
+
+    If on_isready is provided, it is called once on the first 'isready'
+    command. Use this to defer heavy initialization (model loading) so
+    the 'uci'/'uciok' handshake completes instantly.
     """
     import sys
 
     import chess
 
     board = chess.Board()
+    initialized = on_isready is None
 
     for line in sys.stdin:
         line = line.strip()
@@ -97,6 +104,10 @@ def run_uci_loop(
             print("uciok")
 
         elif line == "isready":
+            if not initialized:
+                assert on_isready is not None
+                on_isready()
+                initialized = True
             print("readyok")
 
         elif line.startswith("position"):

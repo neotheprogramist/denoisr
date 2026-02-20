@@ -130,9 +130,10 @@ class DenoisrApp:
         )
 
         self._status_var = tk.StringVar(value="Ready")
-        ttk.Label(
-            status_frame, textvariable=self._status_var, wraplength=200
-        ).pack(anchor="w")
+        status_entry = ttk.Entry(
+            status_frame, textvariable=self._status_var, state="readonly",
+        )
+        status_entry.pack(anchor="w", fill=tk.X)
 
         ttk.Label(status_frame, text="Moves:").pack(
             anchor="w", pady=(8, 0)

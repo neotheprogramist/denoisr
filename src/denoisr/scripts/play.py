@@ -3,6 +3,9 @@
 Loads a trained checkpoint and runs the UCI protocol loop,
 allowing connection to any UCI-compatible GUI (CuteChess, Arena, etc.).
 
+Model loading is deferred until the first 'isready' command so that the
+'uci' → 'uciok' handshake completes instantly.
+
 Supports two inference modes:
   --mode single   Single-pass (fastest, weakest)
   --mode diffusion   Diffusion-enhanced with anytime search (stronger)
@@ -11,7 +14,6 @@ Supports two inference modes:
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from denoisr.inference.uci import run_uci_loop
@@ -20,17 +22,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     import chess
-from denoisr.scripts.config import (
-    build_backbone,
-    build_board_encoder,
-    build_diffusion,
-    build_encoder,
-    build_policy_head,
-    build_schedule,
-    build_value_head,
-    detect_device,
-    load_checkpoint,
-)
 
 
 def main() -> None:
@@ -52,54 +43,78 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    device = detect_device()
-    cfg, state = load_checkpoint(Path(args.checkpoint), device)
+    # Mutable container — populated by load_model() on first 'isready'.
+    _engine_fn: list[Callable[[chess.Board], chess.Move]] = []
 
-    encoder = build_encoder(cfg).to(device)
-    backbone = build_backbone(cfg).to(device)
-    policy_head = build_policy_head(cfg).to(device)
-    value_head = build_value_head(cfg).to(device)
+    def load_model() -> None:
+        """Heavy init: import torch, load checkpoint, build model."""
+        from pathlib import Path
 
-    encoder.load_state_dict(state["encoder"])
-    backbone.load_state_dict(state["backbone"])
-    policy_head.load_state_dict(state["policy_head"])
-    value_head.load_state_dict(state["value_head"])
+        from denoisr.scripts.config import (
+            build_backbone,
+            build_board_encoder,
+            build_diffusion,
+            build_encoder,
+            build_policy_head,
+            build_schedule,
+            build_value_head,
+            detect_device,
+            load_checkpoint,
+        )
 
-    board_encoder = build_board_encoder(cfg)
+        device = detect_device()
+        cfg, state = load_checkpoint(Path(args.checkpoint), device)
 
-    select_move: Callable[[chess.Board], chess.Move]
+        encoder = build_encoder(cfg).to(device)
+        backbone = build_backbone(cfg).to(device)
+        policy_head = build_policy_head(cfg).to(device)
+        value_head = build_value_head(cfg).to(device)
 
-    if args.mode == "diffusion":
-        from denoisr.inference.diffusion_engine import DiffusionChessEngine
+        encoder.load_state_dict(state["encoder"])
+        backbone.load_state_dict(state["backbone"])
+        policy_head.load_state_dict(state["policy_head"])
+        value_head.load_state_dict(state["value_head"])
 
-        diffusion = build_diffusion(cfg).to(device)
-        diffusion.load_state_dict(state["diffusion"])
-        schedule = build_schedule(cfg).to(device)
+        board_encoder = build_board_encoder(cfg)
 
-        select_move = DiffusionChessEngine(
-            encoder=encoder,
-            backbone=backbone,
-            policy_head=policy_head,
-            value_head=value_head,
-            diffusion=diffusion,
-            schedule=schedule,
-            board_encoder=board_encoder,
-            device=device,
-            num_denoising_steps=args.denoising_steps,
-        ).select_move
-    else:
-        from denoisr.inference.engine import ChessEngine
+        if args.mode == "diffusion":
+            from denoisr.inference.diffusion_engine import DiffusionChessEngine
 
-        select_move = ChessEngine(
-            encoder=encoder,
-            backbone=backbone,
-            policy_head=policy_head,
-            value_head=value_head,
-            board_encoder=board_encoder,
-            device=device,
-        ).select_move
+            diffusion = build_diffusion(cfg).to(device)
+            diffusion.load_state_dict(state["diffusion"])
+            schedule = build_schedule(cfg).to(device)
 
-    run_uci_loop(engine_select_move_fn=select_move)
+            _engine_fn.append(
+                DiffusionChessEngine(
+                    encoder=encoder,
+                    backbone=backbone,
+                    policy_head=policy_head,
+                    value_head=value_head,
+                    diffusion=diffusion,
+                    schedule=schedule,
+                    board_encoder=board_encoder,
+                    device=device,
+                    num_denoising_steps=args.denoising_steps,
+                ).select_move
+            )
+        else:
+            from denoisr.inference.engine import ChessEngine
+
+            _engine_fn.append(
+                ChessEngine(
+                    encoder=encoder,
+                    backbone=backbone,
+                    policy_head=policy_head,
+                    value_head=value_head,
+                    board_encoder=board_encoder,
+                    device=device,
+                ).select_move
+            )
+
+    def select_move(board: chess.Board) -> chess.Move:
+        return _engine_fn[0](board)
+
+    run_uci_loop(engine_select_move_fn=select_move, on_isready=load_model)
 
 
 if __name__ == "__main__":
