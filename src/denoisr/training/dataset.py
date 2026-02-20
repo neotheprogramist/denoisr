@@ -4,6 +4,8 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
+from denoisr.training.augmentation import flip_board, flip_policy
+
 
 class ChessDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
     """Wraps pre-stacked training tensors for use with DataLoader.
@@ -35,8 +37,6 @@ class ChessDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
         policy = self.policies[idx]
         value = self.values[idx]
         if self.augment and torch.rand(1).item() < 0.5:
-            from denoisr.training.augmentation import flip_board, flip_policy
-
             board = flip_board(board, self.num_planes)
             policy = flip_policy(policy)
             value = value.flip(0)  # [w,d,l] -> [l,d,w]
