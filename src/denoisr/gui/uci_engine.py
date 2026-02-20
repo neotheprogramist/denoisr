@@ -19,7 +19,9 @@ class UCIEngine:
         self._process: subprocess.Popen[str] | None = None
         self._lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
         self._lines: list[str] = []
+        self._stderr_lines: list[str] = []
         self._line_event = threading.Event()
 
     def start(self, timeout: float = 10.0) -> None:
@@ -28,16 +30,18 @@ class UCIEngine:
             [self._config.command, *self._config.args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
-        # Start a persistent reader thread instead of creating a new
-        # ThreadPoolExecutor for every readline call.
         self._reader_thread = threading.Thread(
             target=self._reader_loop, daemon=True,
         )
         self._reader_thread.start()
+        self._stderr_thread = threading.Thread(
+            target=self._stderr_loop, daemon=True,
+        )
+        self._stderr_thread.start()
 
         self._send("uci")
         self._wait_for("uciok", timeout=timeout)
@@ -105,14 +109,47 @@ class UCIEngine:
                 self._lines.append(line.strip())
             self._line_event.set()
 
+    def _stderr_loop(self) -> None:
+        """Read stderr into a buffer for crash diagnostics."""
+        while self._process is not None:
+            stderr = self._process.stderr if self._process else None
+            if stderr is None:
+                break
+            line = stderr.readline()
+            if not line:
+                break
+            with self._lock:
+                self._stderr_lines.append(line.rstrip())
+
+    def _get_stderr_tail(self, max_lines: int = 30) -> str:
+        """Return the last N stderr lines as a single string."""
+        with self._lock:
+            return "\n".join(self._stderr_lines[-max_lines:])
+
     def _wait_for(self, prefix: str, timeout: float) -> str:
-        """Read buffered lines until one starts with prefix. Raises TimeoutError."""
+        """Read buffered lines until one starts with prefix.
+
+        Raises RuntimeError immediately if the process dies, or
+        TimeoutError if the deadline expires.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            # Fast-fail if the engine process has died
+            if self._process is not None and self._process.poll() is not None:
+                if self._stderr_thread is not None:
+                    self._stderr_thread.join(timeout=1.0)
+                stderr_text = self._get_stderr_tail()
+                msg = (
+                    f"Engine '{self._config.name}' crashed"
+                    f" (exit code {self._process.returncode})"
+                )
+                if stderr_text.strip():
+                    msg += f":\n{stderr_text.strip()}"
+                raise RuntimeError(msg)
+
             with self._lock:
                 for i, line in enumerate(self._lines):
                     if line.startswith(prefix):
-                        # Consume all lines up to and including this one
                         self._lines = self._lines[i + 1:]
                         return line
             self._line_event.clear()
@@ -120,7 +157,11 @@ class UCIEngine:
             if remaining <= 0:
                 break
             self._line_event.wait(timeout=min(remaining, 0.1))
+
+        stderr_text = self._get_stderr_tail()
         msg = f"Timeout waiting for '{prefix}' from {self._config.name}"
+        if stderr_text.strip():
+            msg += f"\nstderr:\n{stderr_text.strip()}"
         raise TimeoutError(msg)
 
     def __enter__(self) -> UCIEngine:

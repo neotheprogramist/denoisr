@@ -261,9 +261,9 @@ class DenoisrApp:
         def _start_engine() -> None:
             try:
                 engine = UCIEngine(config)
-                engine.start(timeout=30.0)
+                engine.start(timeout=120.0)
                 self._move_queue.put(("engine_ready", engine))
-            except (TimeoutError, OSError) as e:
+            except Exception as e:
                 self._move_queue.put(f"error:Engine failed: {e}")
 
         threading.Thread(target=_start_engine, daemon=True).start()
