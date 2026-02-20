@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import subprocess
 import threading
 import time
@@ -19,6 +18,9 @@ class UCIEngine:
         self._config = config
         self._process: subprocess.Popen[str] | None = None
         self._lock = threading.Lock()
+        self._reader_thread: threading.Thread | None = None
+        self._lines: list[str] = []
+        self._line_event = threading.Event()
 
     def start(self, timeout: float = 10.0) -> None:
         """Launch the engine subprocess and complete UCI handshake."""
@@ -30,6 +32,13 @@ class UCIEngine:
             text=True,
             bufsize=1,
         )
+        # Start a persistent reader thread instead of creating a new
+        # ThreadPoolExecutor for every readline call.
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, daemon=True,
+        )
+        self._reader_thread.start()
+
         self._send("uci")
         self._wait_for("uciok", timeout=timeout)
         self._send("isready")
@@ -83,33 +92,36 @@ class UCIEngine:
             self._process.stdin.write(command + "\n")
             self._process.stdin.flush()
 
-    def _wait_for(self, prefix: str, timeout: float) -> str:
-        """Read stdout lines until one starts with prefix. Raises TimeoutError."""
-        if self._process is None or self._process.stdout is None:
-            msg = "Engine process not running"
-            raise RuntimeError(msg)
+    def _reader_loop(self) -> None:
+        """Persistent thread that reads stdout lines into a buffer."""
+        while self._process is not None:
+            stdout = self._process.stdout if self._process else None
+            if stdout is None:
+                break
+            line = stdout.readline()
+            if not line:
+                break
+            with self._lock:
+                self._lines.append(line.strip())
+            self._line_event.set()
 
+    def _wait_for(self, prefix: str, timeout: float) -> str:
+        """Read buffered lines until one starts with prefix. Raises TimeoutError."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            line = self._readline(timeout=deadline - time.monotonic())
-            if line is None:
-                continue
-            if line.startswith(prefix):
-                return line
+            with self._lock:
+                for i, line in enumerate(self._lines):
+                    if line.startswith(prefix):
+                        # Consume all lines up to and including this one
+                        self._lines = self._lines[i + 1:]
+                        return line
+            self._line_event.clear()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self._line_event.wait(timeout=min(remaining, 0.1))
         msg = f"Timeout waiting for '{prefix}' from {self._config.name}"
         raise TimeoutError(msg)
-
-    def _readline(self, timeout: float) -> str | None:
-        """Read one line from stdout with timeout."""
-        if self._process is None or self._process.stdout is None:
-            return None
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(self._process.stdout.readline)
-            try:
-                line = future.result(timeout=max(timeout, 0.1))
-                return line.strip() if line else None
-            except concurrent.futures.TimeoutError:
-                return None
 
     def __enter__(self) -> UCIEngine:
         return self

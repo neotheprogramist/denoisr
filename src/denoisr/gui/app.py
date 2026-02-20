@@ -243,7 +243,6 @@ class DenoisrApp:
 
         self._board_widget.set_board(self._board)
         self._update_moves_text()
-        self._status_var.set("White to move")
 
         ckpt = self._ckpt_var.get().strip()
         if not ckpt:
@@ -255,20 +254,18 @@ class DenoisrApp:
         args = ["run", "denoisr-play", "--checkpoint", ckpt, "--mode", mode]
         config = EngineConfig(command="uv", args=tuple(args), name="Denoisr")
 
-        try:
-            self._engine = UCIEngine(config)
-            self._engine.start(timeout=30.0)
-        except (TimeoutError, OSError) as e:
-            self._status_var.set(f"Engine failed: {e}")
-            self._engine = None
-            return
+        # Start engine in background to avoid freezing the GUI
+        self._status_var.set("Starting engine...")
 
-        # If human is black, engine moves first
-        if self._human_color == chess.BLACK:
-            self._board_widget.set_interactive(False)
-            self._request_engine_move()
-        else:
-            self._board_widget.set_interactive(True)
+        def _start_engine() -> None:
+            try:
+                engine = UCIEngine(config)
+                engine.start(timeout=30.0)
+                self._move_queue.put(("engine_ready", engine))
+            except (TimeoutError, OSError) as e:
+                self._move_queue.put(f"error:Engine failed: {e}")
+
+        threading.Thread(target=_start_engine, daemon=True).start()
 
     def _stop_game(self) -> None:
         self._board_widget.set_interactive(False)
@@ -319,7 +316,9 @@ class DenoisrApp:
                     self._apply_engine_move(item)
                 elif isinstance(item, tuple):
                     kind = item[0]
-                    if kind == "match_board":
+                    if kind == "engine_ready":
+                        self._on_engine_ready(item[1])
+                    elif kind == "match_board":
                         _, board, move = item
                         self._board_widget.set_board(board)
                         self._board_widget.highlight_last_move(move)
@@ -333,6 +332,17 @@ class DenoisrApp:
         except queue.Empty:
             pass
         self._root.after(50, self._poll_queue)
+
+    def _on_engine_ready(self, engine: UCIEngine) -> None:
+        """Called on main thread when background engine startup completes."""
+        self._engine = engine
+        turn = "White" if self._board.turn == chess.WHITE else "Black"
+        self._status_var.set(f"{turn} to move")
+        if self._human_color == chess.BLACK:
+            self._board_widget.set_interactive(False)
+            self._request_engine_move()
+        else:
+            self._board_widget.set_interactive(True)
 
     def _apply_engine_move(self, move: chess.Move) -> None:
         self._board.push(move)
@@ -448,12 +458,15 @@ class DenoisrApp:
             self._move_queue.put(("match_stats", stats))
 
         def run_in_bg() -> None:
-            run_match(
-                config,
-                on_game_complete=on_game_complete,
-                on_move=on_move,
-            )
-            self._move_queue.put(("match_done",))
+            try:
+                run_match(
+                    config,
+                    on_game_complete=on_game_complete,
+                    on_move=on_move,
+                )
+                self._move_queue.put(("match_done",))
+            except Exception as e:
+                self._move_queue.put(f"error:Match failed: {e}")
 
         self._engine_thread = threading.Thread(target=run_in_bg, daemon=True)
         self._engine_thread.start()
