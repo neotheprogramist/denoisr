@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -8,6 +10,7 @@ from conftest import (
     SMALL_NUM_LAYERS,
     SMALL_NUM_TIMESTEPS,
 )
+from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.nn.consistency import ChessConsistencyProjector
 from denoisr.nn.diffusion import ChessDiffusionModule, CosineNoiseSchedule
 from denoisr.nn.encoder import ChessEncoder
@@ -15,8 +18,9 @@ from denoisr.nn.policy_backbone import ChessPolicyBackbone
 from denoisr.nn.policy_head import ChessPolicyHead
 from denoisr.nn.value_head import ChessValueHead
 from denoisr.nn.world_model import ChessWorldModel
+from denoisr.scripts.train_phase2 import extract_trajectories
 from denoisr.training.loss import ChessLossComputer
-from denoisr.training.phase2_trainer import Phase2Trainer, TrajectoryBatch
+from denoisr.training.phase2_trainer import Phase2Trainer, TrajectoryBatch, evaluate_phase2_gate
 
 
 class TestTrajectoryBatch:
@@ -200,3 +204,102 @@ class TestPhase2Trainer:
         for _ in range(100):
             trainer.advance_curriculum()
         assert trainer.current_max_steps > initial
+
+
+class TestExtractTrajectories:
+    @pytest.fixture
+    def pgn_file(self, tmp_path: Path) -> Path:
+        pgn = tmp_path / "test.pgn"
+        pgn.write_text(
+            '[Event "Test"]\n'
+            '[Result "1-0"]\n'
+            "\n"
+            "1. e2e4 e7e5 2. g1f3 b8c6 3. f1b5 a7a6 "
+            "4. b5a4 g8f6 5. e1g1 f8e7 *\n\n"
+        )
+        return pgn
+
+    def test_returns_trajectory_batch(self, pgn_file: Path) -> None:
+        encoder = SimpleBoardEncoder()
+        batch = extract_trajectories(
+            pgn_file, encoder, seq_len=3, max_trajectories=100,
+        )
+        assert isinstance(batch, TrajectoryBatch)
+        assert batch.boards.shape[1] == 3
+        assert batch.actions_from.shape[1] == 2
+        assert batch.actions_to.shape[1] == 2
+        assert batch.policies.shape[1] == 2
+        assert batch.values.shape[1] == 3
+
+    def test_policy_targets_are_one_hot(
+        self, pgn_file: Path,
+    ) -> None:
+        encoder = SimpleBoardEncoder()
+        batch = extract_trajectories(
+            pgn_file, encoder, seq_len=3, max_trajectories=100,
+        )
+        for i in range(batch.policies.shape[0]):
+            for t in range(batch.policies.shape[1]):
+                assert batch.policies[i, t].sum().item() == (
+                    pytest.approx(1.0)
+                )
+
+    def test_values_are_valid_wdl(self, pgn_file: Path) -> None:
+        encoder = SimpleBoardEncoder()
+        batch = extract_trajectories(
+            pgn_file, encoder, seq_len=3, max_trajectories=100,
+        )
+        for i in range(batch.values.shape[0]):
+            assert batch.values[i].sum().item() == (
+                pytest.approx(1.0)
+            )
+
+    def test_rewards_match_result(self, pgn_file: Path) -> None:
+        encoder = SimpleBoardEncoder()
+        batch = extract_trajectories(
+            pgn_file, encoder, seq_len=3, max_trajectories=100,
+        )
+        # Game result is 1-0, so all rewards are +1 or -1
+        for r in batch.rewards.flatten():
+            assert abs(r.item()) == pytest.approx(1.0)
+
+
+class TestPhase2Gate:
+    def test_returns_three_floats(self, device: torch.device) -> None:
+        encoder = ChessEncoder(
+            num_planes=12, d_s=SMALL_D_S,
+        ).to(device)
+        backbone = ChessPolicyBackbone(
+            d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS, ffn_dim=SMALL_FFN_DIM,
+        ).to(device)
+        policy_head = ChessPolicyHead(d_s=SMALL_D_S).to(device)
+        diffusion = ChessDiffusionModule(
+            d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            num_timesteps=SMALL_NUM_TIMESTEPS,
+        ).to(device)
+        schedule = CosineNoiseSchedule(
+            num_timesteps=SMALL_NUM_TIMESTEPS,
+        ).to(device)
+
+        boards = torch.randn(8, 12, 8, 8, device=device)
+        target_from = torch.randint(0, 64, (8,), device=device)
+        target_to = torch.randint(0, 64, (8,), device=device)
+
+        single_acc, diff_acc, delta = evaluate_phase2_gate(
+            encoder=encoder,
+            backbone=backbone,
+            policy_head=policy_head,
+            diffusion=diffusion,
+            schedule=schedule,
+            boards=boards,
+            target_from=target_from,
+            target_to=target_to,
+            device=device,
+        )
+        assert isinstance(single_acc, float)
+        assert isinstance(diff_acc, float)
+        assert isinstance(delta, float)
+        assert 0.0 <= single_acc <= 1.0
+        assert 0.0 <= diff_acc <= 1.0

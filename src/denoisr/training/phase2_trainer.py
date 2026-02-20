@@ -221,3 +221,81 @@ class Phase2Trainer:
             self._current_max_steps_f * self._curriculum_growth,
         )
         self._current_max_steps = int(self._current_max_steps_f)
+
+
+def evaluate_phase2_gate(
+    encoder: nn.Module,
+    backbone: nn.Module,
+    policy_head: nn.Module,
+    diffusion: nn.Module,
+    schedule: CosineNoiseSchedule,
+    boards: Tensor,
+    target_from: Tensor,
+    target_to: Tensor,
+    device: torch.device,
+    num_diff_steps: int = 10,
+) -> tuple[float, float, float]:
+    """Compare single-step vs diffusion-conditioned accuracy.
+
+    Returns (single_accuracy, diffusion_accuracy, delta_pp).
+    """
+    encoder.eval()
+    backbone.eval()
+    policy_head.eval()
+    diffusion.eval()
+
+    with torch.no_grad():
+        latent = encoder(boards)
+
+        # Single-step accuracy
+        features = backbone(latent)
+        logits = policy_head(features)
+        flat_logits = logits.reshape(logits.shape[0], -1)
+        pred_flat = flat_logits.argmax(dim=-1)
+        pred_from = pred_flat // 64
+        pred_to = pred_flat % 64
+        single_correct = (
+            (pred_from == target_from) & (pred_to == target_to)
+        ).float().mean().item()
+
+        # Diffusion-conditioned accuracy (DDIM-like denoising)
+        x = torch.randn_like(latent)
+        num_ts = schedule.num_timesteps
+        step_size = max(1, num_ts // num_diff_steps)
+
+        for i in range(num_diff_steps):
+            t_val = max(0, num_ts - 1 - i * step_size)
+            t = torch.full(
+                (boards.shape[0],), t_val, device=device,
+            )
+            noise_pred = diffusion(x, t, latent)
+
+            ab_t = schedule.alpha_bar[t_val]
+            x0_pred = (
+                (x - (1 - ab_t).sqrt() * noise_pred) / ab_t.sqrt()
+            )
+
+            t_prev = max(0, t_val - step_size)
+            if t_prev > 0:
+                ab_prev = schedule.alpha_bar[t_prev]
+                x = (
+                    ab_prev.sqrt() * x0_pred
+                    + (1 - ab_prev).sqrt() * noise_pred
+                )
+            else:
+                x = x0_pred
+
+        fused = (latent + x) / 2
+        features_diff = backbone(fused)
+        logits_diff = policy_head(features_diff)
+        flat_diff = logits_diff.reshape(logits_diff.shape[0], -1)
+        pred_flat_diff = flat_diff.argmax(dim=-1)
+        pred_from_diff = pred_flat_diff // 64
+        pred_to_diff = pred_flat_diff % 64
+        diff_correct = (
+            (pred_from_diff == target_from)
+            & (pred_to_diff == target_to)
+        ).float().mean().item()
+
+    delta = (diff_correct - single_correct) * 100.0
+    return single_correct, diff_correct, delta
