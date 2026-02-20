@@ -175,7 +175,7 @@ Plus all [model architecture](#model-architecture-modelconfig) and [training opt
 
 ### Step 5: Phase 2 — Diffusion bootstrapping
 
-Trains the diffusion module to denoise future trajectories, with the Phase 1 encoder frozen:
+Trains all 6 loss terms (policy, value, diffusion, world model state/reward, consistency) with the Phase 1 encoder frozen and backbone at reduced learning rate:
 
 ```bash
 uv run denoisr-train-phase2 \
@@ -191,7 +191,7 @@ uv run denoisr-train-phase2 \
 ```
 Extracting trajectories: 72%|██████████████▍     | 36000/50000 [02:15<00:52, 267traj/s]
 Epoch 45/200:  55%|███████████         | 860/1562 [00:32<00:26] loss=0.0234
-Epoch 45/200: avg_diffusion_loss=0.0218 curriculum_steps=32
+Epoch 45/200: total_loss=0.0218 curriculum_steps=32
 ```
 
 Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 percentage points.
