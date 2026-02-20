@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum, auto
 
 
 @dataclass(frozen=True)
@@ -55,18 +54,7 @@ class MatchConfig:
     engine2: EngineConfig
     games: int
     time_control: TimeControl
-    concurrency: int = 1
 
     def __post_init__(self) -> None:
         if self.games <= 0:
             raise ValueError(f"games must be > 0, got {self.games}")
-        if self.concurrency <= 0:
-            raise ValueError(
-                f"concurrency must be > 0, got {self.concurrency}"
-            )
-
-
-class GameOutcome(Enum):
-    WIN = auto()
-    DRAW = auto()
-    LOSS = auto()

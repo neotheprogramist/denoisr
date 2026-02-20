@@ -29,9 +29,11 @@ class StratifiedHoldoutSplitter:
         self,
         holdout_frac: float = 0.05,
         endgame_threshold: int = 6,
+        seed: int = 42,
     ) -> None:
         self._holdout_frac = holdout_frac
         self._endgame_threshold = endgame_threshold
+        self._rng = random.Random(seed)
 
     def split(self, examples: list[TrainingExample]) -> HoldoutSplits:
         n = len(examples)
@@ -52,7 +54,7 @@ class StratifiedHoldoutSplitter:
             sorted_ids = sorted(game_ids)
             holdout_game_count = max(1, int(len(sorted_ids) * self._holdout_frac))
             holdout_game_count = min(holdout_game_count, len(sorted_ids) - 1)
-            holdout_game_ids = set(random.sample(sorted_ids, holdout_game_count))
+            holdout_game_ids = set(self._rng.sample(sorted_ids, holdout_game_count))
             for i, ex in enumerate(examples):
                 if ex.game_id in holdout_game_ids and i not in excluded:
                     game_level_holdout.append(ex)
@@ -65,7 +67,7 @@ class StratifiedHoldoutSplitter:
             holdout_family_count = max(1, int(len(eco_families) * self._holdout_frac))
             holdout_family_count = min(holdout_family_count, len(eco_families) - 1)
             holdout_families = set(
-                random.sample(sorted(eco_families), holdout_family_count)
+                self._rng.sample(sorted(eco_families), holdout_family_count)
             )
             for i, ex in enumerate(examples):
                 if (
@@ -80,7 +82,7 @@ class StratifiedHoldoutSplitter:
         remaining_indices = [i for i in range(n) if i not in excluded]
         random_holdout_n = min(holdout_n, len(remaining_indices))
         random_holdout_indices = set(
-            random.sample(remaining_indices, random_holdout_n)
+            self._rng.sample(remaining_indices, random_holdout_n)
         )
         random_holdout = [examples[i] for i in random_holdout_indices]
         excluded.update(random_holdout_indices)

@@ -1,6 +1,5 @@
 import pytest
 import torch
-from torch import nn
 
 from conftest import SMALL_D_S, SMALL_FFN_DIM, SMALL_NUM_HEADS, SMALL_NUM_LAYERS
 

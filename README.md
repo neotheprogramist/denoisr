@@ -677,16 +677,17 @@ Training proceeds in three phases, each gated on measurable quality thresholds t
 
 ## All available commands
 
-| Command                        | Description                                         |
-| ------------------------------ | --------------------------------------------------- |
-| `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint    |
-| `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish         |
-| `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data    |
-| `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories    |
-| `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing |
-| `uv run denoisr-play`          | UCI chess engine (single-pass or diffusion)         |
-| `uv run denoisr-benchmark`     | Elo benchmarking via cutechess-cli                  |
-| `uv run denoisr-gui`           | Chess GUI for play and engine-vs-engine matches     |
+| Command                        | Description                                            |
+| ------------------------------ | ------------------------------------------------------ |
+| `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint       |
+| `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish            |
+| `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data       |
+| `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories       |
+| `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing    |
+| `uv run denoisr-play`          | UCI chess engine (single-pass or diffusion)            |
+| `uv run denoisr-benchmark`     | Elo benchmarking via cutechess-cli                     |
+| `uv run denoisr-export-mlx`    | Export checkpoint to MLX safetensors for Apple Silicon |
+| `uv run denoisr-gui`           | Chess GUI for play and engine-vs-engine matches        |
 
 All commands support `--help` for full flag documentation:
 

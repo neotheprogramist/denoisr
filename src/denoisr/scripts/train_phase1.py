@@ -208,21 +208,22 @@ def main() -> None:
 
     # --- Grok tracker (opt-in) ---
     grok_tracker: GrokTracker | None = None
-    if tcfg.grok_tracking:
-        grok_tracker = GrokTracker(
-            encoder=encoder,
-            backbone=backbone,
-            policy_head=policy_head,
-            value_head=value_head,
-            erank_freq=tcfg.grok_erank_freq,
-            spectral_freq=tcfg.grok_spectral_freq,
-            onset_threshold=tcfg.grok_onset_threshold,
-        )
-        log.info("grok tracking enabled  erank_freq=%d  spectral_freq=%d", tcfg.grok_erank_freq, tcfg.grok_spectral_freq)
 
     monitor = ResourceMonitor()
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
+        if tcfg.grok_tracking:
+            grok_tracker = GrokTracker(
+                encoder=encoder,
+                backbone=backbone,
+                policy_head=policy_head,
+                value_head=value_head,
+                erank_freq=tcfg.grok_erank_freq,
+                spectral_freq=tcfg.grok_spectral_freq,
+                onset_threshold=tcfg.grok_onset_threshold,
+                on_state_transition=logger.log_grok_state_transition,
+            )
+            log.info("grok tracking enabled  erank_freq=%d  spectral_freq=%d", tcfg.grok_erank_freq, tcfg.grok_spectral_freq)
         # --- Build DataLoader from stacked tensors ---
         bs = args.batch_size
         train_boards = torch.stack([ex.board.data for ex in train])

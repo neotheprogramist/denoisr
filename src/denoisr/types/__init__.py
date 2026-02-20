@@ -1,5 +1,5 @@
 from denoisr.types.action import Action, LegalMask
-from denoisr.types.board import BOARD_SIZE, NUM_PLANES, NUM_SQUARES, BoardTensor
+from denoisr.types.board import BOARD_SIZE, NUM_PIECE_PLANES, NUM_SQUARES, BoardTensor
 from denoisr.types.latent import LatentState, LatentTrajectory
 from denoisr.types.training import (
     GameRecord,
@@ -16,7 +16,7 @@ __all__ = [
     "LatentState",
     "LatentTrajectory",
     "LegalMask",
-    "NUM_PLANES",
+    "NUM_PIECE_PLANES",
     "NUM_SQUARES",
     "PolicyTarget",
     "TrainingExample",
