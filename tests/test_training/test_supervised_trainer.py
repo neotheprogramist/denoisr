@@ -7,6 +7,7 @@ from denoisr.nn.encoder import ChessEncoder
 from denoisr.nn.policy_backbone import ChessPolicyBackbone
 from denoisr.nn.policy_head import ChessPolicyHead
 from denoisr.nn.value_head import ChessValueHead
+from denoisr.training.grokfast import GrokfastFilter
 from denoisr.training.loss import ChessLossComputer
 from denoisr.training.supervised_trainer import SupervisedTrainer
 from denoisr.types import BoardTensor, PolicyTarget, TrainingExample, ValueTarget
@@ -118,3 +119,47 @@ class TestSupervisedTrainer:
         current_lrs = [g["lr"] for g in trainer.optimizer.param_groups]
         # At least one group should have a lower LR
         assert any(c < i for c, i in zip(current_lrs, initial_lrs))
+
+
+class TestSupervisedTrainerGrokfast:
+    @pytest.fixture
+    def trainer_with_grokfast(
+        self, device: torch.device
+    ) -> SupervisedTrainer:
+        encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
+        backbone = ChessPolicyBackbone(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            ffn_dim=SMALL_FFN_DIM,
+        ).to(device)
+        policy_head = ChessPolicyHead(d_s=SMALL_D_S).to(device)
+        value_head = ChessValueHead(d_s=SMALL_D_S).to(device)
+        loss_fn = ChessLossComputer()
+        gf = GrokfastFilter(alpha=0.98, lamb=2.0)
+        return SupervisedTrainer(
+            encoder=encoder,
+            backbone=backbone,
+            policy_head=policy_head,
+            value_head=value_head,
+            loss_fn=loss_fn,
+            lr=1e-3,
+            device=device,
+            grokfast_filter=gf,
+        )
+
+    def test_train_step_with_grokfast(
+        self, trainer_with_grokfast: SupervisedTrainer
+    ) -> None:
+        batch = _make_batch(4)
+        loss, breakdown = trainer_with_grokfast.train_step(batch)
+        assert isinstance(loss, float)
+        assert loss > 0
+
+    def test_grokfast_ema_populated_after_step(
+        self, trainer_with_grokfast: SupervisedTrainer
+    ) -> None:
+        batch = _make_batch(4)
+        trainer_with_grokfast.train_step(batch)
+        assert trainer_with_grokfast._grokfast_filter is not None
+        assert len(trainer_with_grokfast._grokfast_filter.grads) > 0
