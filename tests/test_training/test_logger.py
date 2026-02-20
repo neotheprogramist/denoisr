@@ -27,6 +27,8 @@ class TestTrainingLogger:
         breakdown = {"policy": 1.5, "value": 0.8, "total": 2.3, "grad_norm": 0.42}
         logger.log_train_step(step=0, loss=2.3, breakdown=breakdown)
         logger.close()
+        event_files = list((tmp_path / "test").glob("events.out.tfevents.*"))
+        assert len(event_files) >= 1
 
     def test_log_epoch_writes_scalars(self, tmp_path: pathlib.Path) -> None:
         """log_epoch should write accuracy and lr scalars without error."""
