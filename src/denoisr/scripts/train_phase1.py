@@ -151,116 +151,114 @@ def main() -> None:
         warmup_epochs=3,
     )
 
-    logger = TrainingLogger(Path("logs"), run_name=args.run_name)
-
-    # --- Build DataLoader from stacked tensors ---
-    bs = args.batch_size
-    train_boards = torch.stack([ex.board.data for ex in train])
-    train_policies = torch.stack([ex.policy.data for ex in train])
-    train_values = torch.tensor(
-        [[ex.value.win, ex.value.draw, ex.value.loss] for ex in train],
-        dtype=torch.float32,
-    )
-
-    train_dataset = ChessDataset(
-        train_boards,
-        train_policies,
-        train_values,
-        num_planes=cfg.num_planes,
-        augment=True,
-    )
-    train_loader: DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
-        DataLoader(
-            train_dataset,
-            batch_size=bs,
-            shuffle=True,
-            num_workers=2,
-            pin_memory=(device.type == "cuda"),
-            persistent_workers=True,
-        )
-    )
-
-    # --- Train ---
-    best_acc = 0.0
-
-    logger.log_hparams(
-        {
-            "lr": args.lr,
-            "batch_size": bs,
-            "d_s": cfg.d_s,
-            "num_heads": cfg.num_heads,
-            "num_layers": cfg.num_layers,
-            "ffn_dim": cfg.ffn_dim,
-            "num_planes": cfg.num_planes,
-            "gradient_checkpointing": cfg.gradient_checkpointing,
-        },
-        {"best_top1": 0.0},
-    )
-
-    global_step = 0
-
-    for epoch in range(args.epochs):
-        epoch_loss = 0.0
-        num_batches = 0
-        epoch_start = time.monotonic()
-
-        pbar = tqdm(
-            train_loader,
-            desc=f"Epoch {epoch+1}/{args.epochs}",
-            leave=False,
-            smoothing=0.3,
-        )
-        for boards_batch, policies_batch, values_batch in pbar:
-            loss, breakdown = trainer.train_step_tensors(
-                boards_batch, policies_batch, values_batch
-            )
-            logger.log_train_step(global_step, loss, breakdown)
-            if global_step % 100 == 0:
-                logger.log_gpu(global_step)
-            global_step += 1
-            epoch_loss += loss
-            num_batches += 1
-            pbar.set_postfix(
-                loss=f"{loss:.4f}",
-                policy=f"{breakdown['policy']:.4f}",
-                value=f"{breakdown['value']:.4f}",
-            )
-        pbar.close()
-        trainer.scheduler_step()
-
-        epoch_duration = time.monotonic() - epoch_start
-        samples_per_sec = len(train) / epoch_duration
-        avg_loss = epoch_loss / max(num_batches, 1)
-        top1, top5 = measure_accuracy(trainer, holdout, device)
-        current_lr = trainer.optimizer.param_groups[0]["lr"]
-
-        logger.log_epoch(epoch, avg_loss, top1, top5, current_lr)
-        logger.log_epoch_timing(epoch, epoch_duration, samples_per_sec)
-
-        print(
-            f"Epoch {epoch+1}/{args.epochs}: "
-            f"avg_loss={avg_loss:.4f} top1={top1:.1%} top5={top5:.1%}"
+    with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
+        # --- Build DataLoader from stacked tensors ---
+        bs = args.batch_size
+        train_boards = torch.stack([ex.board.data for ex in train])
+        train_policies = torch.stack([ex.policy.data for ex in train])
+        train_values = torch.tensor(
+            [[ex.value.win, ex.value.draw, ex.value.loss] for ex in train],
+            dtype=torch.float32,
         )
 
-        if top1 > best_acc:
-            best_acc = top1
-            save_checkpoint(
-                Path(args.output),
-                cfg,
-                encoder=encoder.state_dict(),
-                backbone=backbone.state_dict(),
-                policy_head=policy_head.state_dict(),
-                value_head=value_head.state_dict(),
-                optimizer=trainer.optimizer.state_dict(),
+        train_dataset = ChessDataset(
+            train_boards,
+            train_policies,
+            train_values,
+            num_planes=cfg.num_planes,
+            augment=True,
+        )
+        train_loader: DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
+            DataLoader(
+                train_dataset,
+                batch_size=bs,
+                shuffle=True,
+                num_workers=2,
+                pin_memory=(device.type == "cuda"),
+                persistent_workers=True,
+            )
+        )
+
+        # --- Train ---
+        best_acc = 0.0
+
+        logger.log_hparams(
+            {
+                "lr": args.lr,
+                "batch_size": bs,
+                "d_s": cfg.d_s,
+                "num_heads": cfg.num_heads,
+                "num_layers": cfg.num_layers,
+                "ffn_dim": cfg.ffn_dim,
+                "num_planes": cfg.num_planes,
+                "gradient_checkpointing": cfg.gradient_checkpointing,
+            },
+            {"best_top1": 0.0},
+        )
+
+        global_step = 0
+
+        for epoch in range(args.epochs):
+            epoch_loss = 0.0
+            num_batches = 0
+            epoch_start = time.monotonic()
+
+            pbar = tqdm(
+                train_loader,
+                desc=f"Epoch {epoch+1}/{args.epochs}",
+                leave=False,
+                smoothing=0.3,
+            )
+            for boards_batch, policies_batch, values_batch in pbar:
+                loss, breakdown = trainer.train_step_tensors(
+                    boards_batch, policies_batch, values_batch
+                )
+                logger.log_train_step(global_step, loss, breakdown)
+                if global_step % 100 == 0:
+                    logger.log_gpu(global_step)
+                global_step += 1
+                epoch_loss += loss
+                num_batches += 1
+                pbar.set_postfix(
+                    loss=f"{loss:.4f}",
+                    policy=f"{breakdown['policy']:.4f}",
+                    value=f"{breakdown['value']:.4f}",
+                )
+            pbar.close()
+            trainer.scheduler_step()
+
+            epoch_duration = time.monotonic() - epoch_start
+            samples_per_sec = len(train) / epoch_duration
+            avg_loss = epoch_loss / max(num_batches, 1)
+            top1, top5 = measure_accuracy(trainer, holdout, device)
+            current_lr = trainer.optimizer.param_groups[0]["lr"]
+
+            logger.log_epoch(epoch, avg_loss, top1, top5, current_lr)
+            logger.log_epoch_timing(epoch, epoch_duration, samples_per_sec)
+
+            print(
+                f"Epoch {epoch+1}/{args.epochs}: "
+                f"avg_loss={avg_loss:.4f} top1={top1:.1%} top5={top5:.1%}"
             )
 
-        # Phase gate check
-        if top1 > 0.30:
-            print(f"PHASE 1 GATE PASSED: top-1 accuracy {top1:.1%} > 30%")
-            print("Ready for Phase 2.")
-            break
+            if top1 > best_acc:
+                best_acc = top1
+                save_checkpoint(
+                    Path(args.output),
+                    cfg,
+                    encoder=encoder.state_dict(),
+                    backbone=backbone.state_dict(),
+                    policy_head=policy_head.state_dict(),
+                    value_head=value_head.state_dict(),
+                    optimizer=trainer.optimizer.state_dict(),
+                )
 
-    logger.close()
+            # Phase gate check
+            if top1 > 0.30:
+                print(f"PHASE 1 GATE PASSED: top-1 accuracy {top1:.1%} > 30%")
+                print("Ready for Phase 2.")
+                break
+
     print(f"Best top-1 accuracy: {best_acc:.1%}")
 
 
