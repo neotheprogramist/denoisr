@@ -47,6 +47,10 @@ class DenoisrApp:
         self._root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._root.mainloop()
 
+    def auto_start(self) -> None:
+        """Schedule a New Game after the main loop starts."""
+        self._root.after(100, self._new_game)
+
     def _build_ui(self) -> None:
         # Main frame
         main = ttk.Frame(self._root, padding=8)
@@ -63,14 +67,16 @@ class DenoisrApp:
 
         # Mode selector
         self._mode_var = tk.StringVar(value="play")
-        ttk.Radiobutton(
+        self._play_radio = ttk.Radiobutton(
             ctrl, text="Play", variable=self._mode_var, value="play",
             command=self._on_mode_change,
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(
+        )
+        self._play_radio.grid(row=0, column=0, sticky="w")
+        self._match_radio = ttk.Radiobutton(
             ctrl, text="Match", variable=self._mode_var, value="match",
             command=self._on_mode_change,
-        ).grid(row=0, column=1, sticky="w")
+        )
+        self._match_radio.grid(row=0, column=1, sticky="w")
 
         # Checkpoint
         ttk.Label(ctrl, text="Checkpoint:").grid(
@@ -79,45 +85,46 @@ class DenoisrApp:
         self._ckpt_var = tk.StringVar()
         ckpt_frame = ttk.Frame(ctrl)
         ckpt_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
-        ttk.Entry(ckpt_frame, textvariable=self._ckpt_var, width=20).pack(
-            side=tk.LEFT, fill=tk.X, expand=True
-        )
-        ttk.Button(ckpt_frame, text="Browse", command=self._browse_ckpt).pack(
-            side=tk.LEFT, padx=(4, 0)
-        )
+        self._ckpt_entry = ttk.Entry(ckpt_frame, textvariable=self._ckpt_var, width=20)
+        self._ckpt_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._browse_btn = ttk.Button(ckpt_frame, text="Browse", command=self._browse_ckpt)
+        self._browse_btn.pack(side=tk.LEFT, padx=(4, 0))
 
         # Engine mode
         ttk.Label(ctrl, text="Engine mode:").grid(
             row=3, column=0, sticky="w", pady=(8, 0)
         )
         self._engine_mode_var = tk.StringVar(value="single")
-        ttk.Combobox(
+        self._engine_mode_combo = ttk.Combobox(
             ctrl,
             textvariable=self._engine_mode_var,
             values=["single", "diffusion"],
             state="readonly",
             width=12,
-        ).grid(row=3, column=1, sticky="w", pady=(8, 0))
+        )
+        self._engine_mode_combo.grid(row=3, column=1, sticky="w", pady=(8, 0))
 
         # Human color
         ttk.Label(ctrl, text="Play as:").grid(
             row=4, column=0, sticky="w", pady=(8, 0)
         )
         self._color_var = tk.StringVar(value="white")
-        ttk.Combobox(
+        self._color_combo = ttk.Combobox(
             ctrl,
             textvariable=self._color_var,
             values=["white", "black"],
             state="readonly",
             width=12,
-        ).grid(row=4, column=1, sticky="w", pady=(8, 0))
+        )
+        self._color_combo.grid(row=4, column=1, sticky="w", pady=(8, 0))
 
         # Buttons
         btn_frame = ttk.Frame(ctrl)
         btn_frame.grid(row=5, column=0, columnspan=2, pady=(12, 0))
-        ttk.Button(
+        self._new_game_btn = ttk.Button(
             btn_frame, text="New Game", command=self._new_game
-        ).pack(side=tk.LEFT, padx=2)
+        )
+        self._new_game_btn.pack(side=tk.LEFT, padx=2)
         ttk.Button(
             btn_frame, text="Stop", command=self._stop_game
         ).pack(side=tk.LEFT, padx=2)
@@ -236,6 +243,20 @@ class DenoisrApp:
         self._match_stats_text.insert("1.0", text)
         self._match_stats_text.config(state=tk.DISABLED)
 
+    def _set_controls_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        readonly_state = "readonly" if enabled else "disabled"
+        for w in (
+            self._ckpt_entry,
+            self._browse_btn,
+            self._play_radio,
+            self._match_radio,
+            self._new_game_btn,
+        ):
+            w.config(state=state)
+        for w in (self._engine_mode_combo, self._color_combo):
+            w.config(state=readonly_state)
+
     def _browse_ckpt(self) -> None:
         path = filedialog.askopenfilename(
             filetypes=[("PyTorch checkpoint", "*.pt"), ("All files", "*.*")]
@@ -276,6 +297,7 @@ class DenoisrApp:
 
         # Start engine in background to avoid freezing the GUI
         self._set_status("Starting engine...")
+        self._set_controls_enabled(False)
         gen = self._startup_generation
 
         def _start_engine() -> None:
@@ -301,6 +323,7 @@ class DenoisrApp:
         if self._engine is not None:
             self._engine.quit()
             self._engine = None
+        self._set_controls_enabled(True)
 
     def _on_human_move(self, move: chess.Move) -> None:
         self._board.push(move)
@@ -355,8 +378,10 @@ class DenoisrApp:
                     elif kind == "match_done":
                         self._set_status("Match complete")
                         self._match_running = False
+                        self._set_controls_enabled(True)
                 elif isinstance(item, str) and item.startswith("error:"):
                     self._set_status(item[6:])
+                    self._set_controls_enabled(True)
         except queue.Empty:
             pass
         self._root.after(50, self._poll_queue)
@@ -391,6 +416,7 @@ class DenoisrApp:
         result = self._board.result()
         self._set_status(f"Game over: {result}")
         self._board_widget.set_interactive(False)
+        self._set_controls_enabled(True)
 
     def _update_moves_text(self) -> None:
         self._moves_text.config(state=tk.NORMAL)
@@ -440,6 +466,7 @@ class DenoisrApp:
         self._match_running = True
         self._board_widget.set_interactive(False)
         self._set_status("Match running...")
+        self._set_controls_enabled(False)
         wins, draws, losses = 0, 0, 0
 
         def on_move(game_num: int, board: chess.Board, uci: str) -> None:

@@ -25,7 +25,8 @@ def main() -> None:
     from denoisr.gui.app import DenoisrApp
 
     app = DenoisrApp()
+    app._engine_mode_var.set(args.mode)
     if args.checkpoint:
         app._ckpt_var.set(args.checkpoint)
-    app._engine_mode_var.set(args.mode)
+        app.auto_start()
     app.run()
