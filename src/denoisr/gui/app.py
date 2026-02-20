@@ -131,11 +131,12 @@ class DenoisrApp:
             row=1, column=1, sticky="nsew", pady=(8, 0)
         )
 
-        self._status_var = tk.StringVar(value="Set checkpoint, then New Game")
-        status_entry = ttk.Entry(
-            status_frame, textvariable=self._status_var, state="readonly",
+        self._status_text = tk.Text(
+            status_frame, height=3, wrap=tk.WORD, state=tk.DISABLED,
+            relief=tk.FLAT, bg=status_frame.cget("background"),
         )
-        status_entry.pack(anchor="w", fill=tk.X)
+        self._status_text.pack(anchor="w", fill=tk.X)
+        self._set_status("Set checkpoint, then New Game")
 
         ttk.Label(status_frame, text="Moves:").pack(
             anchor="w", pady=(8, 0)
@@ -214,11 +215,26 @@ class DenoisrApp:
         )
 
         # Match stats display
-        self._match_stats_var = tk.StringVar(value="")
-        ttk.Label(
-            self._match_frame, textvariable=self._match_stats_var,
-            wraplength=200,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self._match_stats_text = tk.Text(
+            self._match_frame, height=5, wrap=tk.WORD, state=tk.DISABLED,
+            width=28, relief=tk.FLAT,
+            bg=self._match_frame.cget("background"),
+        )
+        self._match_stats_text.grid(
+            row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0),
+        )
+
+    def _set_status(self, text: str) -> None:
+        self._status_text.config(state=tk.NORMAL)
+        self._status_text.delete("1.0", tk.END)
+        self._status_text.insert("1.0", text)
+        self._status_text.config(state=tk.DISABLED)
+
+    def _set_match_stats(self, text: str) -> None:
+        self._match_stats_text.config(state=tk.NORMAL)
+        self._match_stats_text.delete("1.0", tk.END)
+        self._match_stats_text.insert("1.0", text)
+        self._match_stats_text.config(state=tk.DISABLED)
 
     def _browse_ckpt(self) -> None:
         path = filedialog.askopenfilename(
@@ -250,7 +266,7 @@ class DenoisrApp:
 
         ckpt = self._ckpt_var.get().strip()
         if not ckpt:
-            self._status_var.set("Set a checkpoint first")
+            self._set_status("Set a checkpoint first")
             return
 
         # Build engine config
@@ -259,7 +275,7 @@ class DenoisrApp:
         config = EngineConfig(command="uv", args=tuple(args), name="Denoisr")
 
         # Start engine in background to avoid freezing the GUI
-        self._status_var.set("Starting engine...")
+        self._set_status("Starting engine...")
         gen = self._startup_generation
 
         def _start_engine() -> None:
@@ -298,7 +314,7 @@ class DenoisrApp:
             self._show_game_over()
             return
 
-        self._status_var.set("Engine thinking...")
+        self._set_status("Engine thinking...")
         self._request_engine_move()
 
     def _request_engine_move(self) -> None:
@@ -335,12 +351,12 @@ class DenoisrApp:
                         self._board_widget.set_board(board)
                         self._board_widget.highlight_last_move(move)
                     elif kind == "match_stats":
-                        self._match_stats_var.set(item[1])
+                        self._set_match_stats(item[1])
                     elif kind == "match_done":
-                        self._status_var.set("Match complete")
+                        self._set_status("Match complete")
                         self._match_running = False
                 elif isinstance(item, str) and item.startswith("error:"):
-                    self._status_var.set(item)
+                    self._set_status(item[6:])
         except queue.Empty:
             pass
         self._root.after(50, self._poll_queue)
@@ -349,7 +365,7 @@ class DenoisrApp:
         """Called on main thread when background engine startup completes."""
         self._engine = engine
         turn = "White" if self._board.turn == chess.WHITE else "Black"
-        self._status_var.set(f"{turn} to move")
+        self._set_status(f"{turn} to move")
         if self._human_color == chess.BLACK:
             self._board_widget.set_interactive(False)
             self._request_engine_move()
@@ -368,12 +384,12 @@ class DenoisrApp:
             return
 
         turn = "White" if self._board.turn == chess.WHITE else "Black"
-        self._status_var.set(f"{turn} to move")
+        self._set_status(f"{turn} to move")
         self._board_widget.set_interactive(True)
 
     def _show_game_over(self) -> None:
         result = self._board.result()
-        self._status_var.set(f"Game over: {result}")
+        self._set_status(f"Game over: {result}")
         self._board_widget.set_interactive(False)
 
     def _update_moves_text(self) -> None:
@@ -399,7 +415,7 @@ class DenoisrApp:
 
         ckpt = self._ckpt_var.get().strip()
         if not ckpt:
-            self._status_var.set("Set a checkpoint first")
+            self._set_status("Set a checkpoint first")
             return
 
         mode = self._engine_mode_var.get()
@@ -423,7 +439,7 @@ class DenoisrApp:
 
         self._match_running = True
         self._board_widget.set_interactive(False)
-        self._status_var.set("Match running...")
+        self._set_status("Match running...")
         wins, draws, losses = 0, 0, 0
 
         def on_move(game_num: int, board: chess.Board, uci: str) -> None:
