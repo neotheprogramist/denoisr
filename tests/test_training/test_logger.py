@@ -30,11 +30,15 @@ class TestTrainingLogger:
         event_files = list((tmp_path / "test").glob("events.out.tfevents.*"))
         assert len(event_files) >= 1
 
-    def test_log_epoch_writes_scalars(self, tmp_path: pathlib.Path) -> None:
-        """log_epoch should write accuracy and lr scalars without error."""
+    def test_log_epoch_writes_scalars_and_text(self, tmp_path: pathlib.Path) -> None:
+        """log_epoch should write scalars and a text log line."""
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_epoch(epoch=1, avg_loss=2.0, top1=0.05, top5=0.15, lr=1e-4)
         logger.close()
+        text = (tmp_path / "test" / "metrics.log").read_text()
+        assert "epoch=1" in text
+        assert "avg_loss=2.000000" in text
+        assert "top1=0.0500" in text
 
     def test_log_epoch_timing(self, tmp_path: pathlib.Path) -> None:
         """log_epoch_timing should write timing scalars without error."""
@@ -48,19 +52,26 @@ class TestTrainingLogger:
         logger.log_gpu(step=0)
         logger.close()
 
-    def test_log_diffusion(self, tmp_path: pathlib.Path) -> None:
-        """log_diffusion should write diffusion-specific scalars."""
+    def test_log_diffusion_writes_text(self, tmp_path: pathlib.Path) -> None:
+        """log_diffusion should write diffusion metrics to text log."""
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_diffusion(epoch=1, avg_loss=0.5, curriculum_steps=25)
         logger.close()
+        text = (tmp_path / "test" / "metrics.log").read_text()
+        assert "diffusion_loss=0.500000" in text
+        assert "curriculum_steps=25" in text
 
-    def test_log_hparams(self, tmp_path: pathlib.Path) -> None:
-        """log_hparams should write without error."""
+    def test_log_hparams_writes_text_file(self, tmp_path: pathlib.Path) -> None:
+        """log_hparams should write hparams.txt alongside TensorBoard data."""
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         hparams = {"lr": 1e-4, "batch_size": 64, "d_s": 256}
         metrics = {"best_top1": 0.35}
         logger.log_hparams(hparams, metrics)
         logger.close()
+        text = (tmp_path / "test" / "hparams.txt").read_text()
+        assert "lr=0.0001" in text
+        assert "batch_size=64" in text
+        assert "d_s=256" in text
 
     def test_context_manager(self, tmp_path: pathlib.Path) -> None:
         """Logger should support with-statement for automatic cleanup."""
