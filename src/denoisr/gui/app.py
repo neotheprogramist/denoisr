@@ -16,7 +16,7 @@ from denoisr.gui.types import EngineConfig, TimeControl
 from denoisr.gui.uci_engine import UCIEngine
 
 if TYPE_CHECKING:
-    pass
+    from denoisr.gui.types import GameResult
 
 
 class DenoisrApp:
@@ -30,9 +30,12 @@ class DenoisrApp:
         self._board = chess.Board()
         self._engine: UCIEngine | None = None
         self._engine_thread: threading.Thread | None = None
-        self._move_queue: queue.Queue[chess.Move | str] = queue.Queue()
+        self._move_queue: queue.Queue[chess.Move | str | tuple[str, ...]] = (
+            queue.Queue()
+        )
         self._moves: list[str] = []
         self._human_color = chess.WHITE
+        self._match_running = False
 
         self._build_ui()
         self._poll_queue()
@@ -139,6 +142,81 @@ class DenoisrApp:
         )
         self._moves_text.pack(fill=tk.BOTH, expand=True)
 
+        # --- Match mode controls (initially hidden) ---
+        self._match_frame = ttk.LabelFrame(main, text="Match Settings", padding=8)
+
+        # Opponent command
+        ttk.Label(self._match_frame, text="Opponent:").grid(
+            row=0, column=0, sticky="w"
+        )
+        self._opp_var = tk.StringVar(value="stockfish")
+        ttk.Entry(self._match_frame, textvariable=self._opp_var, width=20).grid(
+            row=0, column=1, sticky="ew"
+        )
+
+        # Games
+        ttk.Label(self._match_frame, text="Games:").grid(
+            row=1, column=0, sticky="w", pady=(4, 0)
+        )
+        self._games_var = tk.IntVar(value=100)
+        ttk.Spinbox(
+            self._match_frame, from_=2, to=10000,
+            textvariable=self._games_var, width=8,
+        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+
+        # Time control
+        ttk.Label(self._match_frame, text="Time (sec):").grid(
+            row=2, column=0, sticky="w", pady=(4, 0)
+        )
+        self._tc_base_var = tk.DoubleVar(value=10.0)
+        ttk.Spinbox(
+            self._match_frame, from_=1, to=3600,
+            textvariable=self._tc_base_var, width=8,
+        ).grid(row=2, column=1, sticky="w", pady=(4, 0))
+
+        ttk.Label(self._match_frame, text="Increment:").grid(
+            row=3, column=0, sticky="w", pady=(4, 0)
+        )
+        self._tc_inc_var = tk.DoubleVar(value=0.1)
+        ttk.Spinbox(
+            self._match_frame, from_=0, to=60, increment=0.1,
+            textvariable=self._tc_inc_var, width=8,
+        ).grid(row=3, column=1, sticky="w", pady=(4, 0))
+
+        # Move delay for visualization
+        ttk.Label(self._match_frame, text="Move delay (ms):").grid(
+            row=4, column=0, sticky="w", pady=(4, 0)
+        )
+        self._delay_var = tk.IntVar(value=200)
+        ttk.Scale(
+            self._match_frame, from_=0, to=2000,
+            variable=self._delay_var, orient=tk.HORIZONTAL,
+        ).grid(row=4, column=1, sticky="ew", pady=(4, 0))
+
+        # SPRT
+        self._sprt_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self._match_frame, text="SPRT", variable=self._sprt_var,
+        ).grid(row=5, column=0, sticky="w", pady=(4, 0))
+        sprt_frame = ttk.Frame(self._match_frame)
+        sprt_frame.grid(row=5, column=1, sticky="w", pady=(4, 0))
+        self._sprt_elo0_var = tk.DoubleVar(value=0.0)
+        self._sprt_elo1_var = tk.DoubleVar(value=50.0)
+        ttk.Entry(sprt_frame, textvariable=self._sprt_elo0_var, width=5).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(sprt_frame, text="-").pack(side=tk.LEFT)
+        ttk.Entry(sprt_frame, textvariable=self._sprt_elo1_var, width=5).pack(
+            side=tk.LEFT
+        )
+
+        # Match stats display
+        self._match_stats_var = tk.StringVar(value="")
+        ttk.Label(
+            self._match_frame, textvariable=self._match_stats_var,
+            wraplength=200,
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
     def _browse_ckpt(self) -> None:
         path = filedialog.askopenfilename(
             filetypes=[("PyTorch checkpoint", "*.pt"), ("All files", "*.*")]
@@ -147,11 +225,16 @@ class DenoisrApp:
             self._ckpt_var.set(path)
 
     def _on_mode_change(self) -> None:
-        # Mode switching handled in future tasks
-        pass
+        if self._mode_var.get() == "match":
+            self._match_frame.grid(row=2, column=1, sticky="new", pady=(8, 0))
+        else:
+            self._match_frame.grid_remove()
 
     def _new_game(self) -> None:
         self._stop_game()
+        if self._mode_var.get() == "match":
+            self._start_match()
+            return
         self._board = chess.Board()
         self._moves = []
         self._human_color = (
@@ -189,6 +272,7 @@ class DenoisrApp:
 
     def _stop_game(self) -> None:
         self._board_widget.set_interactive(False)
+        self._match_running = False
         if self._engine is not None:
             self._engine.quit()
             self._engine = None
@@ -233,6 +317,17 @@ class DenoisrApp:
                 item = self._move_queue.get_nowait()
                 if isinstance(item, chess.Move):
                     self._apply_engine_move(item)
+                elif isinstance(item, tuple):
+                    kind = item[0]
+                    if kind == "match_board":
+                        _, board, move = item
+                        self._board_widget.set_board(board)
+                        self._board_widget.highlight_last_move(move)
+                    elif kind == "match_stats":
+                        self._match_stats_var.set(item[1])
+                    elif kind == "match_done":
+                        self._status_var.set("Match complete")
+                        self._match_running = False
                 elif isinstance(item, str) and item.startswith("error:"):
                     self._status_var.set(item)
         except queue.Empty:
@@ -274,6 +369,94 @@ class DenoisrApp:
                 text_parts.append(f"{num}. {white_move}")
         self._moves_text.insert("1.0", " ".join(text_parts))
         self._moves_text.config(state=tk.DISABLED)
+
+    def _start_match(self) -> None:
+        from denoisr.gui.elo import compute_elo, likelihood_of_superiority, sprt_test
+        from denoisr.gui.match_engine import run_match
+        from denoisr.gui.types import MatchConfig
+
+        ckpt = self._ckpt_var.get().strip()
+        if not ckpt:
+            self._status_var.set("Set a checkpoint first")
+            return
+
+        mode = self._engine_mode_var.get()
+        e1_args = ("run", "denoisr-play", "--checkpoint", ckpt, "--mode", mode)
+        e1 = EngineConfig(command="uv", args=e1_args, name="Denoisr")
+
+        opp_cmd = self._opp_var.get().strip()
+        opp_parts = opp_cmd.split()
+        e2 = EngineConfig(
+            command=opp_parts[0], args=tuple(opp_parts[1:]), name="Opponent"
+        )
+
+        tc = TimeControl(
+            base_seconds=self._tc_base_var.get(),
+            increment=self._tc_inc_var.get(),
+        )
+        config = MatchConfig(
+            engine1=e1, engine2=e2,
+            games=self._games_var.get(), time_control=tc,
+        )
+
+        self._match_running = True
+        self._board_widget.set_interactive(False)
+        self._status_var.set("Match running...")
+        wins, draws, losses = 0, 0, 0
+
+        def on_move(game_num: int, board: chess.Board, uci: str) -> None:
+            self._move_queue.put(
+                ("match_board", board.copy(), chess.Move.from_uci(uci))
+            )
+
+        def on_game_complete(game_num: int, result: GameResult) -> None:
+            nonlocal wins, draws, losses
+            # Tally from engine1 perspective
+            if result.engine1_color == "white":
+                if result.result == "1-0":
+                    wins += 1
+                elif result.result == "0-1":
+                    losses += 1
+                else:
+                    draws += 1
+            else:
+                if result.result == "0-1":
+                    wins += 1
+                elif result.result == "1-0":
+                    losses += 1
+                else:
+                    draws += 1
+
+            elo, error = compute_elo(wins, draws, losses)
+            los = likelihood_of_superiority(wins, draws, losses)
+            stats = (
+                f"Game {game_num + 1}/{config.games}\n"
+                f"W={wins} D={draws} L={losses}"
+            )
+            if elo != float("inf") and elo != float("-inf"):
+                stats += f"\nElo: {elo:+.1f} \u00b1 {error:.1f}"
+            stats += f"\nLOS: {los:.1f}%"
+
+            if self._sprt_var.get():
+                sprt = sprt_test(
+                    wins, draws, losses,
+                    self._sprt_elo0_var.get(), self._sprt_elo1_var.get(),
+                )
+                if sprt is not None:
+                    stats += f"\nSPRT: {sprt} accepted"
+
+            self._move_queue.put(("match_stats", stats))
+
+        def run_in_bg() -> None:
+            run_match(
+                config,
+                on_game_complete=on_game_complete,
+                on_move=on_move,
+            )
+            self._move_queue.put(("match_done",))
+
+        self._engine_thread = threading.Thread(target=run_in_bg, daemon=True)
+        self._engine_thread.start()
 
     def _on_close(self) -> None:
         self._stop_game()
