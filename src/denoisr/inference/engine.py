@@ -76,7 +76,7 @@ class ChessEngine:
 
         latent = self._encoder(x)
         features = self._backbone(latent)
-        wdl, _ = self._value_head(features)
+        wdl, _ = self._value_head.infer(features)
         wdl = wdl.squeeze(0)
 
         return (wdl[0].item(), wdl[1].item(), wdl[2].item())

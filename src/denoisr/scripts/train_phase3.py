@@ -89,7 +89,8 @@ def main() -> None:
     def policy_value_fn(latent: Tensor) -> tuple[Tensor, Tensor]:
         features = backbone(latent.unsqueeze(0))
         policy = policy_head(features).squeeze(0)
-        wdl, _ = value_head(features)
+        wdl_logits, _ = value_head(features)
+        wdl = torch.softmax(wdl_logits, dim=-1)
         return policy, wdl.squeeze(0)
 
     @torch.no_grad()

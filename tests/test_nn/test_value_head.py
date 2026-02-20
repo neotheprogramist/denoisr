@@ -11,29 +11,42 @@ class TestChessValueHead:
     def head(self, device: torch.device) -> ChessValueHead:
         return ChessValueHead(d_s=SMALL_D_S).to(device)
 
-    def test_wdl_output_shape(
+    def test_forward_output_shape(
         self, head: ChessValueHead, small_latent: torch.Tensor
     ) -> None:
-        wdl, ply = head(small_latent)
-        assert wdl.shape == (2, 3)
+        wdl_logits, ply = head(small_latent)
+        assert wdl_logits.shape == (2, 3)
 
     def test_ply_output_shape(
         self, head: ChessValueHead, small_latent: torch.Tensor
     ) -> None:
-        wdl, ply = head(small_latent)
+        _, ply = head(small_latent)
         assert ply.shape == (2, 1)
 
-    def test_wdl_sums_to_one(
+    def test_forward_returns_finite_logits(
         self, head: ChessValueHead, small_latent: torch.Tensor
     ) -> None:
-        wdl, _ = head(small_latent)
+        wdl_logits, _ = head(small_latent)
+        assert torch.isfinite(wdl_logits).all()
+
+    def test_forward_logits_not_constrained_to_unit(
+        self, head: ChessValueHead, small_latent: torch.Tensor
+    ) -> None:
+        """Logits from forward() are raw -- not necessarily in [0, 1]."""
+        wdl_logits, _ = head(small_latent)
+        assert not ((wdl_logits >= 0).all() and (wdl_logits <= 1).all())
+
+    def test_infer_wdl_sums_to_one(
+        self, head: ChessValueHead, small_latent: torch.Tensor
+    ) -> None:
+        wdl, _ = head.infer(small_latent)
         sums = wdl.sum(dim=-1)
         assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
 
-    def test_wdl_in_zero_one(
+    def test_infer_wdl_in_zero_one(
         self, head: ChessValueHead, small_latent: torch.Tensor
     ) -> None:
-        wdl, _ = head(small_latent)
+        wdl, _ = head.infer(small_latent)
         assert (wdl >= 0).all()
         assert (wdl <= 1).all()
 
@@ -46,7 +59,7 @@ class TestChessValueHead:
     def test_gradient_flows(
         self, head: ChessValueHead, small_latent: torch.Tensor
     ) -> None:
-        wdl, ply = head(small_latent)
-        (wdl.sum() + ply.sum()).backward()
+        wdl_logits, ply = head(small_latent)
+        (wdl_logits.sum() + ply.sum()).backward()
         for p in head.parameters():
             assert p.grad is not None
