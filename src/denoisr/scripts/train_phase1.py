@@ -74,9 +74,11 @@ def measure_accuracy(
 
             pred_flat = logits.reshape(len(batch), -1)
             target_flat = targets.reshape(len(batch), -1)
+            legal_mask = target_flat > 0
+            masked_logits = pred_flat.masked_fill(~legal_mask, float("-inf"))
             target_idx = target_flat.argmax(dim=-1)  # (B,)
 
-            top5 = pred_flat.topk(5, dim=-1).indices  # (B, 5)
+            top5 = masked_logits.topk(5, dim=-1).indices  # (B, 5)
             correct_1 += (top5[:, 0] == target_idx).sum().item()
             correct_5 += (top5 == target_idx.unsqueeze(1)).any(dim=1).sum().item()
 
