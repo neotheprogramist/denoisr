@@ -115,11 +115,14 @@ def main() -> None:
         f"TC {args.time_control}{elo_msg}{sprt_msg}"
     )
 
-    def on_game(played: int, w: int, d: int, l: int) -> None:
+    def on_game(played: int, wins: int, draws: int, losses: int) -> None:
         from denoisr.engine.elo import compute_elo
-        elo, err = compute_elo(w, d, l)
+        elo, err = compute_elo(wins, draws, losses)
         elo_str = f"{elo:+.1f} +/- {err:.1f}" if not math.isinf(elo) else "N/A"
-        print(f"  Game {played}/{config.games}: +{w} ={d} -{l} | Elo: {elo_str}")
+        print(
+            f"  Game {played}/{config.games}: "
+            f"+{wins} ={draws} -{losses} | Elo: {elo_str}"
+        )
 
     result = run_benchmark(config, on_game=on_game)
 
