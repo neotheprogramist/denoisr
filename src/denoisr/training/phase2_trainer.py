@@ -6,7 +6,7 @@ from torch.amp import GradScaler  # type: ignore[attr-defined]
 from torch.amp import autocast  # type: ignore[attr-defined]
 from torch.nn import functional as F
 
-from denoisr.nn.diffusion import CosineNoiseSchedule
+from denoisr.nn.diffusion import CosineNoiseSchedule, DPMSolverPP
 from denoisr.training.loss import ChessLossComputer
 
 
@@ -259,33 +259,9 @@ def evaluate_phase2_gate(
             (pred_from == target_from) & (pred_to == target_to)
         ).float().mean().item()
 
-        # Diffusion-conditioned accuracy (DDIM-like denoising)
-        x = torch.randn_like(latent)
-        num_ts = schedule.num_timesteps
-        step_size = max(1, num_ts // num_diff_steps)
-
-        for i in range(num_diff_steps):
-            t_val = max(0, num_ts - 1 - i * step_size)
-            t = torch.full(
-                (boards.shape[0],), t_val, device=device,
-            )
-            noise_pred = diffusion(x, t, latent)
-
-            ab_t = schedule.alpha_bar[t_val]
-            x0_pred = (
-                (x - (1 - ab_t).sqrt() * noise_pred) / ab_t.sqrt()
-            )
-
-            t_prev = max(0, t_val - step_size)
-            if t_prev > 0:
-                ab_prev = schedule.alpha_bar[t_prev]
-                x = (
-                    ab_prev.sqrt() * x0_pred
-                    + (1 - ab_prev).sqrt() * noise_pred
-                )
-            else:
-                x = x0_pred
-
+        # Diffusion-conditioned accuracy (DPM-Solver++)
+        solver = DPMSolverPP(schedule, num_steps=num_diff_steps)
+        x = solver.sample(diffusion, latent.shape, latent, device)
         fused = (latent + x) / 2
         features_diff = backbone(fused)
         logits_diff = policy_head(features_diff)
