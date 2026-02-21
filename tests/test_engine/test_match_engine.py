@@ -88,6 +88,27 @@ class TestRunMatch:
         assert colors == ["white", "black"]
 
 
+class TestPlayGameFromFen:
+    def test_game_from_fen_completes(self) -> None:
+        """Game starting from a custom FEN should complete normally."""
+        fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        tc = TimeControl(base_seconds=60.0, increment=0.0)
+        e1_config = _mock_config("White")
+        e2_config = _mock_config("Black")
+        with UCIEngine(e1_config) as white, UCIEngine(e2_config) as black:
+            white.start()
+            black.start()
+            result = play_game(
+                white=white,
+                black=black,
+                time_control=tc,
+                max_moves=200,
+                start_fen=fen,
+            )
+        assert result.result in {"1-0", "0-1", "1/2-1/2"}
+        assert len(result.moves) > 0
+
+
 def test_play_game_stops_on_event() -> None:
     """play_game should return '*' result when stop_event is set."""
     config = _mock_config()

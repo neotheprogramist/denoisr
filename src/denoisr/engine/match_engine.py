@@ -26,12 +26,13 @@ def play_game(
     engine1_color: str = "white",
     stop_event: threading.Event | None = None,
     move_delay_ms: int = 0,
+    start_fen: str | None = None,
 ) -> GameResult:
     """Play a single game between two UCI engines.
 
     Tracks time via wall-clock. Returns a GameResult when the game ends.
     """
-    board = chess.Board()
+    board = chess.Board(start_fen) if start_fen is not None else chess.Board()
     moves: list[str] = []
     wtime_ms = int(time_control.base_seconds * 1000)
     btime_ms = int(time_control.base_seconds * 1000)
@@ -51,7 +52,7 @@ def play_game(
         current = white if board.turn == chess.WHITE else black
 
         move_list = [m for m in moves]
-        current.set_position(fen=None, moves=move_list)
+        current.set_position(fen=start_fen, moves=move_list)
 
         t0 = time.monotonic()
         uci_move = current.go(
