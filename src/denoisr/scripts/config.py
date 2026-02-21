@@ -150,6 +150,11 @@ class TrainingConfig:
     # than move quality or position evaluation.
     ply_weight: float = 0.1
 
+    # Weight for illegal-move logit L2 penalty. Encourages the model to
+    # output low logits at illegal positions, improving accuracy evaluation
+    # robustness. Small values (0.01) prevent interference with policy loss.
+    illegal_penalty_weight: float = 0.01
+
     # -- HarmonyDream loss balancing -----------------------------------------
 
     # Enable HarmonyDream dynamic loss balancing (Ma et al., ICML 2024).
@@ -424,6 +429,10 @@ def add_training_args(parser: ArgumentParser) -> None:
         help="loss weight for game-length prediction (default: 0.1)",
     )
     g.add_argument(
+        "--illegal-penalty-weight", type=float, default=0.01,
+        help="L2 penalty weight on illegal-move logits (default: 0.01)",
+    )
+    g.add_argument(
         "--harmony-dream",
         action=argparse.BooleanOptionalAction, default=False,
         help="enable HarmonyDream dynamic loss balancing (default: off)",
@@ -540,6 +549,7 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         diffusion_weight=args.diffusion_weight,
         reward_weight=args.reward_weight,
         ply_weight=args.ply_weight,
+        illegal_penalty_weight=args.illegal_penalty_weight,
         use_harmony_dream=args.harmony_dream,
         harmony_ema_decay=args.harmony_ema_decay,
         curriculum_initial_fraction=args.curriculum_initial_fraction,

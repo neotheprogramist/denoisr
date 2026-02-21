@@ -181,6 +181,7 @@ def main() -> None:
         value_weight=tcfg.value_weight,
         use_harmony_dream=tcfg.use_harmony_dream,
         harmony_ema_decay=tcfg.harmony_ema_decay,
+        illegal_penalty_weight=tcfg.illegal_penalty_weight,
     )
 
     # --- Grokfast filter (opt-in) ---
