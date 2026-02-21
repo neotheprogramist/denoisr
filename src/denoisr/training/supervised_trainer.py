@@ -89,6 +89,14 @@ class SupervisedTrainer:
                 pred_policy, pred_value, target_policies, target_values
             )
 
+        with torch.no_grad():
+            B = boards.shape[0]
+            pf = pred_policy.detach().reshape(B, -1)
+            tf = target_policies.reshape(B, -1)
+            mask = tf > 0
+            masked = pf.masked_fill(~mask, float("-inf"))
+            batch_top1 = (masked.argmax(-1) == tf.argmax(-1)).float().mean().item()
+
         self.optimizer.zero_grad()
         self.scaler.scale(total_loss).backward()  # type: ignore[no-untyped-call]
         self.scaler.unscale_(self.optimizer)
@@ -110,6 +118,7 @@ class SupervisedTrainer:
         grad_norm = total_norm.item()
         breakdown["grad_norm"] = grad_norm
         breakdown["overflow"] = not math.isfinite(grad_norm)
+        breakdown["batch_top1"] = batch_top1
         return total_loss.item(), breakdown
 
     def train_step(

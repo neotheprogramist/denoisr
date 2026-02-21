@@ -312,6 +312,8 @@ def main() -> None:
                 compute_time += time.monotonic() - compute_start
 
                 logger.log_train_step(global_step, loss, breakdown)
+                if "batch_top1" in breakdown:
+                    logger._writer.add_scalar("accuracy/batch_top1", breakdown["batch_top1"], global_step)
                 if grok_tracker is not None:
                     grok_metrics = grok_tracker.step(
                         global_step, breakdown, breakdown.get("grad_norm", 0.0)

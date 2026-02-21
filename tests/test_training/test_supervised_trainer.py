@@ -108,6 +108,14 @@ class TestSupervisedTrainer:
         )
         assert total_norm.item() < 100.0
 
+    def test_breakdown_includes_batch_top1(
+        self, trainer: SupervisedTrainer
+    ) -> None:
+        batch = _make_batch(4)
+        _, breakdown = trainer.train_step(batch)
+        assert "batch_top1" in breakdown
+        assert 0.0 <= breakdown["batch_top1"] <= 1.0
+
     def test_lr_stays_above_half_peak_at_midpoint(
         self, device: torch.device
     ) -> None:
