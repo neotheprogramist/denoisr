@@ -171,8 +171,9 @@ class Phase2Trainer:
             t = torch.randint(0, self._current_max_steps, (B,), device=self.device)
             noise = torch.randn_like(diff_target)
             noisy_target = self.schedule.q_sample(diff_target, t, noise)
-            predicted_noise = self.diffusion(noisy_target, t, cond)
-            diffusion_loss = F.mse_loss(predicted_noise, noise)
+            v_target = self.schedule.compute_v_target(diff_target, noise, t)
+            v_pred = self.diffusion(noisy_target, t, cond)
+            diffusion_loss = F.mse_loss(v_pred, v_target)
 
             # 6. Consistency: SimSiam on predicted vs actual
             pred_next_flat = pred_next.reshape(B * Tm1, 64, d_s)
