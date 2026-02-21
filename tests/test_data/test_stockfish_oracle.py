@@ -51,14 +51,14 @@ class TestStockfishOracle:
     def test_best_move_has_substantial_probability(
         self, oracle: StockfishOracle
     ) -> None:
-        """With T=30, the best move should be well above uniform probability."""
+        """Best move should be above uniform probability."""
         board = chess.Board()
         legal_count = board.legal_moves.count()
         policy, _, _ = oracle.evaluate(board)
         max_prob = policy.data.max().item()
         uniform_prob = 1.0 / legal_count
-        # Best move should be at least 2x the uniform baseline
-        assert max_prob > 2.0 * uniform_prob
+        # Best move should be above uniform baseline
+        assert max_prob > uniform_prob
 
     def test_policy_only_on_legal_moves(
         self, oracle: StockfishOracle
@@ -74,3 +74,42 @@ class TestStockfishOracle:
                         for m in board.legal_moves
                     )
                     assert found, f"Policy nonzero at ({from_sq},{to_sq}) but no legal move"
+
+    def test_temperature_changes_distribution_sharpness(
+        self, oracle: StockfishOracle
+    ) -> None:
+        """Lower temperature should produce sharper (more peaked) distributions."""
+        board = chess.Board()
+
+        assert STOCKFISH_PATH is not None
+        sharp_oracle = StockfishOracle(
+            path=STOCKFISH_PATH, depth=10, policy_temperature=30.0
+        )
+        soft_oracle = StockfishOracle(
+            path=STOCKFISH_PATH, depth=10, policy_temperature=150.0
+        )
+
+        sharp_policy, _, _ = sharp_oracle.evaluate(board)
+        soft_policy, _, _ = soft_oracle.evaluate(board)
+
+        # Sharper distribution (lower temperature) should have higher max probability
+        assert sharp_policy.data.max().item() > soft_policy.data.max().item()
+
+        sharp_oracle.close()
+        soft_oracle.close()
+
+    def test_label_smoothing_redistributes_mass(
+        self, oracle: StockfishOracle
+    ) -> None:
+        """With label smoothing, minimum probability on legal moves should be > 0."""
+        board = chess.Board()
+        assert STOCKFISH_PATH is not None
+        smoothed = StockfishOracle(
+            path=STOCKFISH_PATH, depth=10,
+            policy_temperature=150.0, label_smoothing=0.1,
+        )
+        policy, _, _ = smoothed.evaluate(board)
+        # All legal moves should have nonzero probability
+        legal_probs = policy.data[policy.data > 0]
+        assert legal_probs.min().item() > 0.001  # smoothing ensures minimum
+        smoothed.close()

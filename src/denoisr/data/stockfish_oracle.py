@@ -6,9 +6,17 @@ from denoisr.types import PolicyTarget, ValueTarget
 
 
 class StockfishOracle:
-    def __init__(self, path: str, depth: int = 12) -> None:
+    def __init__(
+        self,
+        path: str,
+        depth: int = 12,
+        policy_temperature: float = 150.0,
+        label_smoothing: float = 0.1,
+    ) -> None:
         self._engine = chess.engine.SimpleEngine.popen_uci(path)
         self._depth = depth
+        self._policy_temperature = policy_temperature
+        self._label_smoothing = label_smoothing
 
     def evaluate(
         self, board: chess.Board
@@ -39,7 +47,10 @@ class StockfishOracle:
 
         # Softmax over centipawn scores to get distribution
         t = torch.tensor(scores, dtype=torch.float32)
-        probs = torch.softmax(t / 30.0, dim=0)
+        probs = torch.softmax(t / self._policy_temperature, dim=0)
+        if self._label_smoothing > 0:
+            n_legal = len(legal_moves)
+            probs = (1 - self._label_smoothing) * probs + self._label_smoothing / n_legal
 
         data = torch.zeros(64, 64, dtype=torch.float32)
         for move, prob in zip(legal_moves, probs):

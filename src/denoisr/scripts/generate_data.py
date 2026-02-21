@@ -45,9 +45,19 @@ def _cleanup_oracle() -> None:
         pass
 
 
-def _init_worker(stockfish_path: str, stockfish_depth: int) -> None:
+def _init_worker(
+    stockfish_path: str,
+    stockfish_depth: int,
+    policy_temperature: float,
+    label_smoothing: float,
+) -> None:
     global _oracle, _encoder
-    _oracle = StockfishOracle(path=stockfish_path, depth=stockfish_depth)
+    _oracle = StockfishOracle(
+        path=stockfish_path,
+        depth=stockfish_depth,
+        policy_temperature=policy_temperature,
+        label_smoothing=label_smoothing,
+    )
     _encoder = ExtendedBoardEncoder()
     atexit.register(_cleanup_oracle)
 
@@ -139,6 +149,8 @@ def generate_examples(
     stockfish_depth: int,
     max_examples: int,
     num_workers: int,
+    policy_temperature: float = 150.0,
+    label_smoothing: float = 0.1,
 ) -> list[TrainingExample]:
     positions = _extract_positions(pgn_path, max_examples)
     print(f"Extracted {len(positions)} positions, evaluating with {num_workers} workers")
@@ -148,7 +160,7 @@ def generate_examples(
     with multiprocessing.Pool(
         num_workers,
         initializer=_init_worker,
-        initargs=(stockfish_path, stockfish_depth),
+        initargs=(stockfish_path, stockfish_depth, policy_temperature, label_smoothing),
     ) as pool:
         results = pool.imap_unordered(_evaluate_position, positions)
         for board_np, policy_np, (win, draw, loss), gid, eco, pc in tqdm(
@@ -263,6 +275,10 @@ def main() -> None:
     parser.add_argument(
         "--output", type=str, default="outputs/training_data.pt"
     )
+    parser.add_argument("--policy-temperature", type=float, default=150.0,
+        help="Softmax temperature for policy targets (default: 150.0)")
+    parser.add_argument("--label-smoothing", type=float, default=0.1,
+        help="Label smoothing epsilon (default: 0.1)")
     args = parser.parse_args()
 
     stockfish_path = args.stockfish or shutil.which("stockfish")
@@ -279,6 +295,8 @@ def main() -> None:
         args.stockfish_depth,
         args.max_examples,
         args.workers,
+        policy_temperature=args.policy_temperature,
+        label_smoothing=args.label_smoothing,
     )
 
     output_path = Path(args.output)
