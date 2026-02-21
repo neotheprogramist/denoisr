@@ -6,6 +6,7 @@ parallel game execution with optional SPRT for statistical confidence.
 
 import argparse
 import math
+import shlex
 import shutil
 import sys
 from importlib import resources
@@ -89,13 +90,24 @@ def main() -> None:
         openings_path = _default_openings_path()
 
     tc = _parse_time_control(args.time_control)
-    engine_args = tuple(args.engine_args.split()) if args.engine_args else ()
-    opponent_args = tuple(args.opponent_args.split()) if args.opponent_args else ()
+
+    # Split command strings into executable + args (handles quoting correctly)
+    engine_parts = shlex.split(args.engine_cmd)
+    engine_cmd = engine_parts[0]
+    engine_args = tuple(engine_parts[1:])
+    if args.engine_args:
+        engine_args = engine_args + tuple(shlex.split(args.engine_args))
+
+    opponent_parts = shlex.split(opponent_cmd)
+    opponent_cmd_exe = opponent_parts[0]
+    opponent_args = tuple(opponent_parts[1:])
+    if args.opponent_args:
+        opponent_args = opponent_args + tuple(shlex.split(args.opponent_args))
 
     config = BenchmarkConfig(
-        engine_cmd=args.engine_cmd,
+        engine_cmd=engine_cmd,
         engine_args=engine_args,
-        opponent_cmd=opponent_cmd,
+        opponent_cmd=opponent_cmd_exe,
         opponent_args=opponent_args,
         opponent_elo=args.opponent_elo,
         games=args.games,
