@@ -586,44 +586,39 @@ Switch to **Match** mode in the GUI to run engine-vs-engine matches with live El
 uv run denoisr-gui --checkpoint outputs/phase3.pt --mode diffusion
 ```
 
-### cutechess-cli (advanced)
+### CLI benchmark (no external tools needed)
 
-Measure Elo against a reference engine using SPRT for statistical confidence:
+Estimate Elo against Stockfish with parallel game execution — no cutechess-cli required:
 
 ```bash
-# Basic benchmark (100 games)
+# Basic benchmark (100 games against Elo-limited Stockfish)
 uv run denoisr-benchmark \
     --engine-cmd "uv run denoisr-play --checkpoint outputs/phase3.pt --mode diffusion" \
-    --opponent-cmd stockfish \
-    --games 100 \
-    --time-control "10+0.1"
+    --opponent-elo 1200 \
+    --games 100
 
 # With SPRT (stops early when statistically significant)
 uv run denoisr-benchmark \
     --engine-cmd "uv run denoisr-play --checkpoint outputs/phase3.pt --mode diffusion" \
-    --opponent-cmd stockfish \
+    --opponent-elo 1500 \
     --games 1000 \
     --sprt-elo0 0 \
-    --sprt-elo1 50 \
-    --concurrency 4
-
-# Dry run (print the cutechess-cli command without executing)
-uv run denoisr-benchmark \
-    --engine-cmd "./run_denoisr.sh" \
-    --opponent-cmd stockfish \
-    --dry-run
+    --sprt-elo1 50
 ```
 
-| Flag             | Default     | Description                                |
-| ---------------- | ----------- | ------------------------------------------ |
-| `--engine-cmd`   | (required)  | Command to run the Denoisr UCI engine      |
-| `--opponent-cmd` | `stockfish` | Command to run the opponent UCI engine     |
-| `--games`        | `100`       | Number of games to play                    |
-| `--time-control` | `10+0.1`    | Time control (seconds + increment)         |
-| `--sprt-elo0`    | (none)      | SPRT null hypothesis Elo difference        |
-| `--sprt-elo1`    | (none)      | SPRT alternative hypothesis Elo difference |
-| `--concurrency`  | `1`         | Parallel games                             |
-| `--dry-run`      | `false`     | Print command without running              |
+Games run in parallel across `cpu_count*2+1` workers (each owning a persistent engine + Stockfish subprocess pair). A bundled 50-position opening book ensures game variety. Stockfish is auto-detected from PATH.
+
+| Flag             | Default                  | Description                                         |
+| ---------------- | ------------------------ | --------------------------------------------------- |
+| `--engine-cmd`   | (required)               | Command to run the Denoisr UCI engine               |
+| `--opponent-cmd` | auto-detect `stockfish`  | Opponent engine command                             |
+| `--opponent-elo` | full strength            | Limit opponent via UCI_Elo (e.g. 1200)              |
+| `--games`        | `100`                    | Number of games to play                             |
+| `--time-control` | `10+0.1`                 | Base+increment seconds                              |
+| `--openings`     | bundled 50-position book | Path to EPD opening book                            |
+| `--concurrency`  | `cpu_count*2+1`          | Parallel game workers                               |
+| `--sprt-elo0`    | (none)                   | SPRT null hypothesis Elo difference                 |
+| `--sprt-elo1`    | (none)                   | SPRT alternative hypothesis Elo difference          |
 
 ## Architecture deep dive
 
@@ -687,7 +682,7 @@ Training proceeds in three phases, each gated on measurable quality thresholds t
 | `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories       |
 | `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing    |
 | `uv run denoisr-play`          | UCI chess engine (single-pass or diffusion)            |
-| `uv run denoisr-benchmark`     | Elo benchmarking via cutechess-cli                     |
+| `uv run denoisr-benchmark`     | Parallel Elo benchmarking against Stockfish            |
 | `uv run denoisr-export-mlx`    | Export checkpoint to MLX safetensors for Apple Silicon |
 | `uv run denoisr-gui`           | Chess GUI for play and engine-vs-engine matches        |
 
@@ -720,9 +715,10 @@ denoisr/
 │   ├── data/           # Encoders, PGN streaming, Stockfish oracle, dataset
 │   ├── nn/             # Neural network modules (encoder, backbone, heads, world model, diffusion)
 │   ├── training/       # Loss, trainers, MCTS, self-play, replay buffer, reanalyse, orchestrator
-│   ├── gui/           # Built-in chess GUI (play, match, Elo/SPRT)
+│   ├── engine/        # Shared engine infrastructure (UCI, match engine, Elo/SPRT, openings)
+│   ├── gui/           # Built-in chess GUI (play, match)
 │   ├── inference/      # Chess engines (single-pass, diffusion-enhanced), UCI protocol
-│   ├── evaluation/     # cutechess-cli benchmarking harness
+│   ├── evaluation/     # Self-contained parallel benchmarking
 │   └── scripts/        # CLI entry points for all phases + inference + benchmarking
 ├── tests/              # 370+ tests mirroring src/ structure
 ├── fixtures/           # Sample PGN files for testing
