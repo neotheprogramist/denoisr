@@ -7,6 +7,7 @@ each worker owns a persistent engine + opponent subprocess pair.
 from __future__ import annotations
 
 import atexit
+import logging
 import multiprocessing
 import os
 import random
@@ -105,13 +106,22 @@ def _play_one_game(
         white, black = _opponent, _engine
         e1_color = "black"
 
-    result = play_game(
-        white=white,
-        black=black,
-        time_control=_time_control,
-        start_fen=task.start_fen,
-        engine1_color=e1_color,
-    )
+    try:
+        result = play_game(
+            white=white,
+            black=black,
+            time_control=_time_control,
+            start_fen=task.start_fen,
+            engine1_color=e1_color,
+        )
+    except TimeoutError:
+        logging.getLogger(__name__).warning(
+            "Game %d: engine timed out, recording as loss", task.game_num,
+        )
+        # Engine1 (Denoisr) timed out → count as a loss for engine1
+        result_str = "0-1" if e1_color == "white" else "1-0"
+        return (task.game_num, result_str, e1_color, (), task.start_fen, "timeout")
+
     return (
         task.game_num,
         result.result,
