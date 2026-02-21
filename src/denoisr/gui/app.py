@@ -470,7 +470,7 @@ class DenoisrApp:
 
     def _start_match(self) -> None:
         from denoisr.engine.elo import compute_elo, likelihood_of_superiority, sprt_test
-        from denoisr.gui.match_engine import run_match
+        from denoisr.engine.match_engine import run_match
         from denoisr.engine.types import MatchConfig
 
         ckpt = self._ckpt_var.get().strip()

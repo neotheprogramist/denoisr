@@ -1,15 +1,15 @@
-# tests/test_gui/test_match_engine.py
+# tests/test_engine/test_match_engine.py
 import sys
 import threading
 from pathlib import Path
 
 import chess
 
-from denoisr.gui.match_engine import play_game, run_match
+from denoisr.engine.match_engine import play_game, run_match
 from denoisr.engine.types import EngineConfig, GameResult, MatchConfig, TimeControl
 from denoisr.engine.uci_engine import UCIEngine
 
-MOCK_ENGINE = str(Path(__file__).parent.parent / "test_engine" / "mock_engine.py")
+MOCK_ENGINE = str(Path(__file__).parent / "mock_engine.py")
 
 
 def _mock_config(name: str = "MockEngine") -> EngineConfig:
