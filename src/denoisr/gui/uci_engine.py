@@ -8,7 +8,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from denoisr.gui.types import EngineConfig, TimeControl
+    from denoisr.engine.types import EngineConfig, TimeControl
 
 
 class UCIEngine:

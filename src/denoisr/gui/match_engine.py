@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING
 
 import chess
 
-from denoisr.gui.types import GameResult
+from denoisr.engine.types import GameResult
 from denoisr.gui.uci_engine import UCIEngine
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from denoisr.gui.types import MatchConfig, TimeControl
+    from denoisr.engine.types import MatchConfig, TimeControl
 
 
 def play_game(

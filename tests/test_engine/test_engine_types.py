@@ -1,6 +1,6 @@
 import pytest
 
-from denoisr.gui.types import (
+from denoisr.engine.types import (
     EngineConfig,
     GameResult,
     MatchConfig,

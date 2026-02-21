@@ -6,7 +6,7 @@ from pathlib import Path
 import chess
 
 from denoisr.gui.match_engine import play_game, run_match
-from denoisr.gui.types import EngineConfig, GameResult, MatchConfig, TimeControl
+from denoisr.engine.types import EngineConfig, GameResult, MatchConfig, TimeControl
 from denoisr.gui.uci_engine import UCIEngine
 
 MOCK_ENGINE = str(Path(__file__).parent / "mock_engine.py")

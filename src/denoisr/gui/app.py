@@ -12,11 +12,11 @@ from typing import TYPE_CHECKING, Any
 import chess
 
 from denoisr.gui.board_widget import BoardWidget
-from denoisr.gui.types import EngineConfig, TimeControl
+from denoisr.engine.types import EngineConfig, TimeControl
 from denoisr.gui.uci_engine import UCIEngine
 
 if TYPE_CHECKING:
-    from denoisr.gui.types import GameResult
+    from denoisr.engine.types import GameResult
 
 
 class DenoisrApp:
@@ -471,7 +471,7 @@ class DenoisrApp:
     def _start_match(self) -> None:
         from denoisr.gui.elo import compute_elo, likelihood_of_superiority, sprt_test
         from denoisr.gui.match_engine import run_match
-        from denoisr.gui.types import MatchConfig
+        from denoisr.engine.types import MatchConfig
 
         ckpt = self._ckpt_var.get().strip()
         if not ckpt:
