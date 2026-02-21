@@ -51,6 +51,7 @@ def _init_worker(
     opponent_cmd: str,
     opponent_args: tuple[str, ...],
     opponent_elo: int | None,
+    opponent_options: tuple[tuple[str, str], ...],
     time_control: TimeControl,
     startup_timeout: float,
 ) -> None:
@@ -65,6 +66,8 @@ def _init_worker(
     if opponent_elo is not None:
         _opponent.set_option("UCI_LimitStrength", "true")
         _opponent.set_option("UCI_Elo", str(opponent_elo))
+    for name, value in opponent_options:
+        _opponent.set_option(name, value)
 
     atexit.register(_cleanup_engines)
 
@@ -126,6 +129,7 @@ class BenchmarkConfig:
     opponent_cmd: str = "stockfish"
     opponent_args: tuple[str, ...] = ()
     opponent_elo: int | None = None
+    opponent_options: tuple[tuple[str, str], ...] = ()
     games: int = 100
     time_control: TimeControl = TimeControl(base_seconds=10.0, increment=0.1)
     openings_path: Path | None = None
@@ -192,6 +196,7 @@ def run_benchmark(
             config.opponent_cmd,
             config.opponent_args,
             config.opponent_elo,
+            config.opponent_options,
             config.time_control,
             config.startup_timeout,
         ),
