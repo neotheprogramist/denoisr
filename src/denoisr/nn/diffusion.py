@@ -29,12 +29,31 @@ class CosineNoiseSchedule(nn.Module):
             alpha_bar[:num_timesteps].float().clamp(min=1e-5, max=0.9999),
         )
 
+    def _broadcast_ab(self, t: Tensor, target: Tensor) -> Tensor:
+        ab = self.alpha_bar[t]
+        while ab.ndim < target.ndim:
+            ab = ab.unsqueeze(-1)
+        return ab
+
     def q_sample(self, x_0: Tensor, t: Tensor, noise: Tensor) -> Tensor:
         """Forward diffusion: add noise at timestep t."""
-        ab = self.alpha_bar[t]
-        while ab.ndim < x_0.ndim:
-            ab = ab.unsqueeze(-1)
+        ab = self._broadcast_ab(t, x_0)
         return ab.sqrt() * x_0 + (1 - ab).sqrt() * noise
+
+    def compute_v_target(self, x_0: Tensor, noise: Tensor, t: Tensor) -> Tensor:
+        """Compute v-prediction target: v = sqrt(alpha_bar)*eps - sqrt(1-alpha_bar)*x_0."""
+        ab = self._broadcast_ab(t, x_0)
+        return ab.sqrt() * noise - (1 - ab).sqrt() * x_0
+
+    def predict_x0_from_v(self, x_t: Tensor, v: Tensor, t: Tensor) -> Tensor:
+        """Recover x_0 from v-prediction: x_0 = sqrt(alpha_bar)*x_t - sqrt(1-alpha_bar)*v."""
+        ab = self._broadcast_ab(t, x_t)
+        return ab.sqrt() * x_t - (1 - ab).sqrt() * v
+
+    def predict_eps_from_v(self, x_t: Tensor, v: Tensor, t: Tensor) -> Tensor:
+        """Recover eps from v-prediction: eps = sqrt(1-alpha_bar)*x_t + sqrt(alpha_bar)*v."""
+        ab = self._broadcast_ab(t, x_t)
+        return (1 - ab).sqrt() * x_t + ab.sqrt() * v
 
 
 class DiTBlock(nn.Module):

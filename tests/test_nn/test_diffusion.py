@@ -64,6 +64,49 @@ class TestCosineNoiseSchedule:
         schedule.to(device)
         assert schedule.alpha_bar.device.type == device.type
 
+    def test_compute_v_target_shape(
+        self, schedule: CosineNoiseSchedule
+    ) -> None:
+        x_0 = torch.randn(2, 64, SMALL_D_S)
+        noise = torch.randn_like(x_0)
+        t = torch.tensor([0, SMALL_NUM_TIMESTEPS - 1])
+        v = schedule.compute_v_target(x_0, noise, t)
+        assert v.shape == x_0.shape
+
+    def test_v_prediction_roundtrip_recovers_x0(
+        self, schedule: CosineNoiseSchedule
+    ) -> None:
+        """v-prediction must allow exact recovery of x_0."""
+        x_0 = torch.randn(2, 64, SMALL_D_S)
+        noise = torch.randn_like(x_0)
+        t = torch.tensor([5, 10])
+        x_t = schedule.q_sample(x_0, t, noise)
+        v = schedule.compute_v_target(x_0, noise, t)
+        x_0_recovered = schedule.predict_x0_from_v(x_t, v, t)
+        assert torch.allclose(x_0_recovered, x_0, atol=1e-5)
+
+    def test_v_prediction_roundtrip_recovers_eps(
+        self, schedule: CosineNoiseSchedule
+    ) -> None:
+        """v-prediction must allow exact recovery of noise."""
+        x_0 = torch.randn(2, 64, SMALL_D_S)
+        noise = torch.randn_like(x_0)
+        t = torch.tensor([5, 10])
+        x_t = schedule.q_sample(x_0, t, noise)
+        v = schedule.compute_v_target(x_0, noise, t)
+        eps_recovered = schedule.predict_eps_from_v(x_t, v, t)
+        assert torch.allclose(eps_recovered, noise, atol=1e-5)
+
+    def test_v_target_at_t0_approximates_noise(
+        self, schedule: CosineNoiseSchedule
+    ) -> None:
+        """At t=0, alpha_bar is near 1, so v approximates epsilon."""
+        x_0 = torch.randn(1, 64, SMALL_D_S)
+        noise = torch.randn_like(x_0)
+        t = torch.tensor([0])
+        v = schedule.compute_v_target(x_0, noise, t)
+        assert torch.allclose(v, noise, atol=0.2)
+
 
 class TestChessDiffusionModule:
     @pytest.fixture
