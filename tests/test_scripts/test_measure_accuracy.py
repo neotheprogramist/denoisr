@@ -1,6 +1,5 @@
 # tests/test_scripts/test_measure_accuracy.py
 import torch
-import pytest
 
 from denoisr.nn.encoder import ChessEncoder
 from denoisr.nn.policy_backbone import ChessPolicyBackbone

@@ -127,14 +127,16 @@ Generated 100000 training examples
 Saved 100000 examples to outputs/training_data.pt
 ```
 
-| Flag                | Default                    | Description                                    |
-| ------------------- | -------------------------- | ---------------------------------------------- |
-| `--pgn`             | (required)                 | Path to `.pgn` or `.pgn.zst` file              |
-| `--stockfish`       | auto-detect PATH           | Path to Stockfish binary                       |
-| `--stockfish-depth` | `10`                       | Stockfish analysis depth (higher = better)     |
-| `--max-examples`    | `100000`                   | Training examples to generate                  |
-| `--workers`         | `cpu_count*2+1`            | Worker processes (each runs its own Stockfish) |
-| `--output`          | `outputs/training_data.pt` | Output path for generated data                 |
+| Flag                   | Default                    | Description                                    |
+| ---------------------- | -------------------------- | ---------------------------------------------- |
+| `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file              |
+| `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                       |
+| `--stockfish-depth`    | `12`                       | Stockfish analysis depth (higher = better)     |
+| `--max-examples`       | `100000`                   | Training examples to generate                  |
+| `--workers`            | `cpu_count*2+1`            | Worker processes (each runs its own Stockfish) |
+| `--policy-temperature` | `150`                      | Softmax temperature for policy targets         |
+| `--label-smoothing`    | `0.1`                      | Label smoothing epsilon for policy targets     |
+| `--output`             | `outputs/training_data.pt` | Output path for generated data                 |
 
 ### Step 4: Phase 1 — Supervised learning
 
@@ -263,6 +265,7 @@ Without `--run-name`, a timestamp like `2026-02-20_14-30-15` is generated automa
 | Metric                                                | Frequency       | Phase |
 | ----------------------------------------------------- | --------------- | ----- |
 | `loss/total`, `loss/policy`, `loss/value`             | Every batch     | 1     |
+| `accuracy/batch_top1` (masked policy accuracy)        | Every batch     | 1     |
 | `gradients/norm` (pre-clip L2 norm)                   | Every batch     | 1, 2  |
 | `accuracy/top1`, `accuracy/top5`                      | Every epoch     | 1     |
 | `lr` (learning rate)                                  | Every epoch     | 1     |
@@ -455,16 +458,17 @@ These control how the model learns. Safe to change between runs without architec
 
 These control the relative importance of each training objective. Higher weight = model prioritizes that loss more.
 
-| Flag                   | Default | What it controls                                                                                   |
-| ---------------------- | ------- | -------------------------------------------------------------------------------------------------- |
-| `--policy-weight`      | `2.0`   | Policy (move prediction) cross-entropy. Set higher because correct moves matter most               |
-| `--value-weight`       | `0.5`   | Value (win/draw/loss) cross-entropy. Lower than policy — evaluation is secondary in early training |
-| `--consistency-weight` | `1.0`   | SimSiam consistency loss. Prevents latent-space collapse in the world model                        |
-| `--diffusion-weight`   | `1.0`   | Diffusion denoising MSE. Trains imagination of future trajectories                                 |
-| `--reward-weight`      | `1.0`   | Reward prediction MSE. Teaches outcome prediction from latent states                               |
-| `--ply-weight`         | `0.1`   | Game length prediction Huber loss. Auxiliary signal, low weight                                    |
-| `--harmony-dream`      | off     | Enable HarmonyDream dynamic loss balancing (auto-adjusts weights inversely to loss magnitudes)     |
-| `--harmony-ema-decay`  | `0.99`  | EMA decay for HarmonyDream tracking. Higher = smoother adaptation                                  |
+| Flag                       | Default | What it controls                                                                                   |
+| -------------------------- | ------- | -------------------------------------------------------------------------------------------------- |
+| `--policy-weight`          | `2.0`   | Policy (move prediction) cross-entropy. Set higher because correct moves matter most               |
+| `--value-weight`           | `0.5`   | Value (win/draw/loss) cross-entropy. Lower than policy — evaluation is secondary in early training |
+| `--consistency-weight`     | `1.0`   | SimSiam consistency loss. Prevents latent-space collapse in the world model                        |
+| `--diffusion-weight`       | `1.0`   | Diffusion denoising MSE. Trains imagination of future trajectories                                 |
+| `--reward-weight`          | `1.0`   | Reward prediction MSE. Teaches outcome prediction from latent states                               |
+| `--ply-weight`             | `0.1`   | Game length prediction Huber loss. Auxiliary signal, low weight                                    |
+| `--illegal-penalty-weight` | `0.01`  | L2 penalty on illegal-move logits. Encourages model to suppress illegal positions                  |
+| `--harmony-dream`          | off     | Enable HarmonyDream dynamic loss balancing (auto-adjusts weights inversely to loss magnitudes)     |
+| `--harmony-ema-decay`      | `0.99`  | EMA decay for HarmonyDream tracking. Higher = smoother adaptation                                  |
 
 #### Diffusion curriculum
 
