@@ -13,7 +13,7 @@ import chess
 
 from denoisr.gui.board_widget import BoardWidget
 from denoisr.engine.types import EngineConfig, TimeControl
-from denoisr.gui.uci_engine import UCIEngine
+from denoisr.engine.uci_engine import UCIEngine
 
 if TYPE_CHECKING:
     from denoisr.engine.types import GameResult

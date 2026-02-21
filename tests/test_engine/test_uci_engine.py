@@ -5,7 +5,7 @@ import chess
 import pytest
 
 from denoisr.engine.types import EngineConfig, TimeControl
-from denoisr.gui.uci_engine import UCIEngine
+from denoisr.engine.uci_engine import UCIEngine
 
 MOCK_ENGINE = str(Path(__file__).parent / "mock_engine.py")
 

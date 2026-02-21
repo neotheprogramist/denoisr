@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import chess
 
 from denoisr.engine.types import GameResult
-from denoisr.gui.uci_engine import UCIEngine
+from denoisr.engine.uci_engine import UCIEngine
 
 if TYPE_CHECKING:
     from collections.abc import Callable
