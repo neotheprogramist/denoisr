@@ -3,7 +3,7 @@ import torch
 from torch import nn
 
 from denoisr.data.protocols import BoardEncoder
-from denoisr.nn.diffusion import CosineNoiseSchedule
+from denoisr.nn.diffusion import CosineNoiseSchedule, DPMSolverPP
 
 
 class DiffusionChessEngine:
@@ -85,28 +85,9 @@ class DiffusionChessEngine:
         return latent
 
     def _diffusion_imagine(self, latent: torch.Tensor) -> torch.Tensor:
-        """Run DDIM-style iterative denoising to imagine future trajectories."""
-        x = torch.randn_like(latent)
-        T = self._schedule.num_timesteps
-        step_size = max(1, T // self._num_steps)
-
-        for i in range(self._num_steps):
-            t_val = max(0, T - 1 - i * step_size)
-            t = torch.tensor([t_val], device=self._device)
-            noise_pred = self._diffusion(x, t, latent)
-
-            ab_t = self._schedule.alpha_bar[t_val]
-            # x₀ prediction from noise estimate
-            x0_pred = (x - (1 - ab_t).sqrt() * noise_pred) / ab_t.sqrt()
-
-            # DDIM step: re-noise to t_prev level
-            t_prev = max(0, t_val - step_size)
-            if t_prev > 0:
-                ab_prev = self._schedule.alpha_bar[t_prev]
-                x = ab_prev.sqrt() * x0_pred + (1 - ab_prev).sqrt() * noise_pred
-            else:
-                x = x0_pred
-
+        """Run DPM-Solver++ denoising to imagine future trajectories."""
+        solver = DPMSolverPP(self._schedule, num_steps=self._num_steps)
+        x = solver.sample(self._diffusion, latent.shape, latent, self._device)
         return (latent + x) / 2
 
     def _set_eval(self) -> None:

@@ -31,7 +31,7 @@ class CosineNoiseSchedule(nn.Module):
         )
 
     def _broadcast_ab(self, t: Tensor, target: Tensor) -> Tensor:
-        ab = self.alpha_bar[t]
+        ab = self.alpha_bar[t.cpu()].to(target.device)
         while ab.ndim < target.ndim:
             ab = ab.unsqueeze(-1)
         return ab
