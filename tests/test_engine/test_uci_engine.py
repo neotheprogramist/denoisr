@@ -73,3 +73,28 @@ class TestUCIEngine:
         with pytest.raises(TimeoutError):
             engine.start(timeout=0.5)
         engine.quit()
+
+
+class TestUCIEngineOptions:
+    def test_set_option_sends_command(self) -> None:
+        engine = UCIEngine(_mock_config())
+        engine.start()
+        engine.set_option("UCI_LimitStrength", "true")
+        engine.set_option("UCI_Elo", "1200")
+        assert engine.is_alive()
+        engine.quit()
+
+    def test_new_game_resets_state(self) -> None:
+        engine = UCIEngine(_mock_config())
+        engine.start()
+        engine.set_position(fen=None, moves=["e2e4"])
+        engine.new_game()
+        engine.set_position(fen=None, moves=[])
+        move = engine.go(
+            time_control=TimeControl(base_seconds=10.0, increment=0.1),
+            wtime_ms=10000,
+            btime_ms=10000,
+        )
+        board = chess.Board()
+        assert chess.Move.from_uci(move) in board.legal_moves
+        engine.quit()

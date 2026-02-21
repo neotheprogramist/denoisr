@@ -78,6 +78,18 @@ class UCIEngine:
         parts = response.split()
         return parts[1]
 
+    def set_option(self, name: str, value: str) -> None:
+        """Send a UCI setoption command and wait for acknowledgement."""
+        self._send(f"setoption name {name} value {value}")
+        self._send("isready")
+        self._wait_for("readyok", timeout=10.0)
+
+    def new_game(self) -> None:
+        """Signal the start of a new game and wait for acknowledgement."""
+        self._send("ucinewgame")
+        self._send("isready")
+        self._wait_for("readyok", timeout=10.0)
+
     def quit(self) -> None:
         """Send quit and terminate the engine process."""
         if self._process is not None:

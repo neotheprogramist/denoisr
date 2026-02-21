@@ -34,6 +34,10 @@ def main() -> None:
                 moves_idx = parts.index("moves")
                 for uci in parts[moves_idx + 1 :]:
                     board.push_uci(uci)
+        elif line == "ucinewgame":
+            board = chess.Board()
+        elif line.startswith("setoption"):
+            pass
         elif line.startswith("go"):
             move = next(iter(board.legal_moves))
             print(f"bestmove {move.uci()}")
