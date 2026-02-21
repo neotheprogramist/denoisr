@@ -469,7 +469,7 @@ class DenoisrApp:
         self._moves_text.config(state=tk.DISABLED)
 
     def _start_match(self) -> None:
-        from denoisr.gui.elo import compute_elo, likelihood_of_superiority, sprt_test
+        from denoisr.engine.elo import compute_elo, likelihood_of_superiority, sprt_test
         from denoisr.gui.match_engine import run_match
         from denoisr.engine.types import MatchConfig
 

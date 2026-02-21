@@ -1,4 +1,4 @@
-from denoisr.gui.elo import compute_elo, likelihood_of_superiority, sprt_test
+from denoisr.engine.elo import compute_elo, likelihood_of_superiority, sprt_test
 
 
 class TestComputeElo:
