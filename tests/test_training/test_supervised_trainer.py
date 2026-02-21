@@ -108,6 +108,36 @@ class TestSupervisedTrainer:
         )
         assert total_norm.item() < 100.0
 
+    def test_lr_stays_above_half_peak_at_midpoint(
+        self, device: torch.device
+    ) -> None:
+        """LR should still be above 50% of peak at the training midpoint."""
+        total_epochs = 100
+        warmup = 5
+        encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
+        backbone = ChessPolicyBackbone(
+            d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS, ffn_dim=SMALL_FFN_DIM,
+        ).to(device)
+        policy_head = ChessPolicyHead(d_s=SMALL_D_S).to(device)
+        value_head = ChessValueHead(d_s=SMALL_D_S).to(device)
+        loss_fn = ChessLossComputer()
+        trainer = SupervisedTrainer(
+            encoder=encoder, backbone=backbone,
+            policy_head=policy_head, value_head=value_head,
+            loss_fn=loss_fn, lr=3e-4, device=device,
+            total_epochs=total_epochs, warmup_epochs=warmup,
+        )
+
+        # Advance to epoch 50 (midpoint)
+        for _ in range(50):
+            trainer.scheduler_step()
+
+        head_lr = trainer.optimizer.param_groups[2]["lr"]
+        peak_lr = 3e-4
+        # With T_max*2, LR at midpoint should be > 50% of peak
+        assert head_lr > peak_lr * 0.5
+
     def test_scheduler_reduces_lr(self, trainer: SupervisedTrainer) -> None:
         """After warmup + cosine decay, LRs should be below peak."""
         peak_lrs = trainer._base_lrs
