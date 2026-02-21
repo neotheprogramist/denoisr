@@ -73,9 +73,10 @@ class DiffusionTrainer:
             noise = torch.randn_like(target)
             noisy_target = self.schedule.q_sample(target, t, noise)
 
-            predicted_noise = self.diffusion(noisy_target, t, cond)
+            v_target = self.schedule.compute_v_target(target, noise, t)
+            v_pred = self.diffusion(noisy_target, t, cond)
 
-            loss = nn.functional.mse_loss(predicted_noise, noise)
+            loss = nn.functional.mse_loss(v_pred, v_target)
 
         self.optimizer.zero_grad()
         self.scaler.scale(loss).backward()  # type: ignore[no-untyped-call]

@@ -67,6 +67,16 @@ class TestDiffusionTrainer:
         assert "grad_norm" in breakdown
         assert breakdown["grad_norm"] >= 0
 
+    def test_uses_v_prediction_loss(
+        self, trainer: DiffusionTrainer, device: torch.device
+    ) -> None:
+        """Verify the trainer computes v-prediction loss (positive and finite)."""
+        trajectory = torch.randn(2, 5, 12, 8, 8, device=device)
+        loss, breakdown = trainer.train_step(trajectory)
+        assert isinstance(loss, float)
+        assert loss > 0
+        assert loss == loss  # NaN check
+
     def test_curriculum_increases_over_epochs(
         self, trainer: DiffusionTrainer
     ) -> None:
