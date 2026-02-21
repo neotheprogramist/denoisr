@@ -4,6 +4,7 @@ import torch
 from denoisr.nn.diffusion import (
     ChessDiffusionModule,
     CosineNoiseSchedule,
+    DPMSolverPP,
 )
 
 from conftest import (
@@ -216,3 +217,78 @@ class TestChessDiffusionModule:
         assert torch.allclose(
             diff_normal(x, t, cond), diff_ckpt(x, t, cond), atol=1e-5
         )
+
+
+class TestDPMSolverPP:
+    @pytest.fixture
+    def schedule(self) -> CosineNoiseSchedule:
+        return CosineNoiseSchedule(num_timesteps=SMALL_NUM_TIMESTEPS)
+
+    def test_sample_returns_correct_shape(
+        self, schedule: CosineNoiseSchedule, device: torch.device
+    ) -> None:
+        schedule = schedule.to(device)
+        solver = DPMSolverPP(schedule, num_steps=5)
+
+        def dummy_model(x: torch.Tensor, t: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+            return torch.zeros_like(x)
+
+        cond = torch.randn(2, 64, SMALL_D_S, device=device)
+        result = solver.sample(
+            dummy_model,
+            shape=(2, 64, SMALL_D_S),
+            cond=cond,
+            device=device,
+        )
+        assert result.shape == (2, 64, SMALL_D_S)
+
+    def test_sample_is_finite(
+        self, schedule: CosineNoiseSchedule, device: torch.device
+    ) -> None:
+        schedule = schedule.to(device)
+        solver = DPMSolverPP(schedule, num_steps=5)
+        diffusion = ChessDiffusionModule(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            num_timesteps=SMALL_NUM_TIMESTEPS,
+        ).to(device)
+        diffusion.eval()
+        cond = torch.randn(2, 64, SMALL_D_S, device=device)
+
+        with torch.no_grad():
+            result = solver.sample(diffusion, (2, 64, SMALL_D_S), cond, device)
+
+        assert not torch.isnan(result).any()
+        assert not torch.isinf(result).any()
+
+    def test_sample_deterministic_with_seed(
+        self, schedule: CosineNoiseSchedule, device: torch.device
+    ) -> None:
+        schedule = schedule.to(device)
+        solver = DPMSolverPP(schedule, num_steps=5)
+
+        def dummy_model(x: torch.Tensor, t: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+            return x * 0.1
+
+        cond = torch.randn(1, 64, SMALL_D_S, device=device)
+        torch.manual_seed(42)
+        r1 = solver.sample(dummy_model, (1, 64, SMALL_D_S), cond, device)
+        torch.manual_seed(42)
+        r2 = solver.sample(dummy_model, (1, 64, SMALL_D_S), cond, device)
+        assert torch.allclose(r1, r2)
+
+    def test_fewer_steps_still_works(
+        self, schedule: CosineNoiseSchedule, device: torch.device
+    ) -> None:
+        """DPMSolverPP should work with as few as 2 steps."""
+        schedule = schedule.to(device)
+        solver = DPMSolverPP(schedule, num_steps=2)
+
+        def dummy_model(x: torch.Tensor, t: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+            return torch.zeros_like(x)
+
+        cond = torch.randn(1, 64, SMALL_D_S, device=device)
+        result = solver.sample(dummy_model, (1, 64, SMALL_D_S), cond, device)
+        assert result.shape == (1, 64, SMALL_D_S)
+        assert not torch.isnan(result).any()

@@ -1,4 +1,5 @@
 import math
+from collections.abc import Callable
 
 import torch
 from torch import Tensor, nn
@@ -54,6 +55,90 @@ class CosineNoiseSchedule(nn.Module):
         """Recover eps from v-prediction: eps = sqrt(1-alpha_bar)*x_t + sqrt(alpha_bar)*v."""
         ab = self._broadcast_ab(t, x_t)
         return (1 - ab).sqrt() * x_t + ab.sqrt() * v
+
+
+class DPMSolverPP:
+    """DPM-Solver++ 2nd-order multistep sampler (Lu et al. 2022).
+
+    Operates in log-SNR space for numerical stability. Uses v-prediction
+    internally: the model outputs v, which is converted to epsilon for the
+    ODE update. Falls back to 1st-order for the first step (no history).
+    """
+
+    def __init__(
+        self,
+        schedule: CosineNoiseSchedule,
+        num_steps: int = 5,
+    ) -> None:
+        self.schedule = schedule
+        self.num_steps = num_steps
+
+    def _get_timesteps(self) -> list[int]:
+        """Evenly-spaced timesteps from T-1 down to 0."""
+        T = self.schedule.num_timesteps
+        if self.num_steps >= T:
+            return list(range(T - 1, -1, -1))
+        step_size = T / self.num_steps
+        return [int(T - 1 - i * step_size) for i in range(self.num_steps)] + [0]
+
+    def _log_snr(self, t: int) -> float:
+        """lambda_t = log(sqrt(alpha_bar_t) / sqrt(1 - alpha_bar_t))."""
+        ab = self.schedule.alpha_bar[t].item()
+        ab = max(ab, 1e-8)
+        return 0.5 * math.log(ab / max(1 - ab, 1e-8))
+
+    def sample(
+        self,
+        model_fn: Callable[[Tensor, Tensor, Tensor], Tensor],
+        shape: tuple[int, ...],
+        cond: Tensor,
+        device: torch.device,
+    ) -> Tensor:
+        """Run DPM-Solver++ sampling loop.
+
+        model_fn: (x_t, t, cond) -> v_prediction
+        Returns denoised sample x_0.
+        """
+        timesteps = self._get_timesteps()
+        x = torch.randn(shape, device=device)
+        prev_eps: Tensor | None = None
+        prev_h: float | None = None
+
+        for i in range(len(timesteps) - 1):
+            t_cur = timesteps[i]
+            t_next = timesteps[i + 1]
+
+            t_tensor = torch.full((shape[0],), t_cur, device=device)
+            v_pred = model_fn(x, t_tensor, cond)
+
+            eps = self.schedule.predict_eps_from_v(x, v_pred, t_tensor)
+
+            ab_cur = self.schedule.alpha_bar[t_cur]
+            ab_next = self.schedule.alpha_bar[t_next]
+            sigma_cur = (1 - ab_cur).sqrt()
+            sigma_next = (1 - ab_next).sqrt()
+            alpha_next = ab_next.sqrt()
+
+            lambda_cur = self._log_snr(t_cur)
+            lambda_next = self._log_snr(t_next)
+            h = lambda_next - lambda_cur
+
+            # 2nd-order correction when we have a previous model output
+            if prev_eps is not None and prev_h is not None:
+                r = prev_h / h
+                D = (1.0 + 1.0 / (2.0 * r)) * eps - (1.0 / (2.0 * r)) * prev_eps
+            else:
+                D = eps
+
+            # DPM-Solver++ update
+            x = (sigma_next / sigma_cur) * x - alpha_next * (
+                torch.exp(torch.tensor(-h, device=device)) - 1.0
+            ) * D
+
+            prev_eps = eps
+            prev_h = h
+
+        return x
 
 
 class DiTBlock(nn.Module):
