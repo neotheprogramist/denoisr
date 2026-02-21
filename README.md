@@ -131,7 +131,7 @@ Saved 100000 examples to outputs/training_data.pt
 | ---------------------- | -------------------------- | ---------------------------------------------- |
 | `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file              |
 | `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                       |
-| `--stockfish-depth`    | `12`                       | Stockfish analysis depth (higher = better)     |
+| `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)     |
 | `--max-examples`       | `100000`                   | Training examples to generate                  |
 | `--workers`            | `cpu_count*2+1`            | Worker processes (each runs its own Stockfish) |
 | `--policy-temperature` | `150`                      | Softmax temperature for policy targets         |
@@ -146,7 +146,6 @@ The network learns basic chess from the pre-generated training data:
 uv run denoisr-train-phase1 \
     --checkpoint outputs/random_model.pt \
     --data outputs/training_data.pt \
-    --batch-size 64 \
     --epochs 100 \
     --output outputs/phase1.pt
 ```
@@ -167,9 +166,9 @@ Training automatically stops when top-1 accuracy exceeds **30%** (Phase 1 gate).
 | `--checkpoint`   | (required)          | Checkpoint to load (create with `denoisr-init`)                |
 | `--data`         | (required)          | Training data `.pt` file (create with `denoisr-generate-data`) |
 | `--holdout-frac` | `0.05`              | Fraction for accuracy evaluation                               |
-| `--batch-size`   | `64`                | Batch size                                                     |
+| `--batch-size`   | `1024`              | Batch size                                                     |
 | `--epochs`       | `100`               | Maximum epochs                                                 |
-| `--lr`           | `1e-4`              | Learning rate                                                  |
+| `--lr`           | `3e-4`              | Learning rate                                                  |
 | `--output`       | `outputs/phase1.pt` | Checkpoint path                                                |
 | `--run-name`     | auto timestamp      | TensorBoard run name (see [Training logs](#training-logs))     |
 
@@ -445,12 +444,12 @@ These control how the model learns. Safe to change between runs without architec
 
 | Flag                      | Default | What it controls                                                                                                                                                    |
 | ------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--lr`                    | `1e-4`  | Base learning rate for task heads (policy, value). The single most impactful hyperparameter                                                                         |
-| `--max-grad-norm`         | `1.0`   | Gradient clipping L2 threshold. Prevents instability from large gradient spikes. Check `gradients/norm` in TensorBoard — if frequently clipped, consider increasing |
+| `--lr`                    | `3e-4`  | Base learning rate for task heads (policy, value). The single most impactful hyperparameter                                                                         |
+| `--max-grad-norm`         | `5.0`   | Gradient clipping L2 threshold. Prevents instability from large gradient spikes. Check `gradients/norm` in TensorBoard — if frequently clipped, consider increasing |
 | `--weight-decay`          | `1e-4`  | AdamW L2 regularization. Increase to 1e-2 for small datasets, decrease to 0 if underfitting                                                                         |
-| `--encoder-lr-multiplier` | `0.3`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 0.3 = encoder learns at 30% of head LR                               |
+| `--encoder-lr-multiplier` | `1.0`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                             |
 | `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
-| `--warmup-epochs`         | `3`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
+| `--warmup-epochs`         | `5`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
 | `--num-workers`           | `2`     | DataLoader worker processes. Set 0 for debugging, 2-4 for training                                                                                                  |
 | `--tqdm`                  | off     | Show tqdm progress bars. Off by default for agent-friendly structured log output                                                                                    |
 
@@ -504,16 +503,15 @@ Training advances through phases only when measurable quality thresholds are met
 #### Example: tuning for faster convergence
 
 ```bash
-# Aggressive learning with higher LR, more warmup, stronger policy focus
+# Aggressive learning with higher LR, stronger policy focus, slower encoder
 uv run denoisr-train-phase1 \
     --checkpoint outputs/random_model.pt \
     --data outputs/training_data.pt \
-    --lr 3e-4 \
-    --warmup-epochs 5 \
+    --lr 1e-3 \
     --policy-weight 3.0 \
     --value-weight 0.3 \
     --encoder-lr-multiplier 0.1 \
-    --run-name aggressive-lr3e-4
+    --run-name aggressive-lr1e-3
 ```
 
 #### Example: training on limited VRAM
@@ -726,7 +724,7 @@ denoisr/
 │   ├── inference/      # Chess engines (single-pass, diffusion-enhanced), UCI protocol
 │   ├── evaluation/     # cutechess-cli benchmarking harness
 │   └── scripts/        # CLI entry points for all phases + inference + benchmarking
-├── tests/              # 343 tests mirroring src/ structure
+├── tests/              # 370+ tests mirroring src/ structure
 ├── fixtures/           # Sample PGN files for testing
 ├── docs/plans/         # Architecture design and implementation plans
 ├── logs/               # TensorBoard + text training logs (gitignored)
