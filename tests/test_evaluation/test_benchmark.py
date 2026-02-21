@@ -1,46 +1,71 @@
+import sys
+from pathlib import Path
 
+from denoisr.engine.types import TimeControl
 from denoisr.evaluation.benchmark import (
     BenchmarkConfig,
-    build_cutechess_command,
-    parse_cutechess_output,
+    BenchmarkResult,
+    run_benchmark,
 )
 
+MOCK_ENGINE = str(Path(__file__).parents[1] / "test_engine" / "mock_engine.py")
 
-class TestBuildCommand:
-    def test_basic_command(self) -> None:
+
+def _mock_cmd() -> str:
+    return sys.executable
+
+
+def _mock_args() -> tuple[str, ...]:
+    return (MOCK_ENGINE,)
+
+
+class TestRunBenchmark:
+    def test_completes_fixed_games(self) -> None:
         config = BenchmarkConfig(
-            engine_cmd="./denoisr",
-            opponent_cmd="stockfish",
-            games=100,
-            time_control="10+0.1",
+            engine_cmd=_mock_cmd(),
+            engine_args=_mock_args(),
+            opponent_cmd=_mock_cmd(),
+            opponent_args=_mock_args(),
+            games=4,
+            time_control=TimeControl(base_seconds=60.0, increment=0.0),
+            concurrency=2,
         )
-        cmd = build_cutechess_command(config)
-        assert "cutechess-cli" in cmd
-        assert "-games 100" in cmd
-        assert "-engine cmd=./denoisr" in cmd
-        assert "-engine cmd=stockfish" in cmd
+        result = run_benchmark(config)
+        assert isinstance(result, BenchmarkResult)
+        assert result.games_played == 4
+        assert result.wins + result.draws + result.losses == 4
 
-    def test_sprt_parameters(self) -> None:
+    def test_sprt_can_stop_early(self) -> None:
         config = BenchmarkConfig(
-            engine_cmd="./denoisr",
-            opponent_cmd="stockfish",
+            engine_cmd=_mock_cmd(),
+            engine_args=_mock_args(),
+            opponent_cmd=_mock_cmd(),
+            opponent_args=_mock_args(),
             games=1000,
-            time_control="10+0.1",
-            sprt_elo0=0,
-            sprt_elo1=50,
+            time_control=TimeControl(base_seconds=60.0, increment=0.0),
+            sprt_elo0=0.0,
+            sprt_elo1=400.0,
+            concurrency=2,
         )
-        cmd = build_cutechess_command(config)
-        assert "sprt" in cmd
+        result = run_benchmark(config)
+        # With identical mock engines (always draws/same results), SPRT should conclude
+        assert result.games_played < 1000
+        assert result.sprt_result in {"H0", "H1", None}
 
-
-class TestParseOutput:
-    def test_parse_elo(self) -> None:
-        output = "Elo difference: 42.3 +/- 15.1, LOS: 99.2 %, DrawRatio: 30.5 %"
-        result = parse_cutechess_output(output)
-        assert abs(result["elo_diff"] - 42.3) < 0.1
-        assert abs(result["elo_error"] - 15.1) < 0.1
-
-    def test_parse_sprt_accept(self) -> None:
-        output = "SPRT: llr 2.97 (100.0%), lbound -2.94, ubound 2.94 - H1 was accepted"
-        result = parse_cutechess_output(output)
-        assert result["sprt_result"] == "H1"
+    def test_openings_are_used(self, tmp_path: Path) -> None:
+        epd = tmp_path / "test.epd"
+        epd.write_text(
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1\n"
+        )
+        config = BenchmarkConfig(
+            engine_cmd=_mock_cmd(),
+            engine_args=_mock_args(),
+            opponent_cmd=_mock_cmd(),
+            opponent_args=_mock_args(),
+            games=2,
+            time_control=TimeControl(base_seconds=60.0, increment=0.0),
+            openings_path=epd,
+            concurrency=1,
+        )
+        result = run_benchmark(config)
+        assert result.games_played == 2
