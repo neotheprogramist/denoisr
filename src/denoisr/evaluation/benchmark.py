@@ -52,12 +52,13 @@ def _init_worker(
     opponent_args: tuple[str, ...],
     opponent_elo: int | None,
     time_control: TimeControl,
+    startup_timeout: float,
 ) -> None:
     global _engine, _opponent, _time_control
     _time_control = time_control
 
     _engine = UCIEngine(EngineConfig(engine_cmd, engine_args, "Denoisr"))
-    _engine.start()
+    _engine.start(timeout=startup_timeout)
 
     _opponent = UCIEngine(EngineConfig(opponent_cmd, opponent_args, "Opponent"))
     _opponent.start()
@@ -131,6 +132,7 @@ class BenchmarkConfig:
     sprt_elo0: float | None = None
     sprt_elo1: float | None = None
     concurrency: int = _default_concurrency()
+    startup_timeout: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -191,6 +193,7 @@ def run_benchmark(
             config.opponent_args,
             config.opponent_elo,
             config.time_control,
+            config.startup_timeout,
         ),
     ) as pool:
         for game_num, result_str, e1_color in pool.imap_unordered(

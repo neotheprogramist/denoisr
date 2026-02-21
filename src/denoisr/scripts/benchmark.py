@@ -73,6 +73,10 @@ def main() -> None:
     )
     parser.add_argument("--sprt-elo0", type=float, default=None)
     parser.add_argument("--sprt-elo1", type=float, default=None)
+    parser.add_argument(
+        "--startup-timeout", type=float, default=120.0,
+        help="Timeout in seconds for engine startup/UCI handshake (default: 120)",
+    )
     args = parser.parse_args()
 
     opponent_cmd = args.opponent_cmd or shutil.which("stockfish")
@@ -82,6 +86,14 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    if args.opponent_elo is not None and args.opponent_elo < 1320:
+        print(
+            f"Warning: --opponent-elo {args.opponent_elo} is below Stockfish's "
+            "minimum UCI_Elo (1320). Clamping to 1320.",
+            file=sys.stderr,
+        )
+        args.opponent_elo = 1320
 
     openings_path: Path | None
     if args.openings is not None:
@@ -116,6 +128,7 @@ def main() -> None:
         sprt_elo0=args.sprt_elo0,
         sprt_elo1=args.sprt_elo1,
         concurrency=args.concurrency,
+        startup_timeout=args.startup_timeout,
     )
 
     sprt_msg = ""
