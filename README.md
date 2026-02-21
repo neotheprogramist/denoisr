@@ -608,17 +608,17 @@ uv run denoisr-benchmark \
 
 Games run in parallel across `cpu_count*2+1` workers (each owning a persistent engine + Stockfish subprocess pair). A bundled 50-position opening book ensures game variety. Stockfish is auto-detected from PATH.
 
-| Flag             | Default                  | Description                                         |
-| ---------------- | ------------------------ | --------------------------------------------------- |
-| `--engine-cmd`   | (required)               | Command to run the Denoisr UCI engine               |
-| `--opponent-cmd` | auto-detect `stockfish`  | Opponent engine command                             |
-| `--opponent-elo` | full strength            | Limit opponent via UCI_Elo (e.g. 1200)              |
-| `--games`        | `100`                    | Number of games to play                             |
-| `--time-control` | `10+0.1`                 | Base+increment seconds                              |
-| `--openings`     | bundled 50-position book | Path to EPD opening book                            |
-| `--concurrency`  | `cpu_count*2+1`          | Parallel game workers                               |
-| `--sprt-elo0`    | (none)                   | SPRT null hypothesis Elo difference                 |
-| `--sprt-elo1`    | (none)                   | SPRT alternative hypothesis Elo difference          |
+| Flag             | Default                  | Description                                |
+| ---------------- | ------------------------ | ------------------------------------------ |
+| `--engine-cmd`   | (required)               | Command to run the Denoisr UCI engine      |
+| `--opponent-cmd` | auto-detect `stockfish`  | Opponent engine command                    |
+| `--opponent-elo` | full strength            | Limit opponent via UCI_Elo (e.g. 1200)     |
+| `--games`        | `100`                    | Number of games to play                    |
+| `--time-control` | `10+0.1`                 | Base+increment seconds                     |
+| `--openings`     | bundled 50-position book | Path to EPD opening book                   |
+| `--concurrency`  | `cpu_count*2+1`          | Parallel game workers                      |
+| `--sprt-elo0`    | (none)                   | SPRT null hypothesis Elo difference        |
+| `--sprt-elo1`    | (none)                   | SPRT alternative hypothesis Elo difference |
 
 ## Architecture deep dive
 
