@@ -159,7 +159,7 @@ Epoch 12/100:  68%|█████████████▌      | 1088/1600 [
 Epoch 12/100: avg_loss=2.0891 top1_accuracy=28.5%
 ```
 
-Training automatically stops when top-1 accuracy exceeds **30%** (Phase 1 gate).
+Training automatically stops when top-1 accuracy exceeds **50%** (Phase 1 gate).
 
 | Flag             | Default             | Description                                                    |
 | ---------------- | ------------------- | -------------------------------------------------------------- |
@@ -484,7 +484,7 @@ Training advances through phases only when measurable quality thresholds are met
 
 | Flag            | Default | What it controls                                                                     |
 | --------------- | ------- | ------------------------------------------------------------------------------------ |
-| `--phase1-gate` | `0.30`  | Top-1 accuracy to pass Phase 1 → 2. 30% is well above random (~1%)                   |
+| `--phase1-gate` | `0.50`  | Top-1 accuracy to pass Phase 1 → 2. 50% ensures strong move-ranking before Phase 2   |
 | `--phase2-gate` | `5.0`   | Percentage-point accuracy improvement from diffusion vs single-step, for Phase 2 → 3 |
 
 #### Phase 3: Self-play and MCTS (Phase 3 only)

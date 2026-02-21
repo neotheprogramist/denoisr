@@ -191,8 +191,9 @@ class TrainingConfig:
 
     # Top-1 policy accuracy threshold to advance from Phase 1 to Phase 2.
     # The model must predict the best move at least this often before
-    # diffusion training is worthwhile. 30% is well above random (~1%).
-    phase1_gate: float = 0.30
+    # diffusion training is worthwhile. 50% ensures strong move-ranking
+    # ability and lets the model train through most/all epochs.
+    phase1_gate: float = 0.50
 
     # Percentage-point improvement in accuracy from diffusion-conditioned
     # vs single-step inference required to advance from Phase 2 to Phase 3.
@@ -458,8 +459,8 @@ def add_training_args(parser: ArgumentParser) -> None:
         help="show tqdm progress bars (default: off, structured log lines instead)",
     )
     g.add_argument(
-        "--phase1-gate", type=float, default=0.30,
-        help="top-1 accuracy to pass Phase 1 gate (default: 0.30)",
+        "--phase1-gate", type=float, default=0.50,
+        help="top-1 accuracy to pass Phase 1 gate (default: 0.50)",
     )
     g.add_argument(
         "--phase2-gate", type=float, default=5.0,
