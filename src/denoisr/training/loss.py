@@ -30,9 +30,11 @@ class ChessLossComputer:
         reward_weight: float = 1.0,
         ply_weight: float = 0.1,
         state_weight: float = 1.0,
+        illegal_penalty_weight: float = 0.0,
         use_harmony_dream: bool = False,
         harmony_ema_decay: float = 0.99,
     ) -> None:
+        self._illegal_penalty_weight = illegal_penalty_weight
         self._base_weights = {
             "policy": policy_weight,
             "value": value_weight,
@@ -41,6 +43,7 @@ class ChessLossComputer:
             "reward": reward_weight,
             "ply": ply_weight,
             "state": state_weight,
+            "illegal_penalty": illegal_penalty_weight,
         }
         self._use_harmony = use_harmony_dream
         self._ema_decay = harmony_ema_decay
@@ -69,10 +72,16 @@ class ChessLossComputer:
         log_probs = log_probs.masked_fill(~legal_mask, 0.0)
         policy_loss = -(target_flat * log_probs).sum(dim=-1).mean()
 
+        if self._illegal_penalty_weight > 0:
+            illegal_logits = pred_flat.masked_fill(legal_mask, 0.0)
+            illegal_penalty = (illegal_logits ** 2).mean()
+
         pred_log = F.log_softmax(pred_value, dim=-1)
         value_loss = -(target_value * pred_log).sum(dim=-1).mean()
 
-        losses = {"policy": policy_loss, "value": value_loss}
+        losses: dict[str, Tensor] = {"policy": policy_loss, "value": value_loss}
+        if self._illegal_penalty_weight > 0:
+            losses["illegal_penalty"] = illegal_penalty
 
         for name in ("consistency", "diffusion", "reward", "ply", "state"):
             key = f"{name}_loss"

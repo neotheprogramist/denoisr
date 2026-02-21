@@ -212,3 +212,43 @@ class TestChessLossComputer:
         coeffs = loss_fn.get_coefficients()
         assert "consistency" in coeffs
         assert "diffusion" in coeffs
+
+    def test_illegal_penalty_increases_total_loss(self) -> None:
+        """With illegal_penalty_weight > 0, total loss should increase when
+        illegal logits are large."""
+        loss_fn_no_penalty = ChessLossComputer(illegal_penalty_weight=0.0)
+        loss_fn_with_penalty = ChessLossComputer(illegal_penalty_weight=0.01)
+
+        pred_policy = torch.randn(2, 64, 64)
+        # Make illegal positions have large logits
+        pred_policy[:, 0, 0] = 100.0  # illegal position (target=0 there)
+        pred_value = torch.randn(2, 3)
+        target_policy = torch.zeros(2, 64, 64)
+        target_policy[:, 12, 28] = 1.0  # only one legal move
+        target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
+
+        total_no, _ = loss_fn_no_penalty.compute(
+            pred_policy, pred_value, target_policy, target_value
+        )
+        total_with, breakdown = loss_fn_with_penalty.compute(
+            pred_policy, pred_value, target_policy, target_value
+        )
+        assert total_with.item() > total_no.item()
+        assert "illegal_penalty" in breakdown
+
+    def test_illegal_penalty_gradient_flows(self) -> None:
+        """Illegal penalty should produce gradients at illegal positions."""
+        loss_fn = ChessLossComputer(illegal_penalty_weight=0.01)
+        pred_policy = torch.randn(2, 64, 64, requires_grad=True)
+        pred_value = torch.randn(2, 3)
+        target_policy = torch.zeros(2, 64, 64)
+        target_policy[:, 12, 28] = 1.0
+        target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
+
+        total, _ = loss_fn.compute(
+            pred_policy, pred_value, target_policy, target_value
+        )
+        total.backward()
+        # Gradient should be nonzero at illegal positions
+        assert pred_policy.grad is not None
+        assert pred_policy.grad[0, 0, 0].abs().item() > 0
