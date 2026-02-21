@@ -625,10 +625,21 @@ def save_checkpoint(
     print(f"Checkpoint saved to {path}")
 
 
+def _strip_compile_prefix(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """Strip ``_orig_mod.`` prefix that ``torch.compile`` adds to state dict keys."""
+    return {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+
+
 def load_checkpoint(
     path: Path,
     device: torch.device,
 ) -> tuple[ModelConfig, dict[str, Any]]:
     data = torch.load(path, map_location=device, weights_only=False)
     cfg = ModelConfig(**data.pop("config"))
-    return cfg, data
+    # Checkpoints saved from torch.compile()-wrapped models have an
+    # ``_orig_mod.`` prefix on every key.  Strip it so state dicts load
+    # correctly into both compiled and uncompiled modules.
+    return cfg, {
+        k: _strip_compile_prefix(v) if isinstance(v, dict) else v
+        for k, v in data.items()
+    }
