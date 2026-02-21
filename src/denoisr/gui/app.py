@@ -237,6 +237,36 @@ class DenoisrApp:
         self._status_text.insert("1.0", text)
         self._status_text.config(state=tk.DISABLED)
 
+    def _show_error_dialog(self, message: str) -> None:
+        """Show an error in a dialog with selectable, copyable text."""
+        dialog = tk.Toplevel(self._root)
+        dialog.title("Engine Error")
+        dialog.geometry("600x300")
+        dialog.transient(self._root)
+
+        text = tk.Text(dialog, wrap=tk.WORD, font=("monospace", 10))
+        text.insert("1.0", message)
+        text.config(state=tk.DISABLED)
+        # Allow selection and copy even when disabled
+        text.bind("<1>", lambda e: text.focus_set())
+        scrollbar = ttk.Scrollbar(dialog, command=text.yview)
+        text.config(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text.pack(expand=True, fill=tk.BOTH, padx=4, pady=4)
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill=tk.X, padx=4, pady=(0, 4))
+        ttk.Button(
+            btn_frame, text="Copy to Clipboard",
+            command=lambda: (
+                dialog.clipboard_clear(),
+                dialog.clipboard_append(message),
+            ),
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            btn_frame, text="Close", command=dialog.destroy,
+        ).pack(side=tk.RIGHT)
+
     def _set_match_stats(self, text: str) -> None:
         self._match_stats_text.config(state=tk.NORMAL)
         self._match_stats_text.delete("1.0", tk.END)
@@ -380,7 +410,11 @@ class DenoisrApp:
                         self._match_running = False
                         self._set_controls_enabled(True)
                 elif isinstance(item, str) and item.startswith("error:"):
-                    self._set_status(item[6:])
+                    error_msg = item[6:]
+                    # Show short summary in status bar, full error in dialog
+                    first_line = error_msg.split("\n")[0]
+                    self._set_status(first_line)
+                    self._show_error_dialog(error_msg)
                     self._set_controls_enabled(True)
         except queue.Empty:
             pass
