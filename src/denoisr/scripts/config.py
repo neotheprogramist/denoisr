@@ -54,7 +54,7 @@ class ModelConfig:
     # Typically 4× d_s. Wider FFN = more per-position processing capacity.
     ffn_dim: int = 1024
 
-    # Number of discrete DDPM diffusion timesteps. More steps = finer noise
+    # Number of discrete diffusion timesteps. More steps = finer noise
     # schedule = better sample quality, but slower generation. 100 is standard.
     num_timesteps: int = 100
 
@@ -360,7 +360,7 @@ def add_model_args(parser: ArgumentParser) -> None:
     )
     g.add_argument(
         "--num-timesteps", type=int, default=100,
-        help="DDPM diffusion timesteps (default: 100)",
+        help="Diffusion timesteps (default: 100)",
     )
     g.add_argument(
         "--world-model-layers", type=int, default=12,

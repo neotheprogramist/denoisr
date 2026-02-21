@@ -10,8 +10,9 @@ class DiffusionTrainer:
     """Trains the diffusion module to denoise future latent trajectories.
 
     Given a trajectory of board tensors, encodes them into latent space,
-    corrupts future states with DDPM noise, and trains the diffusion
-    model to predict the noise. The current state serves as the condition.
+    corrupts future states with Gaussian noise, and trains the diffusion
+    model to predict the velocity (v-prediction). The current state
+    serves as the condition.
     """
 
     def __init__(

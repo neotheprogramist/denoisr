@@ -8,10 +8,11 @@ from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 
 class CosineNoiseSchedule(nn.Module):
-    """Cosine noise schedule for continuous DDPM (Nichol & Dhariwal 2021).
+    """Cosine noise schedule (Nichol & Dhariwal 2021).
 
     Produces alpha_bar_t values that follow a cosine curve, giving
-    a gentler noise schedule than linear beta scheduling.
+    a gentler noise schedule than linear beta scheduling. Supports
+    v-prediction targets and recovery of both x_0 and epsilon from v.
     """
 
     alpha_bar: Tensor
@@ -187,9 +188,9 @@ class DiTBlock(nn.Module):
 class ChessDiffusionModule(nn.Module):
     """DiT-based diffusion module for latent-space trajectory imagination.
 
-    Uses continuous DDPM (Gaussian noise) in the latent space of
-    board representations. Conditioned on the current board state
-    and diffusion timestep via AdaLN-Zero modulation.
+    Predicts the velocity v given (x_t, t, condition) using a stack of
+    DiT blocks with AdaLN-Zero modulation. Paired with DPMSolverPP for
+    inference and a cosine noise schedule for training.
 
     The final projection is zero-initialized so each block initially
     acts as identity, ensuring stable early training.

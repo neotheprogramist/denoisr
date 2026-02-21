@@ -162,7 +162,7 @@ class Phase2Trainer:
             state_loss = F.mse_loss(pred_next, actual_next)
             reward_loss = F.mse_loss(pred_reward, batch.rewards)
 
-            # 5. Diffusion: noise prediction on random future
+            # 5. Diffusion: v-prediction on random future
             cond = latent[:, 0]
             target_idx = torch.randint(1, T, (B,), device=self.device)
             diff_target = torch.stack(
