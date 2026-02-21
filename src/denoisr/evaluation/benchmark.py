@@ -62,7 +62,7 @@ def _init_worker(
     _engine.start(timeout=startup_timeout)
 
     _opponent = UCIEngine(EngineConfig(opponent_cmd, opponent_args, "Opponent"))
-    _opponent.start()
+    _opponent.start(timeout=startup_timeout)
     if opponent_elo is not None:
         _opponent.set_option("UCI_LimitStrength", "true")
         _opponent.set_option("UCI_Elo", str(opponent_elo))
@@ -84,11 +84,13 @@ class _GameTask:
     engine_is_white: bool
 
 
-def _play_one_game(task: _GameTask) -> tuple[int, str, str]:
+def _play_one_game(
+    task: _GameTask,
+) -> tuple[int, str, str, tuple[str, ...], str | None, str]:
     """Play a single game in a worker process.
 
-    Returns (game_num, result_str, engine1_color) — lightweight
-    picklable tuple instead of full GameResult.
+    Returns (game_num, result_str, engine1_color, moves, start_fen, reason)
+    — lightweight picklable tuple instead of full GameResult.
     """
     if _engine is None or _opponent is None or _time_control is None:
         raise RuntimeError("Worker not initialized")
@@ -110,7 +112,14 @@ def _play_one_game(task: _GameTask) -> tuple[int, str, str]:
         start_fen=task.start_fen,
         engine1_color=e1_color,
     )
-    return (task.game_num, result.result, result.engine1_color)
+    return (
+        task.game_num,
+        result.result,
+        result.engine1_color,
+        result.moves,
+        task.start_fen,
+        result.reason,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +129,16 @@ def _play_one_game(task: _GameTask) -> tuple[int, str, str]:
 
 def _default_concurrency() -> int:
     return (os.cpu_count() or 1) * 2 + 1
+
+
+@dataclass(frozen=True)
+class CompletedGame:
+    game_num: int
+    result: str
+    engine1_color: str
+    moves: tuple[str, ...]
+    start_fen: str | None
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -149,6 +168,7 @@ class BenchmarkResult:
     los: float
     sprt_result: str | None
     games_played: int
+    completed_games: tuple[CompletedGame, ...] = ()
 
 
 def run_benchmark(
@@ -186,6 +206,7 @@ def run_benchmark(
     losses = 0
     games_played = 0
     sprt_result: str | None = None
+    completed: list[CompletedGame] = []
 
     with multiprocessing.Pool(
         min(config.concurrency, config.games),
@@ -201,10 +222,20 @@ def run_benchmark(
             config.startup_timeout,
         ),
     ) as pool:
-        for game_num, result_str, e1_color in pool.imap_unordered(
-            _play_one_game, tasks
+        for game_num, result_str, e1_color, moves, start_fen, reason in (
+            pool.imap_unordered(_play_one_game, tasks)
         ):
             games_played += 1
+            completed.append(
+                CompletedGame(
+                    game_num=game_num,
+                    result=result_str,
+                    engine1_color=e1_color,
+                    moves=moves,
+                    start_fen=start_fen,
+                    reason=reason,
+                )
+            )
 
             # Tally from engine's (Denoisr's) perspective
             engine_won = (result_str == "1-0" and e1_color == "white") or (
@@ -247,4 +278,5 @@ def run_benchmark(
         los=los,
         sprt_result=sprt_result,
         games_played=games_played,
+        completed_games=tuple(sorted(completed, key=lambda g: g.game_num)),
     )

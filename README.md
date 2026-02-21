@@ -608,17 +608,109 @@ uv run denoisr-benchmark \
 
 Games run in parallel across `cpu_count*2+1` workers (each owning a persistent engine + Stockfish subprocess pair). A bundled 50-position opening book ensures game variety. Stockfish is auto-detected from PATH.
 
-| Flag             | Default                  | Description                                |
-| ---------------- | ------------------------ | ------------------------------------------ |
-| `--engine-cmd`   | (required)               | Command to run the Denoisr UCI engine      |
-| `--opponent-cmd` | auto-detect `stockfish`  | Opponent engine command                    |
-| `--opponent-elo` | full strength            | Limit opponent via UCI_Elo (e.g. 1200)     |
-| `--games`        | `100`                    | Number of games to play                    |
-| `--time-control` | `10+0.1`                 | Base+increment seconds                     |
-| `--openings`     | bundled 50-position book | Path to EPD opening book                   |
-| `--concurrency`  | `cpu_count*2+1`          | Parallel game workers                      |
-| `--sprt-elo0`    | (none)                   | SPRT null hypothesis Elo difference        |
-| `--sprt-elo1`    | (none)                   | SPRT alternative hypothesis Elo difference |
+### Trained model vs random baseline with Elo estimation
+
+Even when both models score 0/100 against Stockfish, ACPL (Average Centipawn Loss) analysis reveals meaningful quality differences. ACPL measures how far each move deviates from Stockfish's best — a model losing with ACPL 50 is much stronger than one losing with ACPL 200.
+
+```bash
+# Compare trained model vs random baseline, with ACPL analysis and PGN recording
+uv run denoisr-benchmark \
+    --engine-cmd "uv run denoisr-play --checkpoint outputs/phase1.pt" \
+    --baseline-cmd "uv run denoisr-play --checkpoint outputs/random_model.pt" \
+    --opponent-skill 0 \
+    --games 20 --concurrency 4 \
+    --pgn-out outputs/pgn/ \
+    --analyze --analysis-depth 10
+```
+
+**What you'll see:**
+
+```
+12:34:56 INFO Benchmark: 20 games, 4 workers, TC 10+0.1 Skill 0 + baseline
+12:34:56 INFO ============================================================
+12:34:56 INFO   Engine: uv run denoisr-play --checkpoint outputs/phase1.pt
+12:34:56 INFO ============================================================
+12:35:12 INFO [engine] Game 20/20: +0 =0 -20 | Elo: N/A
+12:35:12 INFO ============================================================
+12:35:12 INFO   Baseline: uv run denoisr-play --checkpoint outputs/random_model.pt
+12:35:12 INFO ============================================================
+12:35:28 INFO [baseline] Game 20/20: +0 =0 -20 | Elo: N/A
+12:35:28 INFO PGN saved: outputs/pgn/engine/ (20 games) + outputs/pgn/engine_all.pgn
+12:35:28 INFO PGN saved: outputs/pgn/baseline/ (20 games) + outputs/pgn/baseline_all.pgn
+12:35:30 INFO Analyzing Engine (20 games, depth 10)...
+12:35:45 INFO Engine ACPL: 85.3
+12:35:45 INFO Engine Est. Elo: 485
+12:35:45 INFO Engine Blunders: 42
+12:35:45 INFO Analyzing Baseline (20 games, depth 10)...
+12:36:00 INFO Baseline ACPL: 198.7
+12:36:00 INFO Baseline Est. Elo: 400
+12:36:00 INFO Baseline Blunders: 156
+12:36:00 INFO --- Engine ---
+12:36:00 INFO Score: +0 =0 -20 (20 games)
+12:36:00 INFO Elo:   N/A
+12:36:00 INFO --- Baseline ---
+12:36:00 INFO Score: +0 =0 -20 (20 games)
+12:36:00 INFO Elo:   N/A
+12:36:00 INFO
+============================================================
+  Comparison
+============================================================
+                       Engine           Baseline
+  Score              +0 =0 -20        +0 =0 -20
+  Elo vs opponent           N/A              N/A
+  LOS                     0.0%             0.0%
+  Score %                  0.0%             0.0%
+  ACPL                    85.3            198.7
+  Est. Elo                 485              400
+  Blunders                  42              156
+
+  Engine and baseline score identically.
+```
+
+Both engines lose every game, but the trained model plays with ACPL ~85 (estimated ~485 Elo) while the random model plays at ACPL ~199 (estimated ~400 Elo). This confirms training is working even before the model can beat Stockfish.
+
+### PGN recording
+
+Save every game as PGN for external analysis (e.g. in Lichess, ChessBase, or SCID):
+
+```bash
+uv run denoisr-benchmark \
+    --engine-cmd "uv run denoisr-play --checkpoint outputs/phase1.pt" \
+    --opponent-skill 0 --games 10 \
+    --pgn-out outputs/pgn/
+```
+
+Output structure:
+
+```
+outputs/pgn/
+├── engine/
+│   ├── game_0000.pgn
+│   ├── game_0001.pgn
+│   └── ...
+└── engine_all.pgn          # All games in one file
+```
+
+### Benchmark flags
+
+| Flag                     | Default                  | Description                                |
+| ------------------------ | ------------------------ | ------------------------------------------ |
+| `--engine-cmd`           | (required)               | Command to run the Denoisr UCI engine      |
+| `--baseline-cmd`         | (none)                   | Baseline engine for comparison             |
+| `--head-to-head`         | off                      | Play engine vs baseline directly           |
+| `--opponent-cmd`         | auto-detect `stockfish`  | Opponent engine command                    |
+| `--opponent-elo`         | full strength            | Limit opponent via UCI_Elo (e.g. 1200)     |
+| `--opponent-skill`       | (none)                   | Stockfish Skill Level 0-20 (0 = weakest)   |
+| `--games`                | `100`                    | Number of games to play                    |
+| `--time-control`         | `10+0.1`                 | Base+increment seconds                     |
+| `--openings`             | bundled 50-position book | Path to EPD opening book                   |
+| `--concurrency`          | `cpu_count*2+1`          | Parallel game workers                      |
+| `--sprt-elo0`            | (none)                   | SPRT null hypothesis Elo difference        |
+| `--sprt-elo1`            | (none)                   | SPRT alternative hypothesis Elo difference |
+| `--pgn-out`              | (none)                   | Directory to save PGN files                |
+| `--analyze`              | off                      | Run Stockfish ACPL analysis after games    |
+| `--analysis-depth`       | `12`                     | Stockfish analysis depth                   |
+| `--analysis-concurrency` | same as `--concurrency`  | Parallel Stockfish analysis workers        |
 
 ## Architecture deep dive
 
