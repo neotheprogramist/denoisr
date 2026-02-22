@@ -89,7 +89,7 @@ batch_size = 128
 # Trajectory sequence length (consecutive board states per training example)
 seq_len = 10
 
-# Maximum game trajectories to extract from PGN
+# Maximum game trajectories to extract from .games files
 max_trajectories = 50_000
 
 # ---------------------------------------------------------------------------

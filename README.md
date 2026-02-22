@@ -288,17 +288,17 @@ Epoch 45/200: total_loss=0.0218 curriculum_steps=32
 
 Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 percentage points.
 
-| Flag                 | Default             | Description                                                       |
-| -------------------- | ------------------- | ----------------------------------------------------------------- |
-| `--checkpoint`       | (required)          | Phase 1 checkpoint                                                |
-| `--data-dir`         | (required)          | Directory with `.games` files for trajectory extraction            |
-| `--seq-len`          | `10`                | Board states per trajectory (9 future states for diffusion)       |
-| `--max-trajectories` | `50000`             | Trajectories to extract                                           |
-| `--batch-size`       | `128`               | Batch size                                                        |
-| `--epochs`           | `200`               | Training epochs                                                   |
-| `--lr`               | `3e-4`              | Learning rate                                                     |
-| `--output`           | `outputs/phase2.pt` | Checkpoint path                                                   |
-| `--run-name`         | auto timestamp      | TensorBoard run name                                              |
+| Flag                 | Default             | Description                                                 |
+| -------------------- | ------------------- | ----------------------------------------------------------- |
+| `--checkpoint`       | (required)          | Phase 1 checkpoint                                          |
+| `--data-dir`         | (required)          | Directory with `.games` files for trajectory extraction     |
+| `--seq-len`          | `10`                | Board states per trajectory (9 future states for diffusion) |
+| `--max-trajectories` | `50000`             | Trajectories to extract                                     |
+| `--batch-size`       | `128`               | Batch size                                                  |
+| `--epochs`           | `200`               | Training epochs                                             |
+| `--lr`               | `3e-4`              | Learning rate                                               |
+| `--output`           | `outputs/phase2.pt` | Checkpoint path                                             |
+| `--run-name`         | auto timestamp      | TensorBoard run name                                        |
 
 Plus all [model architecture](#model-architecture-modelconfig), [training optimization](#training-optimization-trainingconfig), and [diffusion curriculum](#diffusion-curriculum) flags.
 
@@ -532,18 +532,18 @@ These control the neural network structure. Changing them creates a new architec
 
 These control how the model learns. Safe to change between runs without architectural incompatibility.
 
-| Flag                      | Default | What it controls                                                                                                                                                    |
-| ------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--lr`                    | `3e-4`  | Base learning rate for task heads (policy, value). The single most impactful hyperparameter                                                                         |
-| `--max-grad-norm`         | `5.0`   | Gradient clipping L2 threshold. Prevents instability from large gradient spikes. Check `gradients/norm` in TensorBoard — if frequently clipped, consider increasing |
-| `--weight-decay`          | `1e-4`  | AdamW L2 regularization. Increase to 1e-2 for small datasets, decrease to 0 if underfitting                                                                         |
-| `--encoder-lr-multiplier` | `1.0`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                             |
-| `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
-| `--warmup-epochs`         | `5`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
-| `--workers`               | `cpu_count*2+1` | Worker processes (0 = auto: cpu_count*2+1)                                                                                                                   |
-| `--warm-restarts`         | off     | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                            |
-| `--threat-weight`         | `0.1`   | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                                      |
-| `--tqdm`                  | off     | Show tqdm progress bars. Off by default for agent-friendly structured log output                                                                                    |
+| Flag                      | Default         | What it controls                                                                                                                                                    |
+| ------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--lr`                    | `3e-4`          | Base learning rate for task heads (policy, value). The single most impactful hyperparameter                                                                         |
+| `--max-grad-norm`         | `5.0`           | Gradient clipping L2 threshold. Prevents instability from large gradient spikes. Check `gradients/norm` in TensorBoard — if frequently clipped, consider increasing |
+| `--weight-decay`          | `1e-4`          | AdamW L2 regularization. Increase to 1e-2 for small datasets, decrease to 0 if underfitting                                                                         |
+| `--encoder-lr-multiplier` | `1.0`           | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                             |
+| `--min-lr`                | `1e-6`          | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
+| `--warmup-epochs`         | `5`             | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
+| `--workers`               | `cpu_count*2+1` | Worker processes (0 = auto: cpu_count\*2+1)                                                                                                                         |
+| `--warm-restarts`         | off             | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                            |
+| `--threat-weight`         | `0.1`           | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                                      |
+| `--tqdm`                  | off             | Show tqdm progress bars. Off by default for agent-friendly structured log output                                                                                    |
 
 #### Loss weights
 
@@ -862,7 +862,7 @@ Training proceeds in three phases, each gated on measurable quality thresholds t
 | ------------------------------ | ------------------------------------------------------ |
 | `uv run denoisr-train`         | **Full pipeline from TOML config** (recommended)       |
 | `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint       |
-| `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish            |
+| `uv run denoisr-generate-data` | Generate training data from `.games` files + Stockfish |
 | `uv run denoisr-sort-pgn`      | Sort PGN games into Elo-stratified `.games` buckets    |
 | `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data       |
 | `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories       |

@@ -35,28 +35,26 @@ what the pipeline needs — no PGN text reconstruction, no zstd overhead.
   _pad:    3 bytes
 
 [record 0]
-  [record header: 16 bytes]
+  [record header: 12 bytes]
     result:    float32 (4 bytes)     — 1.0 / 0.0 / -1.0
     white_elo: int16   (2 bytes)     — -1 = missing
     black_elo: int16   (2 bytes)     — -1 = missing
     eco_len:   uint8   (1 byte)      — 0 = no ECO code
     num_moves: uint16  (2 bytes)
-    _pad:      3 bytes
-    reserved:  uint16  (2 bytes)
+    _pad:      1 byte
 
   [eco_code: eco_len bytes, UTF-8]
 
-  [moves: num_moves × 4 bytes]
+  [moves: num_moves × 3 bytes]
     from_sq:   uint8 (1 byte, 0-63)
     to_sq:     uint8 (1 byte, 0-63)
     promotion: uint8 (1 byte, 0xFF = none, 2-5 = piece type)
-    _pad:      uint8
 
 [record 1]
   ...
 ```
 
-Typical 40-move game with ECO: 8 (header, first record only) + 16 + 3 + 160 = 179 bytes.
+Typical 40-move game with ECO: 8 (file header) + 12 + 3 + 120 = 143 bytes.
 Compare to PGN text (~500-1000 bytes even compressed).
 
 ### 2. Unified `data_dir` config

@@ -171,6 +171,7 @@ class GameBatchWriter:
         return self._count
 
     def __enter__(self) -> GameBatchWriter:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.path, "wb")  # noqa: SIM115
         write_file_header(self._fh)
         return self
