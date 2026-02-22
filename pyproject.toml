@@ -26,6 +26,7 @@ denoisr-play = "denoisr.scripts.play:main"
 denoisr-benchmark = "denoisr.scripts.benchmark:main"
 denoisr-export-mlx = "denoisr.scripts.export_mlx:main"
 denoisr-gui = "denoisr.scripts.gui:main"
+denoisr-sort-pgn = "denoisr.scripts.sort_pgn:main"
 
 [build-system]
 requires = ["hatchling"]

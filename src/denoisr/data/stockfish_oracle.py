@@ -10,8 +10,8 @@ class StockfishOracle:
         self,
         path: str,
         depth: int = 12,
-        policy_temperature: float = 150.0,
-        label_smoothing: float = 0.1,
+        policy_temperature: float = 80.0,
+        label_smoothing: float = 0.02,
     ) -> None:
         self._engine = chess.engine.SimpleEngine.popen_uci(path)
         self._depth = depth
@@ -40,6 +40,9 @@ class StockfishOracle:
             cp_val = score.score(mate_score=10000)
             if cp_val is None:
                 cp_val = 0
+            # After board.push(move) the turn has flipped, so analyse()
+            # returns score from the current side's perspective. Negate to
+            # convert back to "from the side that just moved" perspective.
             if board.turn == chess.WHITE:
                 cp_val = -cp_val
             scores.append(float(cp_val))

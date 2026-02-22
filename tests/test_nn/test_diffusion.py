@@ -151,7 +151,10 @@ class TestChessDiffusionModule:
         cond = torch.randn(2, 64, SMALL_D_S, device=device)
         out = diffusion(x, t, cond)
         out.sum().backward()
+        # fusion_gate is only used in fuse(), not forward()
         for name, p in diffusion.named_parameters():
+            if name.startswith("fusion_gate"):
+                continue
             assert p.grad is not None, f"No gradient for {name}"
 
     def test_adaln_zero_init(
@@ -189,6 +192,8 @@ class TestChessDiffusionModule:
         out = diff(x, t, cond)
         out.sum().backward()
         for name, p in diff.named_parameters():
+            if name.startswith("fusion_gate"):
+                continue
             assert p.grad is not None, f"No gradient for {name}"
 
     def test_gradient_checkpointing_matches_output(
@@ -292,3 +297,48 @@ class TestDPMSolverPP:
         result = solver.sample(dummy_model, (1, 64, SMALL_D_S), cond, device)
         assert result.shape == (1, 64, SMALL_D_S)
         assert not torch.isnan(result).any()
+
+    def test_timesteps_are_unique(self, schedule: CosineNoiseSchedule) -> None:
+        """_get_timesteps should never produce duplicate values."""
+        for num_steps in [2, 3, 5, 10, 15, 20]:
+            solver = DPMSolverPP(schedule, num_steps=num_steps)
+            timesteps = solver._get_timesteps()
+            assert len(timesteps) == len(set(timesteps)), (
+                f"Duplicate timesteps with num_steps={num_steps}: {timesteps}"
+            )
+
+    def test_timesteps_sorted_descending(self, schedule: CosineNoiseSchedule) -> None:
+        """Timesteps should be in descending order."""
+        solver = DPMSolverPP(schedule, num_steps=5)
+        timesteps = solver._get_timesteps()
+        for i in range(len(timesteps) - 1):
+            assert timesteps[i] > timesteps[i + 1]
+
+
+class TestFusionGate:
+    def test_fuse_shape(self, device: torch.device) -> None:
+        diff = ChessDiffusionModule(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            num_timesteps=SMALL_NUM_TIMESTEPS,
+        ).to(device)
+        latent = torch.randn(2, 64, SMALL_D_S, device=device)
+        denoised = torch.randn(2, 64, SMALL_D_S, device=device)
+        fused = diff.fuse(latent, denoised)
+        assert fused.shape == (2, 64, SMALL_D_S)
+
+    def test_fuse_gradient_flow(self, device: torch.device) -> None:
+        diff = ChessDiffusionModule(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            num_timesteps=SMALL_NUM_TIMESTEPS,
+        ).to(device)
+        latent = torch.randn(2, 64, SMALL_D_S, device=device, requires_grad=True)
+        denoised = torch.randn(2, 64, SMALL_D_S, device=device, requires_grad=True)
+        fused = diff.fuse(latent, denoised)
+        fused.sum().backward()
+        assert latent.grad is not None
+        assert denoised.grad is not None
+        assert diff.fusion_gate.weight.grad is not None

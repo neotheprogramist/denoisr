@@ -62,12 +62,12 @@ class TestValueFlip:
 
 
 class TestExtendedBoardFlip:
-    """Tests for 110-plane flip_board path (metadata plane swaps)."""
+    """Tests for 122-plane flip_board path (metadata + tactical plane swaps)."""
 
-    def test_110_plane_involution(self) -> None:
-        """Flipping twice returns the original for 110-plane tensors."""
-        board = torch.randn(110, 8, 8)
-        assert torch.allclose(flip_board(flip_board(board, 110), 110), board)
+    def test_122_plane_involution(self) -> None:
+        """Flipping twice returns the original for 122-plane tensors."""
+        board = torch.randn(122, 8, 8)
+        assert torch.allclose(flip_board(flip_board(board, 122), 122), board)
 
     def test_side_to_move_inverted(self) -> None:
         """Side-to-move plane (96+7=103) should be inverted after flip."""
@@ -75,7 +75,7 @@ class TestExtendedBoardFlip:
         board = chess.Board()  # White to move
         tensor = encoder.encode(board).data
         assert tensor[103].sum() > 0  # side-to-move = 1 for white
-        flipped = flip_board(tensor, 110)
+        flipped = flip_board(tensor, 122)
         assert flipped[103].sum() == 0.0  # should be 0 for black
 
     def test_castling_swapped(self) -> None:
@@ -87,27 +87,41 @@ class TestExtendedBoardFlip:
         w_queen = tensor[97].clone()
         b_king = tensor[98].clone()
         b_queen = tensor[99].clone()
-        flipped = flip_board(tensor, 110)
+        flipped = flip_board(tensor, 122)
         assert torch.allclose(flipped[96], b_king)
         assert torch.allclose(flipped[97], b_queen)
         assert torch.allclose(flipped[98], w_king)
         assert torch.allclose(flipped[99], w_queen)
+
+    def test_tactical_planes_swapped(self) -> None:
+        """Tactical plane pairs (110-121) should swap white/black on color flip."""
+        encoder = ExtendedBoardEncoder()
+        board = chess.Board()
+        tensor = encoder.encode(board).data
+        # Store originals for all 6 pairs
+        originals = [(tensor[110 + i].clone(), tensor[111 + i].clone()) for i in range(0, 12, 2)]
+        flipped = flip_board(tensor, 122)
+        for pair_idx, (orig_w, orig_b) in enumerate(originals):
+            base = 110 + pair_idx * 2
+            # After flip, rank-mirrored white plane should be in black slot and vice versa
+            assert torch.allclose(flipped[base], orig_b.flip(0))
+            assert torch.allclose(flipped[base + 1], orig_w.flip(0))
 
 
 class TestRoundTrip:
     """Integration test: ExtendedBoardEncoder output through ChessEncoder."""
 
     def test_extended_encoder_through_chess_encoder(self) -> None:
-        """Real ExtendedBoardEncoder output passes through 110-plane ChessEncoder."""
+        """Real ExtendedBoardEncoder output passes through 122-plane ChessEncoder."""
         board_enc = ExtendedBoardEncoder()
-        nn_enc = ChessEncoder(num_planes=110, d_s=SMALL_D_S)
+        nn_enc = ChessEncoder(num_planes=122, d_s=SMALL_D_S)
 
         board = chess.Board()
         board.push_san("e4")
         board.push_san("e5")
 
-        tensor = board_enc.encode(board).data  # [110, 8, 8]
-        batch = tensor.unsqueeze(0)  # [1, 110, 8, 8]
+        tensor = board_enc.encode(board).data  # [122, 8, 8]
+        batch = tensor.unsqueeze(0)  # [1, 122, 8, 8]
 
         with torch.no_grad():
             out = nn_enc(batch)

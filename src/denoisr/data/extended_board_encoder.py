@@ -13,7 +13,8 @@ _HISTORY_DEPTH = 7
 _PIECE_PLANES = 12
 _HISTORY_PLANES = _PIECE_PLANES * _HISTORY_DEPTH  # 84
 _META_PLANES = 14  # castling(4) + ep(1) + rule50(1) + repetition(1) + stm(1) + material(2) + check(2) + opp_bishops(2)
-_TOTAL_PLANES = _PIECE_PLANES + _HISTORY_PLANES + _META_PLANES  # 110
+_TACTICAL_PLANES = 12  # attack(2) + defense(2) + hanging(2) + pin(2) + mobility(2) + threat(2)
+_TOTAL_PLANES = _PIECE_PLANES + _HISTORY_PLANES + _META_PLANES + _TACTICAL_PLANES  # 122
 
 
 def _encode_pieces(board: chess.Board, planes: torch.Tensor, offset: int) -> None:
@@ -118,5 +119,68 @@ class ExtendedBoardEncoder:
                (w_dark and b_light and not w_light and not b_dark):
                 data[meta_start + 12] = 1.0
                 data[meta_start + 13] = 1.0
+
+        # --- Tactical feature planes (110-121) ---
+        tac_start = meta_start + _META_PLANES
+
+        # Attack maps (planes 0-1): squares attacked by this color
+        for ci, color in enumerate(chess.COLORS):
+            attack_mask = board.attacks_mask(color)
+            for sq in chess.scan_forward(attack_mask):
+                data[tac_start + ci, chess.square_rank(sq), chess.square_file(sq)] = 1.0
+
+        # Defense maps (planes 2-3): own pieces that are defended by own pieces
+        for ci, color in enumerate(chess.COLORS):
+            for pt in chess.PIECE_TYPES:
+                for sq in board.pieces(pt, color):
+                    defenders = board.attackers(color, sq)
+                    if defenders:
+                        data[tac_start + 2 + ci, chess.square_rank(sq), chess.square_file(sq)] = 1.0
+
+        # Hanging pieces (planes 4-5): attacked by opponent and not defended
+        for ci, color in enumerate(chess.COLORS):
+            opp = not color
+            for pt in chess.PIECE_TYPES:
+                if pt == chess.KING:
+                    continue
+                for sq in board.pieces(pt, color):
+                    if board.is_attacked_by(opp, sq) and not board.attackers(color, sq):
+                        data[tac_start + 4 + ci, chess.square_rank(sq), chess.square_file(sq)] = 1.0
+
+        # Pinned pieces (planes 6-7): pieces pinned to king
+        for ci, color in enumerate(chess.COLORS):
+            king_sq = board.king(color)
+            if king_sq is None:
+                continue
+            for pt in chess.PIECE_TYPES:
+                if pt == chess.KING:
+                    continue
+                for sq in board.pieces(pt, color):
+                    if board.pin(color, sq) != chess.BB_ALL:
+                        data[tac_start + 6 + ci, chess.square_rank(sq), chess.square_file(sq)] = 1.0
+
+        # Mobility maps (planes 8-9): normalized count of legal moves from each square
+        # We approximate mobility per-square by counting pseudo-legal moves per piece
+        for ci, color in enumerate(chess.COLORS):
+            move_counts: dict[int, int] = {}
+            for move in board.legal_moves:
+                piece = board.piece_at(move.from_square)
+                if piece is not None and piece.color == color:
+                    move_counts[move.from_square] = move_counts.get(move.from_square, 0) + 1
+            if move_counts:
+                max_count = max(move_counts.values())
+                if max_count > 0:
+                    for sq, count in move_counts.items():
+                        data[tac_start + 8 + ci, chess.square_rank(sq), chess.square_file(sq)] = count / max_count
+
+        # Threat maps (planes 10-11): opponent attacks on our pieces
+        for ci, color in enumerate(chess.COLORS):
+            opp = not color
+            for pt in chess.PIECE_TYPES:
+                if pt == chess.KING:
+                    continue
+                for sq in board.pieces(pt, color):
+                    if board.is_attacked_by(opp, sq):
+                        data[tac_start + 10 + ci, chess.square_rank(sq), chess.square_file(sq)] = 1.0
 
         return BoardTensor(data)

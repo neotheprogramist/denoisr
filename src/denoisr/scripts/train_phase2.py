@@ -9,6 +9,7 @@ Gate to Phase 3: diffusion-conditioned accuracy > single-step by >5pp.
 
 import argparse
 import logging
+import math
 import time
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from denoisr.scripts.config import (
 )
 from denoisr.training.logger import TrainingLogger
 from denoisr.training.loss import ChessLossComputer
+from denoisr.training.plateau_detector import PlateauDetector
 from denoisr.training.phase2_trainer import (
     Phase2Trainer,
     TrajectoryBatch,
@@ -56,8 +58,13 @@ def extract_trajectories(
     encoder: SimpleBoardEncoder | ExtendedBoardEncoder,
     seq_len: int,
     max_trajectories: int,
+    min_elo: int | None = None,
 ) -> TrajectoryBatch:
-    """Extract enriched consecutive board-state trajectories from PGN."""
+    """Extract enriched consecutive board-state trajectories from PGN.
+
+    When min_elo is set, games where min(white_elo, black_elo) < min_elo
+    are skipped, ensuring training trajectories come from stronger games.
+    """
     streamer = SimplePGNStreamer()
 
     all_boards: list[torch.Tensor] = []
@@ -73,6 +80,21 @@ def extract_trajectories(
     )
 
     for record in streamer.stream(pgn_path):
+        # Elo filtering: skip games below threshold
+        if min_elo is not None:
+            w_elo, b_elo = record.white_elo, record.black_elo
+            if w_elo is not None and b_elo is not None:
+                if min(w_elo, b_elo) < min_elo:
+                    continue
+            elif w_elo is not None:
+                if w_elo < min_elo:
+                    continue
+            elif b_elo is not None:
+                if b_elo < min_elo:
+                    continue
+            else:
+                # No Elo data at all — skip when filtering is requested
+                continue
         if len(record.actions) < seq_len:
             continue
 
@@ -91,8 +113,11 @@ def extract_trajectories(
         boards: list[torch.Tensor] = [encoder.encode(board).data]
         from_sqs: list[int] = []
         to_sqs: list[int] = []
+        # Track whose turn it is before each move
+        move_turns: list[bool] = []  # True = WHITE moved
 
         for action in record.actions:
+            move_turns.append(board.turn == chess.WHITE)
             from_sqs.append(action.from_square)
             to_sqs.append(action.to_square)
             move = chess.Move(
@@ -113,8 +138,9 @@ def extract_trajectories(
 
             rewards = torch.zeros(seq_len - 1)
             for j in range(seq_len - 1):
-                game_pos = start + j
-                side_sign = 1.0 if game_pos % 2 == 0 else -1.0
+                # Use actual board turn instead of position index parity
+                was_white = move_turns[start + j]
+                side_sign = 1.0 if was_white else -1.0
                 rewards[j] = result_signal * side_sign
 
             all_boards.append(torch.stack(chunk_boards))
@@ -158,11 +184,15 @@ def main() -> None:
     parser.add_argument(
         "--pgn", required=True, help="PGN file for trajectory extraction"
     )
-    parser.add_argument("--seq-len", type=int, default=5)
+    parser.add_argument("--seq-len", type=int, default=10)
     parser.add_argument("--max-trajectories", type=int, default=50_000)
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument(
+        "--min-elo", type=int, default=1200,
+        help="Minimum Elo to include games (min of white/black, default: 1200)",
+    )
     parser.add_argument("--output", type=str, default="outputs/phase2.pt")
     parser.add_argument(
         "--run-name", type=str, default=None,
@@ -241,6 +271,7 @@ def main() -> None:
     trajectory_data = extract_trajectories(
         Path(args.pgn), board_encoder,
         args.seq_len, args.max_trajectories,
+        min_elo=args.min_elo,
     )
     N = trajectory_data.boards.shape[0]
     log.info("trajectories=%d  seq_len=%d", N, args.seq_len)
@@ -265,6 +296,7 @@ def main() -> None:
     )
 
     monitor = ResourceMonitor()
+    plateau_detector = PlateauDetector()
     best_loss = float("inf")
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
@@ -294,6 +326,8 @@ def main() -> None:
             monitor.reset()
             step_losses: list[float] = []
             step_grad_norms: list[float] = []
+            overflow_count = 0
+            last_breakdown: dict[str, float] = {}
             data_time = 0.0
             compute_time = 0.0
 
@@ -321,17 +355,25 @@ def main() -> None:
                 compute_time += time.monotonic() - compute_start
 
                 logger.log_train_step(global_step, loss, breakdown)
+                last_breakdown = breakdown
                 step_losses.append(loss)
-                step_grad_norms.append(
-                    breakdown.get("grad_norm", 0.0),
-                )
+                grad_norm = breakdown.get("grad_norm", 0.0)
+                if not math.isfinite(grad_norm):
+                    overflow_count += 1
+                else:
+                    step_grad_norms.append(grad_norm)
                 if global_step % 100 == 0:
                     logger.log_gpu(global_step)
                     monitor.sample()
                 global_step += 1
                 epoch_loss += loss
                 num_batches += 1
-                pbar.set_postfix(loss=f"{loss:.4f}")
+                pbar.set_postfix(
+                    loss=f"{loss:.4f}",
+                    policy=f"{breakdown.get('policy', 0):.4f}",
+                    value=f"{breakdown.get('value', 0):.4f}",
+                    diff=f"{breakdown.get('diffusion', 0):.4f}",
+                )
                 data_start = time.monotonic()
             pbar.close()
 
@@ -357,15 +399,30 @@ def main() -> None:
                 epoch, data_time, compute_time,
             )
 
+            # LR logging
+            logger._writer.add_scalar("lr/backbone", trainer.optimizer.param_groups[0]["lr"], epoch)
+            logger._writer.add_scalar("lr/heads", trainer.optimizer.param_groups[1]["lr"], epoch)
+
             total_time = data_time + compute_time
             summary: dict[str, str] = {
                 "epoch": f"{epoch+1}/{args.epochs}",
                 "total_loss": f"{avg_loss:.4f}",
+                "policy_loss": f"{last_breakdown.get('policy', 0):.4f}",
+                "value_loss": f"{last_breakdown.get('value', 0):.4f}",
+                "diffusion_loss": f"{last_breakdown.get('diffusion', 0):.4f}",
+                "consistency_loss": f"{last_breakdown.get('consistency', 0):.4f}",
+                "state_loss": f"{last_breakdown.get('state', 0):.4f}",
+                "reward_loss": f"{last_breakdown.get('reward', 0):.4f}",
                 "curriculum_steps": str(trainer.current_max_steps),
                 "grad_norm_avg": (
                     f"{sum(step_grad_norms)/len(step_grad_norms):.3f}"
                     if step_grad_norms else "n/a"
                 ),
+                "grad_norm_peak": (
+                    f"{max(step_grad_norms):.3f}"
+                    if step_grad_norms else "n/a"
+                ),
+                "overflows": str(overflow_count),
                 "samples/s": f"{num_samples / epoch_duration:.0f}",
                 "epoch_time": f"{epoch_duration:.1f}s",
                 "data_pct": (
@@ -373,10 +430,31 @@ def main() -> None:
                     if total_time > 0 else "0%"
                 ),
             }
+            resource_summary = monitor.summarize()
+            if "cpu_percent_avg" in resource_summary:
+                summary["cpu"] = f"{resource_summary['cpu_percent_avg']:.0f}%/{resource_summary['cpu_percent_peak']:.0f}%"
+            if "ram_mb_avg" in resource_summary:
+                summary["ram"] = f"{resource_summary['ram_mb_avg']:.0f}mb"
+            if "gpu_util_avg" in resource_summary:
+                summary["gpu"] = f"{resource_summary['gpu_util_avg']:.0f}%/{resource_summary['gpu_util_peak']:.0f}%"
+            if "gpu_temp_avg" in resource_summary:
+                summary["gpu_temp"] = f"{resource_summary['gpu_temp_avg']:.0f}C"
+            if "gpu_power_avg" in resource_summary:
+                summary["gpu_power"] = f"{resource_summary['gpu_power_avg']:.0f}W"
             if tcfg.use_harmony_dream:
                 for k, v in loss_fn.get_coefficients().items():
                     summary[f"hd_{k}"] = f"{v:.3f}"
             logger.log_epoch_summary(summary)
+
+            # Plateau detection
+            grad_norm_avg = (
+                sum(step_grad_norms) / len(step_grad_norms)
+                if step_grad_norms else 0.0
+            )
+            plateau_detector.update(
+                epoch, grad_norm_avg, avg_loss,
+                trainer.optimizer.param_groups[0]["lr"],
+            )
 
             if avg_loss < best_loss:
                 best_loss = avg_loss

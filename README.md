@@ -8,13 +8,13 @@ Traditional chess engines evaluate positions with explicit scores ("e4 is worth 
 
 The architecture combines ideas from several recent results:
 
-| Result                                 | Source                  | What it provides                                      |
-| -------------------------------------- | ----------------------- | ----------------------------------------------------- |
-| BT4 +270 Elo over CNN                  | Lc0 project             | Transformer backbone (attention subsumes convolution) |
-| AlphaVile +180 Elo from input features | Czech et al., ECAI 2024 | Extended board encoder with 110 feature planes        |
-| DiffuSearch +540 Elo over searchless   | Ye et al., ICLR 2025    | Diffusion-based iterative refinement for chess        |
-| HarmonyDream 10-69% improvement        | Ma et al., ICML 2024    | Dynamic loss balancing across 6 training objectives   |
-| EfficientZero consistency loss         | Yu et al.               | Prevents latent-space collapse in world model         |
+| Result                                 | Source                  | What it provides                                                                                                        |
+| -------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| BT4 +270 Elo over CNN                  | Lc0 project             | Transformer backbone (attention subsumes convolution)                                                                   |
+| AlphaVile +180 Elo from input features | Czech et al., ECAI 2024 | Extended board encoder with 122 feature planes (including attack/defense maps, hanging pieces, pins, mobility, threats) |
+| DiffuSearch +540 Elo over searchless   | Ye et al., ICLR 2025    | Diffusion-based iterative refinement for chess                                                                          |
+| HarmonyDream 10-69% improvement        | Ma et al., ICML 2024    | Dynamic loss balancing across 6 training objectives                                                                     |
+| EfficientZero consistency loss         | Yu et al.               | Prevents latent-space collapse in world model                                                                           |
 
 ## Quick start: play against an untrained engine
 
@@ -111,34 +111,57 @@ Data generation uses a memory-efficient two-pass streaming pipeline. Pass 1 coun
 ```bash
 uv run denoisr-generate-data \
     --pgn data/lichess_elite_2025-01.pgn \
-    --max-examples 100000 \
+    --max-examples 1000000 \
     --output outputs/training_data.pt
 ```
 
 Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to override.
 
+Games below `--min-elo` (default 1200) are automatically filtered out. When the PGN contains more positions than `--max-examples`, positions are randomly sub-sampled across the entire file rather than taking the first N sequentially.
+
 **What you'll see:**
 
 ```
 Pass 1: counting positions...
-Found 100000 positions, starting evaluation with 33 workers
-Evaluating positions: 45%|████████▌          | 45000/100000 [01:30<01:50, 498pos/s]
-Evaluated 100000 positions, saving to outputs/training_data.pt...
-Saved 100000 examples to outputs/training_data.pt
-Done: 100000 examples generated.
+Found 1000000 positions, starting evaluation with 33 workers
+Evaluating positions: 45%|████████▌          | 450000/1000000 [15:00<18:20, 498pos/s]
+Evaluated 1000000 positions, saving to outputs/training_data.pt...
+Saved 1000000 examples to outputs/training_data.pt
+Done: 1000000 examples generated.
 ```
 
-| Flag                   | Default                    | Description                                    |
-| ---------------------- | -------------------------- | ---------------------------------------------- |
-| `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file              |
-| `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                       |
-| `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)     |
-| `--max-examples`       | `100000`                   | Training examples to generate                  |
-| `--workers`            | `cpu_count*2+1`            | Worker processes (each runs its own Stockfish) |
-| `--policy-temperature` | `150`                      | Softmax temperature for policy targets         |
-| `--label-smoothing`    | `0.1`                      | Label smoothing epsilon for policy targets     |
-| `--chunksize`          | `64`                       | `imap_unordered` chunksize for worker batching |
-| `--output`             | `outputs/training_data.pt` | Output path for generated data                 |
+**Elo-stratified generation** for balanced training across skill levels:
+
+```bash
+# Step 1: Sort PGN by Elo into buckets
+uv run denoisr-sort-pgn \
+    --input data/lichess_db_standard_rated_2025-01.pgn.zst \
+    --output data/sorted/
+
+# Step 2: Generate from sorted buckets (round-robin across Elo ranges)
+uv run denoisr-generate-data \
+    --pgn data/lichess_db_standard_rated_2025-01.pgn.zst \
+    --elo-dir data/sorted/ \
+    --tactical-fraction 0.25 \
+    --max-examples 1000000 \
+    --output outputs/training_data.pt
+```
+
+| Flag                   | Default                    | Description                                                        |
+| ---------------------- | -------------------------- | ------------------------------------------------------------------ |
+| `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file                                  |
+| `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                                           |
+| `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)                         |
+| `--max-examples`       | `1000000`                  | Training examples to generate                                      |
+| `--workers`            | `cpu_count*2+1`            | Worker processes (each runs its own Stockfish)                     |
+| `--policy-temperature` | `80`                       | Softmax temperature for policy targets                             |
+| `--label-smoothing`    | `0.02`                     | Label smoothing epsilon for policy targets                         |
+| `--min-elo`            | `1200`                     | Minimum Elo to include games (min of white/black)                  |
+| `--elo-dir`            | (none)                     | Directory of Elo-sorted `.pgn.zst` files (from `denoisr-sort-pgn`) |
+| `--tactical-fraction`  | `0.25`                     | Target fraction of tactical positions (hanging pieces, endgames)   |
+| `--seed`               | (none)                     | Random seed for reproducible sampling                              |
+| `--chunksize`          | `64`                       | `imap_unordered` chunksize for worker batching                     |
+| `--output`             | `outputs/training_data.pt` | Output path for generated data                                     |
 
 ### Step 4: Phase 1 — Supervised learning
 
@@ -199,17 +222,18 @@ Epoch 45/200: total_loss=0.0218 curriculum_steps=32
 
 Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 percentage points.
 
-| Flag                 | Default             | Description                        |
-| -------------------- | ------------------- | ---------------------------------- |
-| `--checkpoint`       | (required)          | Phase 1 checkpoint                 |
-| `--pgn`              | (required)          | PGN file for trajectory extraction |
-| `--seq-len`          | `5`                 | Board states per trajectory        |
-| `--max-trajectories` | `50000`             | Trajectories to extract            |
-| `--batch-size`       | `32`                | Batch size                         |
-| `--epochs`           | `200`               | Training epochs                    |
-| `--lr`               | `1e-4`              | Learning rate                      |
-| `--output`           | `outputs/phase2.pt` | Checkpoint path                    |
-| `--run-name`         | auto timestamp      | TensorBoard run name               |
+| Flag                 | Default             | Description                                                 |
+| -------------------- | ------------------- | ----------------------------------------------------------- |
+| `--checkpoint`       | (required)          | Phase 1 checkpoint                                          |
+| `--pgn`              | (required)          | PGN file for trajectory extraction                          |
+| `--seq-len`          | `10`                | Board states per trajectory (9 future states for diffusion) |
+| `--max-trajectories` | `50000`             | Trajectories to extract                                     |
+| `--batch-size`       | `128`               | Batch size                                                  |
+| `--epochs`           | `200`               | Training epochs                                             |
+| `--lr`               | `3e-4`              | Learning rate                                               |
+| `--min-elo`          | `1200`              | Minimum Elo to include games (min of white/black)           |
+| `--output`           | `outputs/phase2.pt` | Checkpoint path                                             |
+| `--run-name`         | auto timestamp      | TensorBoard run name                                        |
 
 Plus all [model architecture](#model-architecture-modelconfig), [training optimization](#training-optimization-trainingconfig), and [diffusion curriculum](#diffusion-curriculum) flags.
 
@@ -427,18 +451,18 @@ Pass `--help` to any training command to see all available flags with defaults.
 
 These control the neural network structure. Changing them creates a new architecture — you cannot load a checkpoint trained with different values.
 
-| Flag                       | Default | What it controls                                                                                                                  |
-| -------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `--num-planes`             | `110`   | Board encoder feature planes. 12 = simple (one per piece type), 110 = extended (AlphaVile-style with attack maps, pins, mobility) |
-| `--d-s`                    | `256`   | Latent dimension per square token. All transformer layers use this width. Larger = more capacity but quadratic attention memory   |
-| `--num-heads`              | `8`     | Attention heads in the policy backbone. Must divide `d_s`. More heads = finer-grained attention patterns                          |
-| `--num-layers`             | `15`    | Policy backbone transformer depth. More layers = deeper positional reasoning. Matches Lc0 BT4                                     |
-| `--ffn-dim`                | `1024`  | Feed-forward hidden dim inside transformer blocks. Typically 4× `d_s`                                                             |
-| `--num-timesteps`          | `100`   | DDPM diffusion timesteps. More = finer noise schedule = better generation quality, but slower                                     |
-| `--world-model-layers`     | `12`    | World model transformer depth for latent dynamics prediction                                                                      |
-| `--diffusion-layers`       | `6`     | DiT denoiser depth. Fewer layers since it operates in latent space                                                                |
-| `--proj-dim`               | `256`   | Consistency projector dimension for SimSiam collapse prevention                                                                   |
-| `--gradient-checkpointing` | off     | Trade compute for VRAM by recomputing activations in backward pass (~30% slower)                                                  |
+| Flag                       | Default | What it controls                                                                                                                                                   |
+| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--num-planes`             | `122`   | Board encoder feature planes. 12 = simple (one per piece type), 122 = extended (AlphaVile-style with attack/defense maps, hanging pieces, pins, mobility, threats) |
+| `--d-s`                    | `256`   | Latent dimension per square token. All transformer layers use this width. Larger = more capacity but quadratic attention memory                                    |
+| `--num-heads`              | `8`     | Attention heads in the policy backbone. Must divide `d_s`. More heads = finer-grained attention patterns                                                           |
+| `--num-layers`             | `15`    | Policy backbone transformer depth. More layers = deeper positional reasoning. Matches Lc0 BT4                                                                      |
+| `--ffn-dim`                | `1024`  | Feed-forward hidden dim inside transformer blocks. Typically 4× `d_s`                                                                                              |
+| `--num-timesteps`          | `100`   | DDPM diffusion timesteps. More = finer noise schedule = better generation quality, but slower                                                                      |
+| `--world-model-layers`     | `12`    | World model transformer depth for latent dynamics prediction                                                                                                       |
+| `--diffusion-layers`       | `6`     | DiT denoiser depth. Fewer layers since it operates in latent space                                                                                                 |
+| `--proj-dim`               | `256`   | Consistency projector dimension for SimSiam collapse prevention                                                                                                    |
+| `--gradient-checkpointing` | off     | Trade compute for VRAM by recomputing activations in backward pass (~30% slower)                                                                                   |
 
 #### Training optimization (`TrainingConfig`)
 
@@ -453,6 +477,8 @@ These control how the model learns. Safe to change between runs without architec
 | `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
 | `--warmup-epochs`         | `5`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
 | `--num-workers`           | `2`     | DataLoader worker processes. Set 0 for debugging, 2-4 for training                                                                                                  |
+| `--warm-restarts`         | off     | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                            |
+| `--threat-weight`         | `0.1`   | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                                      |
 | `--tqdm`                  | off     | Show tqdm progress bars. Off by default for agent-friendly structured log output                                                                                    |
 
 #### Loss weights
@@ -723,7 +749,7 @@ Board position (chess.Board)
     |
     v
 BoardEncoder  ──>  BoardTensor [C, 8, 8]
-    |                   (12 planes simple, 110 planes extended)
+    |                   (12 planes simple, 122 planes extended)
     v
 ChessEncoder  ──>  LatentState [64, d_s]
     |                   (one token per square)
@@ -772,6 +798,7 @@ Training proceeds in three phases, each gated on measurable quality thresholds t
 | ------------------------------ | ------------------------------------------------------ |
 | `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint       |
 | `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish            |
+| `uv run denoisr-sort-pgn`      | Sort PGN games into Elo-stratified `.pgn.zst` buckets  |
 | `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data       |
 | `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories       |
 | `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing    |
@@ -814,7 +841,7 @@ denoisr/
 │   ├── inference/      # Chess engines (single-pass, diffusion-enhanced), UCI protocol
 │   ├── evaluation/     # Self-contained parallel benchmarking
 │   └── scripts/        # CLI entry points for all phases + inference + benchmarking
-├── tests/              # 400+ tests mirroring src/ structure
+├── tests/              # 440+ tests mirroring src/ structure
 ├── fixtures/           # Sample PGN files for testing
 ├── docs/plans/         # Architecture design and implementation plans
 ├── logs/               # TensorBoard + text training logs (gitignored)

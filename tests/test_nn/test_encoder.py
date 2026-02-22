@@ -57,9 +57,9 @@ class TestChessEncoder:
         assert not torch.isnan(out).any()
         assert not torch.isinf(out).any()
 
-    def test_110_plane_input(self, device: torch.device) -> None:
-        """Encoder should accept 110-plane input from ExtendedBoardEncoder."""
-        enc = ChessEncoder(num_planes=110, d_s=SMALL_D_S).to(device)
-        x = torch.randn(2, 110, 8, 8, device=device)
+    def test_122_plane_input(self, device: torch.device) -> None:
+        """Encoder should accept 122-plane input from ExtendedBoardEncoder."""
+        enc = ChessEncoder(num_planes=122, d_s=SMALL_D_S).to(device)
+        x = torch.randn(2, 122, 8, 8, device=device)
         out = enc(x)
         assert out.shape == (2, 64, SMALL_D_S)

@@ -63,3 +63,10 @@ class TestChessValueHead:
         (wdl_logits.sum() + ply.sum()).backward()
         for p in head.parameters():
             assert p.grad is not None
+
+    def test_has_attention_pooling(
+        self, head: ChessValueHead
+    ) -> None:
+        """Value head uses learned attention pooling query."""
+        assert hasattr(head, "pool_query")
+        assert head.pool_query.shape == (1, 1, SMALL_D_S)

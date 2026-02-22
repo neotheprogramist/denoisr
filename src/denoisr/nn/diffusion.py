@@ -75,12 +75,20 @@ class DPMSolverPP:
         self.num_steps = num_steps
 
     def _get_timesteps(self) -> list[int]:
-        """Evenly-spaced timesteps from T-1 down to 0."""
+        """Evenly-spaced timesteps from T-1 down to 0, deduplicated."""
         T = self.schedule.num_timesteps
         if self.num_steps >= T:
             return list(range(T - 1, -1, -1))
         step_size = T / self.num_steps
-        return [int(T - 1 - i * step_size) for i in range(self.num_steps)] + [0]
+        raw = [int(T - 1 - i * step_size) for i in range(self.num_steps)] + [0]
+        # Deduplicate while preserving descending order
+        seen: set[int] = set()
+        unique: list[int] = []
+        for t in raw:
+            if t not in seen:
+                seen.add(t)
+                unique.append(t)
+        return unique
 
     def _log_snr(self, t: int) -> float:
         """lambda_t = log(sqrt(alpha_bar_t) / sqrt(1 - alpha_bar_t))."""
@@ -222,6 +230,7 @@ class ChessDiffusionModule(nn.Module):
         self.final_proj = nn.Linear(d_s, d_s)
         nn.init.zeros_(self.final_proj.weight)
         nn.init.zeros_(self.final_proj.bias)
+        self.fusion_gate = nn.Linear(2 * d_s, d_s)
 
     def forward(self, x: Tensor, t: Tensor, cond: Tensor) -> Tensor:
         t_emb = self.time_embed(t)
@@ -236,3 +245,8 @@ class ChessDiffusionModule(nn.Module):
 
         out: Tensor = self.final_proj(self.final_norm(x))
         return out
+
+    def fuse(self, latent: Tensor, denoised: Tensor) -> Tensor:
+        """Learned fusion of direct encoding and denoised imagination."""
+        gate = torch.sigmoid(self.fusion_gate(torch.cat([latent, denoised], dim=-1)))
+        return gate * latent + (1 - gate) * denoised

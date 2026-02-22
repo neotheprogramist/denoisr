@@ -44,3 +44,5 @@ class GameRecord:
     actions: tuple[Action, ...]
     result: float
     eco_code: str | None = None
+    white_elo: int | None = None
+    black_elo: int | None = None

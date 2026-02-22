@@ -49,3 +49,52 @@ class TestSimplePGNStreamer:
         empty.write_text("")
         games = list(streamer.stream(empty))
         assert len(games) == 0
+
+    def test_elo_extraction(
+        self, streamer: SimplePGNStreamer, tmp_path: Path
+    ) -> None:
+        pgn = tmp_path / "elo.pgn"
+        pgn.write_text(
+            '[Event "Test"]\n'
+            '[White "Alice"]\n'
+            '[Black "Bob"]\n'
+            '[Result "1-0"]\n'
+            '[WhiteElo "1500"]\n'
+            '[BlackElo "1800"]\n'
+            "\n"
+            "1. e4 e5 1-0\n\n"
+        )
+        games = list(streamer.stream(pgn))
+        assert len(games) == 1
+        assert games[0].white_elo == 1500
+        assert games[0].black_elo == 1800
+
+    def test_missing_elo_returns_none(
+        self, streamer: SimplePGNStreamer, tmp_path: Path
+    ) -> None:
+        pgn = tmp_path / "no_elo.pgn"
+        pgn.write_text(
+            '[Event "Test"]\n'
+            '[Result "1-0"]\n'
+            "\n"
+            "1. e4 e5 1-0\n\n"
+        )
+        games = list(streamer.stream(pgn))
+        assert games[0].white_elo is None
+        assert games[0].black_elo is None
+
+    def test_question_mark_elo_returns_none(
+        self, streamer: SimplePGNStreamer, tmp_path: Path
+    ) -> None:
+        pgn = tmp_path / "q_elo.pgn"
+        pgn.write_text(
+            '[Event "Test"]\n'
+            '[Result "1-0"]\n'
+            '[WhiteElo "?"]\n'
+            '[BlackElo "?"]\n'
+            "\n"
+            "1. e4 e5 1-0\n\n"
+        )
+        games = list(streamer.stream(pgn))
+        assert games[0].white_elo is None
+        assert games[0].black_elo is None

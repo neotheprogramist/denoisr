@@ -31,6 +31,15 @@ class SimplePGNStreamer:
             text_stream = io.TextIOWrapper(reader, encoding="utf-8")
             yield from self._parse_games(text_stream)
 
+    @staticmethod
+    def _parse_elo(raw: str | None) -> int | None:
+        if raw is None or raw == "" or raw == "?":
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
     def _parse_games(
         self, stream: TextIO
     ) -> Iterator[GameRecord]:
@@ -43,8 +52,16 @@ class SimplePGNStreamer:
             if result is None:
                 continue
             eco_code = game.headers.get("ECO")
+            white_elo = self._parse_elo(game.headers.get("WhiteElo"))
+            black_elo = self._parse_elo(game.headers.get("BlackElo"))
             actions = tuple(
                 Action(m.from_square, m.to_square, m.promotion)
                 for m in game.mainline_moves()
             )
-            yield GameRecord(actions=actions, result=result, eco_code=eco_code)
+            yield GameRecord(
+                actions=actions,
+                result=result,
+                eco_code=eco_code,
+                white_elo=white_elo,
+                black_elo=black_elo,
+            )

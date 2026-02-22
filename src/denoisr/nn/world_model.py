@@ -1,6 +1,39 @@
+import math
+
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+
+
+class SetAttentionPool(nn.Module):
+    """Cross-attention pooling: learnable query tokens attend over spatial positions."""
+
+    def __init__(self, d_s: int, num_queries: int = 8) -> None:
+        super().__init__()
+        self.queries = nn.Parameter(torch.randn(1, num_queries, d_s))
+        self.key_proj = nn.Linear(d_s, d_s)
+        self.val_proj = nn.Linear(d_s, d_s)
+        self.out_proj = nn.Linear(num_queries * d_s, d_s)
+        self.d_s = d_s
+
+    def forward(self, x: Tensor) -> Tensor:
+        """x: [B, T, 64, D] -> [B, T, D]."""
+        B, T, S, D = x.shape
+        x_flat = x.reshape(B * T, S, D)
+        queries = self.queries.expand(B * T, -1, -1)
+        keys = self.key_proj(x_flat)
+        values = self.val_proj(x_flat)
+        # [B*T, Q, S]
+        attn = F.softmax(
+            torch.bmm(queries, keys.transpose(1, 2)) / math.sqrt(self.d_s),
+            dim=-1,
+        )
+        # [B*T, Q, D]
+        attended: Tensor = torch.bmm(attn, values)
+        # Flatten query tokens -> [B*T, Q*D] -> project -> [B*T, D]
+        out = self.out_proj(attended.reshape(B * T, -1))
+        result: Tensor = out.reshape(B, T, D)
+        return result
 
 
 class CausalTransformerBlock(nn.Module):
@@ -51,6 +84,7 @@ class ChessWorldModel(nn.Module):
     ) -> None:
         super().__init__()
         self.d_s = d_s
+        self.state_pool = SetAttentionPool(d_s, num_queries=8)
         self.state_compress = nn.Sequential(
             nn.Linear(d_s, d_s),
             nn.Mish(),
@@ -80,7 +114,7 @@ class ChessWorldModel(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         B, T = states.shape[:2]
 
-        compressed = self.state_compress(states.mean(dim=2))
+        compressed = self.state_compress(self.state_pool(states))
         act_emb = torch.cat(
             [self.from_embed(action_from), self.to_embed(action_to)], dim=-1
         )

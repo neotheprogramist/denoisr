@@ -39,6 +39,7 @@ from denoisr.training.grokfast import GrokfastFilter
 from denoisr.training.logger import TrainingLogger
 from denoisr.training.loss import ChessLossComputer
 from denoisr.training.resource_monitor import ResourceMonitor
+from denoisr.training.plateau_detector import PlateauDetector
 from denoisr.training.supervised_trainer import SupervisedTrainer
 from denoisr.types import TrainingExample
 
@@ -208,12 +209,14 @@ def main() -> None:
         encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
         min_lr=tcfg.min_lr,
         grokfast_filter=grokfast_filter,
+        use_warm_restarts=tcfg.use_warm_restarts,
     )
 
     # --- Grok tracker (opt-in) ---
     grok_tracker: GrokTracker | None = None
 
     monitor = ResourceMonitor()
+    plateau_detector = PlateauDetector()
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
         if tcfg.grok_tracking:
@@ -400,6 +403,13 @@ def main() -> None:
             if "gpu_power_avg" in resource_metrics:
                 summary["gpu_power"] = f"{resource_metrics['gpu_power_avg']:.0f}W"
             logger.log_epoch_summary(summary)
+
+            # Plateau detection
+            grad_norm_avg = (
+                sum(step_grad_norms) / len(step_grad_norms)
+                if step_grad_norms else 0.0
+            )
+            plateau_detector.update(epoch, grad_norm_avg, avg_loss, current_lr)
 
             if top1 > best_acc:
                 best_acc = top1

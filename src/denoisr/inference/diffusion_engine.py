@@ -3,7 +3,7 @@ import torch
 from torch import nn
 
 from denoisr.data.protocols import BoardEncoder
-from denoisr.nn.diffusion import CosineNoiseSchedule, DPMSolverPP
+from denoisr.nn.diffusion import ChessDiffusionModule, CosineNoiseSchedule, DPMSolverPP
 
 
 class DiffusionChessEngine:
@@ -25,7 +25,7 @@ class DiffusionChessEngine:
         backbone: nn.Module,
         policy_head: nn.Module,
         value_head: nn.Module,
-        diffusion: nn.Module,
+        diffusion: ChessDiffusionModule,
         schedule: CosineNoiseSchedule,
         board_encoder: BoardEncoder,
         device: torch.device | None = None,
@@ -88,7 +88,7 @@ class DiffusionChessEngine:
         """Run DPM-Solver++ denoising to imagine future trajectories."""
         solver = DPMSolverPP(self._schedule, num_steps=self._num_steps)
         x = solver.sample(self._diffusion, latent.shape, latent, self._device)
-        return (latent + x) / 2
+        return self._diffusion.fuse(latent, x)
 
     def _set_eval(self) -> None:
         self._encoder.eval()

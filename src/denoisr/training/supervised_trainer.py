@@ -34,6 +34,7 @@ class SupervisedTrainer:
         encoder_lr_multiplier: float = 0.3,
         min_lr: float = 1e-6,
         grokfast_filter: GrokfastFilter | None = None,
+        use_warm_restarts: bool = False,
     ) -> None:
         self.encoder = encoder
         self.backbone = backbone
@@ -62,9 +63,16 @@ class SupervisedTrainer:
         # Start at 1/N of peak LR; warmup will ramp up from here
         for g, base_lr in zip(param_groups, self._base_lrs):
             g["lr"] = base_lr / max(self._warmup_epochs, 1)
-        self._scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=max(1, (total_epochs - warmup_epochs) * 2), eta_min=min_lr
-        )
+        if use_warm_restarts:
+            self._scheduler: torch.optim.lr_scheduler.LRScheduler = (
+                torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    self.optimizer, T_0=20, T_mult=2, eta_min=min_lr,
+                )
+            )
+        else:
+            self._scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=max(1, total_epochs - warmup_epochs), eta_min=min_lr,
+            )
         self._scheduler.base_lrs = list(self._base_lrs)
         self._epoch = 0
 

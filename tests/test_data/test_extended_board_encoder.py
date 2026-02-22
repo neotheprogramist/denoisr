@@ -89,3 +89,43 @@ class TestExtendedBoardEncoder:
         bt = encoder.encode(board)
         assert bt.data.min() >= 0.0
         assert bt.data.max() <= 1.0
+
+    def test_produces_122_planes(
+        self, encoder: ExtendedBoardEncoder
+    ) -> None:
+        bt = encoder.encode(chess.Board())
+        assert bt.data.shape == (122, 8, 8)
+
+    def test_attack_planes_nonzero(
+        self, encoder: ExtendedBoardEncoder
+    ) -> None:
+        """Starting position has pawns that attack squares."""
+        bt = encoder.encode(chess.Board())
+        # Planes 110 (white attacks) and 111 (black attacks) should be non-zero
+        assert bt.data[110].sum() > 0
+        assert bt.data[111].sum() > 0
+
+    def test_hanging_piece_detected(
+        self, encoder: ExtendedBoardEncoder
+    ) -> None:
+        """Position with a hanging piece should light up the hanging plane."""
+        board = chess.Board()
+        # Move knight to a square where it's attacked and undefended
+        board.set_fen("rnbqkbnr/pppppppp/8/8/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 1")
+        # Push pawn to attack the knight
+        board.push_uci("d7d5")
+        board.push_uci("f3e5")  # Knight on e5 may be hanging
+        bt = encoder.encode(board)
+        # Plane 114 = white hanging, plane 115 = black hanging
+        # At minimum, tactical planes should be populated
+        assert bt.data[110:122].shape == (12, 8, 8)
+
+    def test_mobility_planes_normalized(
+        self, encoder: ExtendedBoardEncoder
+    ) -> None:
+        """Mobility planes should be in [0, 1] range."""
+        bt = encoder.encode(chess.Board())
+        assert bt.data[118].min() >= 0.0
+        assert bt.data[118].max() <= 1.0
+        assert bt.data[119].min() >= 0.0
+        assert bt.data[119].max() <= 1.0

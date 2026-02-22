@@ -33,9 +33,9 @@ from denoisr.nn.world_model import ChessWorldModel
 @dataclass(frozen=True)
 class ModelConfig:
     # Number of input feature planes from the board encoder.
-    # 12 = simple (one plane per piece type), 110 = extended (AlphaVile-style
-    # with attack maps, pin maps, mobility, and game-phase features).
-    num_planes: int = 110
+    # 12 = simple (one plane per piece type), 122 = extended (AlphaVile-style
+    # with attack maps, pin maps, mobility, threat maps, and game-phase features).
+    num_planes: int = 122
 
     # Latent dimension per square token. All transformer layers, heads, and
     # projections use this width. Larger = more capacity but quadratic in
@@ -118,6 +118,11 @@ class TrainingConfig:
     # still random. 5 epochs compensates for higher peak LR (3e-4).
     warmup_epochs: int = 5
 
+    # Enable cosine annealing with warm restarts (T_0=20, T_mult=2) instead
+    # of plain CosineAnnealingLR. Periodically resets LR to help escape local
+    # basins when training stalls.
+    use_warm_restarts: bool = False
+
     # -- Loss weights -------------------------------------------------------
     # These control the relative importance of each training objective.
     # Higher weight = model prioritizes that objective more.
@@ -154,6 +159,10 @@ class TrainingConfig:
     # output low logits at illegal positions, improving accuracy evaluation
     # robustness. Small values (0.01) prevent interference with policy loss.
     illegal_penalty_weight: float = 0.01
+
+    # Weight for threat prediction auxiliary loss. Forces intermediate
+    # representations to encode threat information, improving defensive play.
+    threat_weight: float = 0.1
 
     # -- HarmonyDream loss balancing -----------------------------------------
 
@@ -339,8 +348,8 @@ def add_model_args(parser: ArgumentParser) -> None:
     """Register CLI flags for model architecture hyperparameters."""
     g = parser.add_argument_group("model")
     g.add_argument(
-        "--num-planes", type=int, default=110,
-        help="board encoder feature planes: 12=simple, 110=extended (default: 110)",
+        "--num-planes", type=int, default=122,
+        help="board encoder feature planes: 12=simple, 122=extended (default: 122)",
     )
     g.add_argument(
         "--d-s", type=int, default=256,
@@ -404,6 +413,15 @@ def add_training_args(parser: ArgumentParser) -> None:
     g.add_argument(
         "--warmup-epochs", type=int, default=5,
         help="linear warmup epochs before cosine decay (default: 5)",
+    )
+    g.add_argument(
+        "--warm-restarts",
+        action=argparse.BooleanOptionalAction, default=False,
+        help="use cosine annealing with warm restarts (default: off)",
+    )
+    g.add_argument(
+        "--threat-weight", type=float, default=0.1,
+        help="loss weight for threat prediction auxiliary head (default: 0.1)",
     )
     g.add_argument(
         "--policy-weight", type=float, default=2.0,
@@ -544,6 +562,8 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         encoder_lr_multiplier=args.encoder_lr_multiplier,
         min_lr=args.min_lr,
         warmup_epochs=args.warmup_epochs,
+        use_warm_restarts=args.warm_restarts,
+        threat_weight=args.threat_weight,
         policy_weight=args.policy_weight,
         value_weight=args.value_weight,
         consistency_weight=args.consistency_weight,

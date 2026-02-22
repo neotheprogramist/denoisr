@@ -1,7 +1,7 @@
 """Generate training data: PGN + Stockfish -> stacked tensors on disk.
 
 Produces a .pt file with:
-    boards:   Tensor[N, 110, 8, 8]
+    boards:   Tensor[N, C, 8, 8]  (C = num encoder planes, default 122)
     policies: Tensor[N, 64, 64]
     values:   Tensor[N, 3]        (win, draw, loss per example)
 
@@ -17,6 +17,7 @@ import atexit
 import multiprocessing
 import os
 import argparse
+import random
 import shutil
 import sys
 import tempfile
@@ -118,11 +119,30 @@ def _evaluate_position(meta: _PositionMeta) -> _EvalResultWithMeta:
 # -- Streaming helpers ----------------------------------------------------
 
 
-def _count_positions(pgn_path: Path, max_positions: int) -> int:
+def _min_game_elo(record: Any) -> int | None:
+    """Return minimum of white/black Elo, or None if neither is set."""
+    w: int | None = getattr(record, "white_elo", None)
+    b: int | None = getattr(record, "black_elo", None)
+    if w is not None and b is not None:
+        return min(w, b)
+    if w is not None:
+        return w
+    return b
+
+
+def _count_positions(
+    pgn_path: Path,
+    max_positions: int,
+    min_elo: int | None = None,
+) -> int:
     """Fast PGN-only pass that counts available positions (no Stockfish)."""
     streamer = SimplePGNStreamer()
     count = 0
     for record in streamer.stream(pgn_path):
+        if min_elo is not None:
+            elo = _min_game_elo(record)
+            if elo is None or elo < min_elo:
+                continue
         moves_in_game = len(record.actions)
         remaining = max_positions - count
         count += min(moves_in_game, remaining)
@@ -131,13 +151,27 @@ def _count_positions(pgn_path: Path, max_positions: int) -> int:
     return count
 
 
-def _stream_positions(pgn_path: Path, max_positions: int) -> Iterator[_PositionMeta]:
-    """Yield positions lazily — only ~chunksize*workers buffered at once."""
+def _stream_positions(
+    pgn_path: Path,
+    max_positions: int,
+    min_elo: int | None = None,
+    sample_rate: float = 1.0,
+) -> Iterator[_PositionMeta]:
+    """Yield positions lazily with optional Elo filtering and random sampling.
+
+    sample_rate < 1.0 randomly skips positions for uniform-ish sampling
+    across the entire PGN file rather than taking the first N sequentially.
+    """
     streamer = SimplePGNStreamer()
     count = 0
     game_id = 0
 
     for record in streamer.stream(pgn_path):
+        if min_elo is not None:
+            elo = _min_game_elo(record)
+            if elo is None or elo < min_elo:
+                game_id += 1
+                continue
         moves_so_far: _MoveSeq = []
         board = chess.Board()
         for action in record.actions:
@@ -145,6 +179,9 @@ def _stream_positions(pgn_path: Path, max_positions: int) -> Iterator[_PositionM
             board.push(chess.Move(action.from_square, action.to_square, action.promotion))
             if count >= max_positions:
                 break
+            # Random sampling: skip positions with probability (1 - sample_rate)
+            if sample_rate < 1.0 and random.random() > sample_rate:
+                continue
             piece_count = bin(board.occupied).count("1")
             yield _PositionMeta(
                 moves=list(moves_so_far),
@@ -166,25 +203,48 @@ def generate_to_file(
     stockfish_depth: int,
     max_examples: int,
     num_workers: int,
-    policy_temperature: float = 150.0,
-    label_smoothing: float = 0.1,
+    policy_temperature: float = 80.0,
+    label_smoothing: float = 0.02,
     chunksize: int = 64,
+    min_elo: int | None = None,
+    elo_dir: Path | None = None,
+    tactical_fraction: float = 0.0,
+    seed: int | None = None,
 ) -> int:
     """Stream positions through Stockfish workers into disk-backed memmap arrays.
 
     Returns the number of examples written. RSS stays at ~4-8 GB even for
     tens of millions of examples because the large arrays (boards, policies,
     values) live in memory-mapped files that the OS pages in/out on demand.
+
+    When elo_dir is provided, positions are sampled round-robin across Elo
+    bucket files with tactical enrichment. Otherwise, positions stream from
+    pgn_path with optional random sub-sampling and Elo filtering.
     """
+    if seed is not None:
+        random.seed(seed)
+
+    use_elo_stratified = elo_dir is not None
+
     # Pass 1: count positions to pre-allocate exact array sizes
     print("Pass 1: counting positions...")
-    total = _count_positions(pgn_path, max_examples)
+    if use_elo_stratified:
+        assert elo_dir is not None
+        pgn_files = sorted(elo_dir.glob("*.pgn.zst"))
+        total = 0
+        for pf in pgn_files:
+            total += _count_positions(pf, max_examples)
+        total = min(total, max_examples)
+    else:
+        total = _count_positions(pgn_path, max_examples, min_elo=min_elo)
     print(f"Found {total} positions, starting evaluation with {num_workers} workers")
+
+    num_planes = ExtendedBoardEncoder().num_planes
 
     if total == 0:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({
-            "boards": torch.empty(0, 110, 8, 8),
+            "boards": torch.empty(0, num_planes, 8, 8),
             "policies": torch.empty(0, 64, 64),
             "values": torch.empty(0, 3),
         }, output_path)
@@ -196,7 +256,7 @@ def generate_to_file(
         # Allocate memmap arrays on disk
         boards_mm = np.memmap(
             os.path.join(tmp_dir, "boards.dat"),
-            dtype=np.float32, mode="w+", shape=(total, 110, 8, 8),
+            dtype=np.float32, mode="w+", shape=(total, num_planes, 8, 8),
         )
         policies_mm = np.memmap(
             os.path.join(tmp_dir, "policies.dat"),
@@ -219,7 +279,21 @@ def generate_to_file(
             initializer=_init_worker,
             initargs=(stockfish_path, stockfish_depth, policy_temperature, label_smoothing),
         ) as pool:
-            positions = _stream_positions(pgn_path, max_examples)
+            if use_elo_stratified:
+                assert elo_dir is not None
+                positions = _stream_positions_elo_stratified(
+                    elo_dir, max_examples, seed=seed,
+                    tactical_fraction=tactical_fraction,
+                )
+            else:
+                # Compute sample_rate for random sub-sampling across the PGN.
+                # If we found more positions than needed, randomly skip some
+                # so we get a uniform sample rather than the first N positions.
+                sample_rate = min(1.0, max_examples / max(total, 1)) if total > max_examples else 1.0
+                positions = _stream_positions(
+                    pgn_path, max_examples,
+                    min_elo=min_elo, sample_rate=sample_rate,
+                )
             results = pool.imap_unordered(
                 _evaluate_position, positions, chunksize=chunksize,
             )
@@ -304,8 +378,8 @@ def generate_examples(
     stockfish_depth: int,
     max_examples: int,
     num_workers: int,
-    policy_temperature: float = 150.0,
-    label_smoothing: float = 0.1,
+    policy_temperature: float = 80.0,
+    label_smoothing: float = 0.02,
 ) -> list[TrainingExample]:
     positions = _extract_positions(pgn_path, max_examples)
     print(f"Extracted {len(positions)} positions, evaluating with {num_workers} workers")
@@ -405,6 +479,93 @@ def unstack_examples(
     ]
 
 
+def _is_tactical(board: chess.Board) -> bool:
+    """Classify a position as tactical if any piece is en prise or endgame."""
+    piece_count = bin(board.occupied).count("1")
+    # Endgame: total piece count <= 10 (excluding kings = already counted)
+    if piece_count <= 10:
+        return True
+    # Check for hanging pieces (attacked by opponent, not defended)
+    for pt in chess.PIECE_TYPES:
+        if pt == chess.KING:
+            continue
+        for color in chess.COLORS:
+            opp = not color
+            for sq in board.pieces(pt, color):
+                if board.is_attacked_by(opp, sq) and not board.attackers(color, sq):
+                    return True
+    return False
+
+
+def _stream_positions_elo_stratified(
+    elo_dir: Path,
+    max_positions: int,
+    seed: int | None = None,
+    tactical_fraction: float = 0.25,
+) -> Iterator[_PositionMeta]:
+    """Round-robin across Elo bucket files with tactical enrichment.
+
+    Maintains the target tactical_fraction by preferentially including
+    tactical positions (hanging pieces, endgames) up to the target ratio.
+    Non-tactical positions are randomly sub-sampled to fill the remainder.
+    """
+    pgn_files = sorted(elo_dir.glob("*.pgn.zst"))
+    if not pgn_files:
+        return
+
+    if seed is not None:
+        random.seed(seed)
+
+    streamer = SimplePGNStreamer()
+    positions_per_bucket = max_positions // len(pgn_files)
+
+    count = 0
+    tactical_count = 0
+    game_id = 0
+
+    for pgn_path in pgn_files:
+        bucket_count = 0
+        for record in streamer.stream(pgn_path):
+            if bucket_count >= positions_per_bucket:
+                break
+            if count >= max_positions:
+                break
+
+            moves_so_far: _MoveSeq = []
+            board = chess.Board()
+            for action in record.actions:
+                moves_so_far.append((action.from_square, action.to_square, action.promotion))
+                board.push(chess.Move(action.from_square, action.to_square, action.promotion))
+                if count >= max_positions or bucket_count >= positions_per_bucket:
+                    break
+
+                is_tac = _is_tactical(board)
+
+                # Enforce tactical fraction: always include tactical positions
+                # until we hit the target ratio, randomly skip non-tactical
+                # positions if we're below the target fraction.
+                if not is_tac and tactical_fraction > 0 and count > 0:
+                    current_frac = tactical_count / count
+                    if current_frac < tactical_fraction and random.random() > 0.5:
+                        continue
+
+                piece_count = bin(board.occupied).count("1")
+                yield _PositionMeta(
+                    moves=list(moves_so_far),
+                    game_id=game_id,
+                    eco_code=record.eco_code,
+                    piece_count=piece_count,
+                )
+                count += 1
+                bucket_count += 1
+                if is_tac:
+                    tactical_count += 1
+
+            game_id += 1
+            if count >= max_positions:
+                break
+
+
 def _default_num_workers() -> int:
     return (os.cpu_count() or 1) * 2 + 1
 
@@ -420,7 +581,7 @@ def main() -> None:
         help="Path to Stockfish binary (auto-detected from PATH if omitted)",
     )
     parser.add_argument("--stockfish-depth", type=int, default=10)
-    parser.add_argument("--max-examples", type=int, default=100_000)
+    parser.add_argument("--max-examples", type=int, default=1_000_000)
     parser.add_argument(
         "--workers",
         type=int,
@@ -430,12 +591,28 @@ def main() -> None:
     parser.add_argument(
         "--output", type=str, default="outputs/training_data.pt"
     )
-    parser.add_argument("--policy-temperature", type=float, default=150.0,
-        help="Softmax temperature for policy targets (default: 150.0)")
-    parser.add_argument("--label-smoothing", type=float, default=0.1,
-        help="Label smoothing epsilon (default: 0.1)")
+    parser.add_argument("--policy-temperature", type=float, default=80.0,
+        help="Softmax temperature for policy targets (default: 80.0)")
+    parser.add_argument("--label-smoothing", type=float, default=0.02,
+        help="Label smoothing epsilon (default: 0.02)")
     parser.add_argument("--chunksize", type=int, default=64,
         help="imap_unordered chunksize for worker batching (default: 64)")
+    parser.add_argument(
+        "--elo-dir", type=str, default=None,
+        help="Directory of Elo-sorted .pgn.zst files (from denoisr-sort-pgn)",
+    )
+    parser.add_argument(
+        "--tactical-fraction", type=float, default=0.25,
+        help="Target fraction of tactical positions in dataset (default: 0.25)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Random seed for Elo-stratified sampling (default: None = random)",
+    )
+    parser.add_argument(
+        "--min-elo", type=int, default=1200,
+        help="Minimum Elo to include games (min of white/black Elo, default: 1200)",
+    )
     args = parser.parse_args()
 
     stockfish_path = args.stockfish or shutil.which("stockfish")
@@ -445,6 +622,10 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    elo_dir = Path(args.elo_dir) if args.elo_dir is not None else None
+    if elo_dir is not None:
+        print(f"Using Elo-stratified sampling from {elo_dir}")
 
     count = generate_to_file(
         pgn_path=Path(args.pgn),
@@ -456,6 +637,10 @@ def main() -> None:
         policy_temperature=args.policy_temperature,
         label_smoothing=args.label_smoothing,
         chunksize=args.chunksize,
+        min_elo=args.min_elo,
+        elo_dir=elo_dir,
+        tactical_fraction=args.tactical_fraction,
+        seed=args.seed,
     )
     print(f"Done: {count} examples generated.")
 

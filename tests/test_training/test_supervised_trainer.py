@@ -116,12 +116,13 @@ class TestSupervisedTrainer:
         assert "batch_top1" in breakdown
         assert 0.0 <= breakdown["batch_top1"] <= 1.0
 
-    def test_lr_stays_above_half_peak_at_midpoint(
+    def test_lr_reaches_min_at_final_epoch(
         self, device: torch.device
     ) -> None:
-        """LR should still be above 50% of peak at the training midpoint."""
+        """Cosine schedule should reach eta_min at the final epoch."""
         total_epochs = 100
         warmup = 5
+        min_lr = 1e-6
         encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
         backbone = ChessPolicyBackbone(
             d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
@@ -135,16 +136,51 @@ class TestSupervisedTrainer:
             policy_head=policy_head, value_head=value_head,
             loss_fn=loss_fn, lr=3e-4, device=device,
             total_epochs=total_epochs, warmup_epochs=warmup,
+            min_lr=min_lr,
         )
 
-        # Advance to epoch 50 (midpoint)
-        for _ in range(50):
+        # Run through all epochs
+        for _ in range(total_epochs):
             trainer.scheduler_step()
 
         head_lr = trainer.optimizer.param_groups[2]["lr"]
-        peak_lr = 3e-4
-        # With T_max*2, LR at midpoint should be > 50% of peak
-        assert head_lr > peak_lr * 0.5
+        # LR should be at or near eta_min at the end
+        assert head_lr < min_lr * 2
+
+    def test_warm_restarts_produce_lr_spikes(
+        self, device: torch.device
+    ) -> None:
+        """Warm restarts should produce periodic LR resets."""
+        total_epochs = 60
+        warmup = 3
+        encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
+        backbone = ChessPolicyBackbone(
+            d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS, ffn_dim=SMALL_FFN_DIM,
+        ).to(device)
+        policy_head = ChessPolicyHead(d_s=SMALL_D_S).to(device)
+        value_head = ChessValueHead(d_s=SMALL_D_S).to(device)
+        loss_fn = ChessLossComputer()
+        trainer = SupervisedTrainer(
+            encoder=encoder, backbone=backbone,
+            policy_head=policy_head, value_head=value_head,
+            loss_fn=loss_fn, lr=3e-4, device=device,
+            total_epochs=total_epochs, warmup_epochs=warmup,
+            use_warm_restarts=True,
+        )
+
+        lrs: list[float] = []
+        for _ in range(total_epochs):
+            trainer.scheduler_step()
+            lrs.append(trainer.optimizer.param_groups[2]["lr"])
+
+        # With warm restarts, LR should increase at some point after warmup
+        post_warmup_lrs = lrs[warmup:]
+        has_increase = any(
+            post_warmup_lrs[i + 1] > post_warmup_lrs[i]
+            for i in range(len(post_warmup_lrs) - 1)
+        )
+        assert has_increase, "Warm restarts should cause LR to increase at restart points"
 
     def test_scheduler_reduces_lr(self, trainer: SupervisedTrainer) -> None:
         """After warmup + cosine decay, LRs should be below peak."""

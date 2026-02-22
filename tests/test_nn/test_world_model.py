@@ -79,3 +79,10 @@ class TestChessWorldModel:
         ns, rw = model(states, act_from, act_to)
         assert not torch.isnan(ns).any()
         assert not torch.isnan(rw).any()
+
+    def test_has_set_attention_pool(
+        self, model: ChessWorldModel
+    ) -> None:
+        """World model uses set attention pooling instead of mean pooling."""
+        assert hasattr(model, "state_pool")
+        assert hasattr(model.state_pool, "queries")

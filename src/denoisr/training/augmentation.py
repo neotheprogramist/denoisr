@@ -56,6 +56,17 @@ def flip_board(board: Tensor, num_planes: int) -> Tensor:
         flipped[meta + 11] = w_chk
         # Bishops (meta+12, meta+13): unchanged (symmetric property)
 
+    # Extended tactical planes (starting at plane 110)
+    if num_planes > 110:
+        tac = 110
+        # 6 white/black pairs that must be swapped on color flip:
+        # attacks(0,1), defense(2,3), hanging(4,5), pinned(6,7),
+        # mobility(8,9), threats(10,11)
+        for offset in range(0, 12, 2):
+            w_plane = flipped[tac + offset].clone()
+            flipped[tac + offset] = flipped[tac + offset + 1]
+            flipped[tac + offset + 1] = w_plane
+
     return flipped
 
 

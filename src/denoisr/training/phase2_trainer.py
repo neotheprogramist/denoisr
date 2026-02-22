@@ -6,7 +6,7 @@ from torch.amp import GradScaler  # type: ignore[attr-defined]
 from torch.amp import autocast  # type: ignore[attr-defined]
 from torch.nn import functional as F
 
-from denoisr.nn.diffusion import CosineNoiseSchedule, DPMSolverPP
+from denoisr.nn.diffusion import ChessDiffusionModule, CosineNoiseSchedule, DPMSolverPP
 from denoisr.training.loss import ChessLossComputer
 
 
@@ -228,7 +228,7 @@ def evaluate_phase2_gate(
     encoder: nn.Module,
     backbone: nn.Module,
     policy_head: nn.Module,
-    diffusion: nn.Module,
+    diffusion: ChessDiffusionModule,
     schedule: CosineNoiseSchedule,
     boards: Tensor,
     target_from: Tensor,
@@ -262,7 +262,7 @@ def evaluate_phase2_gate(
         # Diffusion-conditioned accuracy (DPM-Solver++)
         solver = DPMSolverPP(schedule, num_steps=num_diff_steps)
         x = solver.sample(diffusion, latent.shape, latent, device)
-        fused = (latent + x) / 2
+        fused = diffusion.fuse(latent, x)
         features_diff = backbone(fused)
         logits_diff = policy_head(features_diff)
         flat_diff = logits_diff.reshape(logits_diff.shape[0], -1)

@@ -126,3 +126,13 @@ class TestGameRecord:
     def test_eco_code_defaults_to_none(self) -> None:
         gr = GameRecord(actions=(), result=1.0)
         assert gr.eco_code is None
+
+    def test_elo_fields(self) -> None:
+        gr = GameRecord(actions=(), result=1.0, white_elo=1500, black_elo=1800)
+        assert gr.white_elo == 1500
+        assert gr.black_elo == 1800
+
+    def test_elo_defaults_to_none(self) -> None:
+        gr = GameRecord(actions=(), result=1.0)
+        assert gr.white_elo is None
+        assert gr.black_elo is None
