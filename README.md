@@ -75,26 +75,95 @@ After seeing how the random model plays, train it through all three phases to pr
 - A GPU is recommended (MPS on Apple Silicon, CUDA on Linux) but CPU works for small runs
 - ~2 GB disk space for training data
 
-### Step 1: Download training data
+### Recommended: `denoisr-train` (unified pipeline)
 
-Phase 1 needs a PGN file of chess games. The [Lichess Elite Database](https://database.nikonoel.fr/) provides curated high-quality games (2400+ vs 2200+ rated players, no bullet):
+The simplest way to train is the unified pipeline command. It handles data download, Elo sorting, model initialization, and all three training phases from a single TOML config:
+
+```bash
+uv run denoisr-train --config pipeline.toml
+```
+
+Create a `pipeline.toml` file (all sections are optional -- defaults are shown):
+
+```toml
+[data]
+pgn_url = "https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst"
+pgn_path = "data/lichess.pgn.zst"
+sorted_dir = "data/sorted/"
+stockfish_depth = 10
+examples_per_tier = 200_000
+tactical_fraction = 0.25
+
+[elo_curriculum]
+tiers = [800, 1200, 1600, 2000, 2400]
+gate_accuracy = 0.50
+max_epochs_per_tier = 100
+
+[model]
+d_s = 256
+num_heads = 8
+num_layers = 15
+ffn_dim = 1024
+num_timesteps = 100
+
+[phase1]
+lr = 3e-4
+batch_size = 1024
+warmup_epochs = 5
+
+[phase2]
+epochs = 200
+lr = 3e-4
+batch_size = 128
+seq_len = 10
+max_trajectories = 50_000
+
+[phase3]
+generations = 1000
+games_per_gen = 100
+mcts_sims = 800
+
+[output]
+dir = "outputs/"
+```
+
+The pipeline trains through 5 Elo tiers progressively (800+, 1200+, 1600+, 2000+, 2400+), generating data and running Phase 1 for each tier before advancing to Phase 2 and Phase 3.
+
+**Pipeline state resumption:** Progress is saved to `pipeline_state.json` in the output directory. If interrupted, re-running the same command resumes from the last completed step. Use `--restart` to start fresh. Use `--only` to run specific steps:
+
+```bash
+# Resume from where you left off
+uv run denoisr-train --config pipeline.toml
+
+# Start fresh, ignoring saved state
+uv run denoisr-train --config pipeline.toml --restart
+
+# Run only specific steps
+uv run denoisr-train --config pipeline.toml --only fetch,sort,init
+```
+
+| Flag        | Default         | Description                                                             |
+| ----------- | --------------- | ----------------------------------------------------------------------- |
+| `--config`  | `pipeline.toml` | Path to pipeline TOML config                                            |
+| `--restart` | off             | Ignore saved state and start fresh                                      |
+| `--only`    | (all steps)     | Comma-separated steps to run: `fetch,sort,init,phase1,phase2,phase3`    |
+
+### Advanced: per-phase commands
+
+For fine-grained control, you can run each phase individually. This is useful for debugging, hyperparameter sweeps, or custom data preparation.
+
+#### Step 1: Download training data
+
+The [Lichess standard database](https://database.lichess.org/) provides all rated games in `.pgn.zst` format (natively supported by the streamer, no decompression needed):
 
 ```bash
 mkdir -p data
 
-# Download a month of elite games (~60-120 MB .zip, extracts to .pgn)
-wget -P data/ https://database.nikonoel.fr/lichess_elite_2025-01.zip
-unzip data/lichess_elite_2025-01.zip -d data/
-```
-
-For larger-scale training, the [full Lichess database](https://database.lichess.org/) provides all rated games in `.pgn.zst` format (natively supported by the streamer, no decompression needed):
-
-```bash
-# Full month of rated games (~20-50 GB compressed, streams directly)
+# Download a month of rated games (~20-50 GB compressed, streams directly)
 wget -P data/ https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst
 ```
 
-### Step 2: Initialize the model
+#### Step 2: Initialize the model
 
 Create a random model checkpoint that Phase 1 will train from:
 
@@ -102,15 +171,15 @@ Create a random model checkpoint that Phase 1 will train from:
 uv run denoisr-init --output outputs/random_model.pt
 ```
 
-This is the same random model from the quick start — if you already created it, skip this step.
+This is the same random model from the quick start -- if you already created it, skip this step.
 
-### Step 3: Generate training examples
+#### Step 3: Generate training examples
 
 Data generation uses a memory-efficient two-pass streaming pipeline. Pass 1 counts positions from the PGN (fast, no Stockfish). Pass 2 streams positions through a worker pool into disk-backed numpy memory-mapped arrays, keeping RSS at ~4-8 GB even for tens of millions of examples. Each worker runs its own Stockfish instance. Generate once, then iterate on training without re-generating:
 
 ```bash
 uv run denoisr-generate-data \
-    --pgn data/lichess_elite_2025-01.pgn \
+    --pgn data/lichess_db_standard_rated_2025-01.pgn.zst \
     --max-examples 1000000 \
     --output outputs/training_data.pt
 ```
@@ -163,7 +232,7 @@ uv run denoisr-generate-data \
 | `--chunksize`          | `64`                       | `imap_unordered` chunksize for worker batching                     |
 | `--output`             | `outputs/training_data.pt` | Output path for generated data                                     |
 
-### Step 4: Phase 1 — Supervised learning
+#### Step 4: Phase 1 -- Supervised learning
 
 The network learns basic chess from the pre-generated training data:
 
@@ -199,14 +268,14 @@ Training automatically stops when top-1 accuracy exceeds **50%** (Phase 1 gate).
 
 Plus all [model architecture](#model-architecture-modelconfig) and [training optimization](#training-optimization-trainingconfig) flags.
 
-### Step 5: Phase 2 — Diffusion bootstrapping
+#### Step 5: Phase 2 -- Diffusion bootstrapping
 
 Trains all 6 loss terms (policy, value, diffusion, world model state/reward, consistency) with the Phase 1 encoder frozen and backbone at reduced learning rate:
 
 ```bash
 uv run denoisr-train-phase2 \
     --checkpoint outputs/phase1.pt \
-    --pgn data/lichess_elite_2025-01.pgn \
+    --pgn data/lichess_db_standard_rated_2025-01.pgn.zst \
     --max-trajectories 50000 \
     --epochs 200 \
     --output outputs/phase2.pt
@@ -237,7 +306,7 @@ Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 pe
 
 Plus all [model architecture](#model-architecture-modelconfig), [training optimization](#training-optimization-trainingconfig), and [diffusion curriculum](#diffusion-curriculum) flags.
 
-### Step 6: Phase 3 — RL self-play
+#### Step 6: Phase 3 -- RL self-play
 
 The engine improves beyond human/Stockfish supervision by playing against itself:
 
@@ -266,7 +335,7 @@ Gen 51/1000: buffer=5100 alpha=0.00 temp=0.220 W/D/L=48/21/31 reanalysed=450
 | `--reanalyse-per-gen` | `50`                | Old games reanalysed per generation      |
 | `--mcts-sims`         | `800`               | MCTS simulations per move                |
 | `--buffer-capacity`   | `100000`            | Replay buffer capacity                   |
-| `--alpha-generations` | `50`                | Generations to transition MCTS→diffusion |
+| `--alpha-generations` | `50`                | Generations to transition MCTS->diffusion |
 | `--save-every`        | `10`                | Checkpoint every N generations           |
 | `--output`            | `outputs/phase3.pt` | Checkpoint path                          |
 
@@ -453,7 +522,6 @@ These control the neural network structure. Changing them creates a new architec
 
 | Flag                       | Default | What it controls                                                                                                                                                   |
 | -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--num-planes`             | `122`   | Board encoder feature planes. 12 = simple (one per piece type), 122 = extended (AlphaVile-style with attack/defense maps, hanging pieces, pins, mobility, threats) |
 | `--d-s`                    | `256`   | Latent dimension per square token. All transformer layers use this width. Larger = more capacity but quadratic attention memory                                    |
 | `--num-heads`              | `8`     | Attention heads in the policy backbone. Must divide `d_s`. More heads = finer-grained attention patterns                                                           |
 | `--num-layers`             | `15`    | Policy backbone transformer depth. More layers = deeper positional reasoning. Matches Lc0 BT4                                                                      |
@@ -748,8 +816,8 @@ outputs/pgn/
 Board position (chess.Board)
     |
     v
-BoardEncoder  ──>  BoardTensor [C, 8, 8]
-    |                   (12 planes simple, 122 planes extended)
+BoardEncoder  ──>  BoardTensor [122, 8, 8]
+    |                   (AlphaVile-style extended features)
     v
 ChessEncoder  ──>  LatentState [64, d_s]
     |                   (one token per square)
@@ -794,22 +862,24 @@ Training proceeds in three phases, each gated on measurable quality thresholds t
 
 ## All available commands
 
-| Command                        | Description                                            |
-| ------------------------------ | ------------------------------------------------------ |
-| `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint       |
-| `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish            |
-| `uv run denoisr-sort-pgn`      | Sort PGN games into Elo-stratified `.pgn.zst` buckets  |
-| `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data       |
-| `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories       |
-| `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing    |
-| `uv run denoisr-play`          | UCI chess engine (single-pass or diffusion)            |
-| `uv run denoisr-benchmark`     | Parallel Elo benchmarking against Stockfish            |
-| `uv run denoisr-export-mlx`    | Export checkpoint to MLX safetensors for Apple Silicon |
-| `uv run denoisr-gui`           | Chess GUI for play and engine-vs-engine matches        |
+| Command                        | Description                                               |
+| ------------------------------ | --------------------------------------------------------- |
+| `uv run denoisr-train`         | **Full pipeline from TOML config** (recommended)          |
+| `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint          |
+| `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish               |
+| `uv run denoisr-sort-pgn`      | Sort PGN games into Elo-stratified `.pgn.zst` buckets     |
+| `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data          |
+| `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories          |
+| `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing       |
+| `uv run denoisr-play`          | UCI chess engine (single-pass or diffusion)               |
+| `uv run denoisr-benchmark`     | Parallel Elo benchmarking against Stockfish               |
+| `uv run denoisr-export-mlx`    | Export checkpoint to MLX safetensors for Apple Silicon     |
+| `uv run denoisr-gui`           | Chess GUI for play and engine-vs-engine matches           |
 
 All commands support `--help` for full flag documentation:
 
 ```bash
+uv run denoisr-train --help
 uv run denoisr-init --help
 uv run denoisr-generate-data --help
 uv run denoisr-train-phase1 --help
@@ -836,8 +906,9 @@ denoisr/
 │   ├── data/           # Encoders, PGN streaming, Stockfish oracle, dataset
 │   ├── nn/             # Neural network modules (encoder, backbone, heads, world model, diffusion)
 │   ├── training/       # Loss, trainers, MCTS, self-play, replay buffer, reanalyse, orchestrator
-│   ├── engine/        # Shared engine infrastructure (UCI, match engine, Elo/SPRT, openings)
-│   ├── gui/           # Built-in chess GUI (play, match)
+│   ├── pipeline/       # Unified pipeline: TOML config, state persistence, step runner
+│   ├── engine/         # Shared engine infrastructure (UCI, match engine, Elo/SPRT, openings)
+│   ├── gui/            # Built-in chess GUI (play, match)
 │   ├── inference/      # Chess engines (single-pass, diffusion-enhanced), UCI protocol
 │   ├── evaluation/     # Self-contained parallel benchmarking
 │   └── scripts/        # CLI entry points for all phases + inference + benchmarking
