@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -9,6 +10,8 @@ import torch
 from safetensors.torch import save_file
 
 from denoisr.scripts.config import load_checkpoint
+
+log = logging.getLogger(__name__)
 
 
 def export_weights(checkpoint_path: Path, output_path: Path) -> None:
@@ -32,12 +35,13 @@ def export_weights(checkpoint_path: Path, output_path: Path) -> None:
 
     config_path = output_path.with_suffix(".json")
     config_path.write_text(json.dumps(cfg.__dict__, indent=2))
-    print(f"Exported {len(weights)} tensors to {output_path}")
-    print(f"Config saved to {config_path}")
+    log.info("Exported %d tensors to %s", len(weights), output_path)
+    log.info("Config saved to %s", config_path)
 
 
 def main() -> None:
     """CLI entry point for denoisr-export-mlx."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
         description="Export PyTorch checkpoint to safetensors for MLX inference",
     )
@@ -55,7 +59,7 @@ def main() -> None:
 
     checkpoint_path = Path(args.checkpoint)
     if not checkpoint_path.exists():
-        print(f"Error: {checkpoint_path} not found", file=sys.stderr)
+        log.error("%s not found", checkpoint_path)
         sys.exit(1)
 
     export_weights(checkpoint_path, Path(args.output))

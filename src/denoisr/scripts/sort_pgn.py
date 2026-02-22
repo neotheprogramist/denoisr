@@ -6,12 +6,15 @@ per Elo range under the output directory.
 
 import argparse
 import io
+import logging
 from pathlib import Path
 
 import chess.pgn
 import zstandard as zstd
 
 from denoisr.data.pgn_streamer import SimplePGNStreamer
+
+log = logging.getLogger(__name__)
 
 
 def _parse_ranges(raw: str) -> list[tuple[int, int | None]]:
@@ -40,6 +43,7 @@ def _min_elo(white_elo: int | None, black_elo: int | None) -> int | None:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
         description="Sort PGN games by Elo into separate files"
     )
@@ -126,9 +130,9 @@ def main() -> None:
             fh.close()
 
     # Report
-    print(f"Sorted games by Elo (skipped {skipped} without Elo):")
+    log.info("Sorted games by Elo (skipped %d without Elo):", skipped)
     for name in counts:
-        print(f"  {name}: {counts[name]} games, {move_counts[name]} moves")
+        log.info("  %s: %d games, %d moves", name, counts[name], move_counts[name])
 
 
 if __name__ == "__main__":

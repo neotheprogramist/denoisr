@@ -14,6 +14,7 @@ tens of millions of examples.
 """
 
 import atexit
+import logging
 import multiprocessing
 import os
 import argparse
@@ -35,6 +36,8 @@ from tqdm import tqdm
 from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.data.stockfish_oracle import StockfishOracle
+
+log = logging.getLogger(__name__)
 
 # -- Per-worker process globals (set by _init_worker) ---------------------
 
@@ -339,7 +342,7 @@ def generate_to_file(
     use_elo_stratified = elo_dir is not None
 
     # Pass 1: count positions to pre-allocate exact array sizes
-    print("Pass 1: counting positions...")
+    log.info("Pass 1: counting positions...")
     if use_elo_stratified:
         assert elo_dir is not None
         pgn_files = sorted(elo_dir.glob("*.pgn.zst"))
@@ -349,7 +352,7 @@ def generate_to_file(
         total = min(total, max_examples)
     else:
         total = _count_positions(pgn_path, max_examples, min_elo=min_elo)
-    print(f"Found {total} positions, starting evaluation with {num_workers} workers")
+    log.info("Found %d positions, starting evaluation with %d workers", total, num_workers)
 
     num_planes = ExtendedBoardEncoder().num_planes
 
@@ -422,7 +425,7 @@ def generate_to_file(
         policies_mm.flush()
         values_mm.flush()
 
-        print(f"Evaluated {idx} positions, saving to {output_path}...")
+        log.info("Evaluated %d positions, saving to %s...", idx, output_path)
 
         # Build output dict with zero-copy torch views on memmap.
         # torch.from_numpy on a memmap shares the backing file —
@@ -439,7 +442,7 @@ def generate_to_file(
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(result, output_path)
-        print(f"Saved {idx} examples to {output_path}")
+        log.info("Saved %d examples to %s", idx, output_path)
         return idx
     finally:
         # Clean up temp memmap files
@@ -451,6 +454,7 @@ def _default_num_workers() -> int:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
         description="Generate training data from PGN games with Stockfish evaluation"
     )
@@ -497,15 +501,14 @@ def main() -> None:
 
     stockfish_path = args.stockfish or shutil.which("stockfish")
     if stockfish_path is None:
-        print(
-            "Error: Stockfish not found. Install it or pass --stockfish /path/to/stockfish",
-            file=sys.stderr,
+        log.error(
+            "Stockfish not found. Install it or pass --stockfish /path/to/stockfish",
         )
         sys.exit(1)
 
     elo_dir = Path(args.elo_dir) if args.elo_dir is not None else None
     if elo_dir is not None:
-        print(f"Using Elo-stratified sampling from {elo_dir}")
+        log.info("Using Elo-stratified sampling from %s", elo_dir)
 
     count = generate_to_file(
         pgn_path=Path(args.pgn),
@@ -522,7 +525,7 @@ def main() -> None:
         tactical_fraction=args.tactical_fraction,
         seed=args.seed,
     )
-    print(f"Done: {count} examples generated.")
+    log.info("Done: %d examples generated.", count)
 
 
 if __name__ == "__main__":

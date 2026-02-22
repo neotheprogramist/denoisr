@@ -6,6 +6,7 @@ All tunable hyperparameters live here in two frozen dataclasses:
 """
 
 import argparse
+import logging
 from argparse import ArgumentParser, Namespace
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -22,6 +23,8 @@ from denoisr.nn.policy_backbone import ChessPolicyBackbone
 from denoisr.nn.policy_head import ChessPolicyHead
 from denoisr.nn.value_head import ChessValueHead
 from denoisr.nn.world_model import ChessWorldModel
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +636,7 @@ def save_checkpoint(
     data: dict[str, Any] = {"config": cfg.__dict__}
     data.update(state_dicts)
     torch.save(data, path)
-    print(f"Checkpoint saved to {path}")
+    log.info("Checkpoint saved to %s", path)
 
 
 def _strip_compile_prefix(state_dict: dict[str, Any]) -> dict[str, Any]:

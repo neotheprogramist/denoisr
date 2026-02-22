@@ -7,6 +7,7 @@ to see how much training improves play.
 """
 
 import argparse
+import logging
 from pathlib import Path
 
 from denoisr.scripts.config import (
@@ -22,8 +23,11 @@ from denoisr.scripts.config import (
     save_checkpoint,
 )
 
+log = logging.getLogger(__name__)
+
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
         description="Initialize a random model checkpoint"
     )
@@ -37,7 +41,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = config_from_args(args)
-    print(f"Initializing random model: d_s={cfg.d_s}, layers={cfg.num_layers}")
+    log.info("Initializing random model: d_s=%d, layers=%d", cfg.d_s, cfg.num_layers)
 
     encoder = build_encoder(cfg)
     backbone = build_backbone(cfg)
@@ -58,8 +62,8 @@ def main() -> None:
         diffusion=diffusion.state_dict(),
         consistency=consistency.state_dict(),
     )
-    print(f"Random model saved to {args.output}")
-    print("Play against it: uv run denoisr-play --checkpoint " + args.output)
+    log.info("Random model saved to %s", args.output)
+    log.info("Play against it: uv run denoisr-play --checkpoint %s", args.output)
 
 
 if __name__ == "__main__":
