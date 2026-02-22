@@ -11,6 +11,7 @@ import logging
 import random
 import time
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch.amp import autocast  # type: ignore[attr-defined]
@@ -32,7 +33,6 @@ from denoisr.scripts.config import (
     training_config_from_args,
 )
 from denoisr.data.holdout_splitter import StratifiedHoldoutSplitter
-from denoisr.scripts.generate_data import unstack_examples
 from denoisr.training.dataset import ChessDataset
 from denoisr.training.grok_tracker import GrokTracker
 from denoisr.training.grokfast import GrokfastFilter
@@ -42,8 +42,48 @@ from denoisr.training.resource_monitor import ResourceMonitor
 from denoisr.training.plateau_detector import PlateauDetector
 from denoisr.training.supervised_trainer import SupervisedTrainer
 from denoisr.types import TrainingExample
+from denoisr.types.board import BoardTensor
+from denoisr.types.training import PolicyTarget, ValueTarget
 
 log = logging.getLogger(__name__)
+
+
+def _unstack_tensor_dict(data: dict[str, Any]) -> list[TrainingExample]:
+    """Convert a stacked tensor dict from .pt file into TrainingExample list."""
+    boards = data["boards"]
+    policies = data["policies"]
+    values = data["values"]
+    game_ids = data.get("game_ids")
+    eco_codes = data.get("eco_codes")
+    piece_counts = data.get("piece_counts")
+    n = boards.shape[0]
+    return [
+        TrainingExample(
+            board=BoardTensor(boards[i]),
+            policy=PolicyTarget(policies[i]),
+            value=ValueTarget(
+                win=values[i, 0].item(),
+                draw=values[i, 1].item(),
+                loss=values[i, 2].item(),
+            ),
+            game_id=(
+                int(game_ids[i].item())
+                if game_ids is not None and game_ids[i].item() >= 0
+                else None
+            ),
+            eco_code=(
+                eco_codes[i]
+                if eco_codes is not None
+                else None
+            ),
+            piece_count=(
+                int(piece_counts[i].item())
+                if piece_counts is not None and piece_counts[i].item() >= 0
+                else None
+            ),
+        )
+        for i in range(n)
+    ]
 
 
 def measure_accuracy(
@@ -145,7 +185,7 @@ def main() -> None:
 
     # --- Load pre-generated data ---
     raw = torch.load(Path(args.data), weights_only=True)
-    all_examples = unstack_examples(raw)
+    all_examples = _unstack_tensor_dict(raw)
     log.info("examples=%d  source=%s", len(all_examples), args.data)
     random.shuffle(all_examples)
 
