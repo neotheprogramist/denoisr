@@ -34,6 +34,7 @@ from denoisr.scripts.config import (
 )
 from denoisr.data.holdout_splitter import StratifiedHoldoutSplitter
 from denoisr.training.dataset import ChessDataset
+from denoisr.training.ema import ModelEMA
 from denoisr.training.grok_tracker import GrokTracker
 from denoisr.training.grokfast import GrokfastFilter
 from denoisr.training.logger import TrainingLogger
@@ -234,6 +235,20 @@ def main() -> None:
         )
         log.info("grokfast enabled  alpha=%.3f  lamb=%.1f", tcfg.grokfast_alpha, tcfg.grokfast_lamb)
 
+    # --- EMA shadow model (opt-in) ---
+    model_ema: ModelEMA | None = None
+    if tcfg.ema_decay > 0:
+        model_ema = ModelEMA(
+            {
+                "encoder": encoder,
+                "backbone": backbone,
+                "policy_head": policy_head,
+                "value_head": value_head,
+            },
+            decay=tcfg.ema_decay,
+        )
+        log.info("EMA enabled  decay=%.4f", tcfg.ema_decay)
+
     trainer = SupervisedTrainer(
         encoder=encoder,
         backbone=backbone,
@@ -353,6 +368,8 @@ def main() -> None:
                 loss, breakdown = trainer.train_step_tensors(
                     boards_batch, policies_batch, values_batch
                 )
+                if model_ema is not None:
+                    model_ema.update()
                 compute_time += time.monotonic() - compute_start
 
                 logger.log_train_step(global_step, loss, breakdown)
@@ -387,6 +404,13 @@ def main() -> None:
             samples_per_sec = len(train) / epoch_duration
             avg_loss = epoch_loss / max(num_batches, 1)
             top1, top5 = measure_accuracy(trainer, holdout, device)
+            if model_ema is not None:
+                with model_ema.apply():
+                    ema_top1, _ = measure_accuracy(trainer, holdout, device)
+                log.info(
+                    "EMA top1=%.2f%% (regular=%.2f%%)",
+                    ema_top1 * 100, top1 * 100,
+                )
             current_lr = trainer.optimizer.param_groups[0]["lr"]
             head_lr = trainer.optimizer.param_groups[2]["lr"]
 
@@ -451,6 +475,10 @@ def main() -> None:
 
             if top1 > best_acc:
                 best_acc = top1
+                ema_kwargs: dict[str, object] = {}
+                if model_ema is not None:
+                    for name, sd in model_ema.state_dicts().items():
+                        ema_kwargs[f"ema_{name}"] = sd
                 save_checkpoint(
                     Path(args.output),
                     cfg,
@@ -459,6 +487,7 @@ def main() -> None:
                     policy_head=policy_head.state_dict(),
                     value_head=value_head.state_dict(),
                     optimizer=trainer.optimizer.state_dict(),
+                    **ema_kwargs,
                 )
 
             # Phase gate check

@@ -270,6 +270,12 @@ class TrainingConfig:
     grokfast_alpha: float = 0.98
     grokfast_lamb: float = 2.0
 
+    # -- EMA shadow model evaluation ------------------------------------------
+
+    # EMA decay for shadow model evaluation. 0 = disabled. Common values:
+    # 0.999 for large datasets, 0.9999 for very long training.
+    ema_decay: float = 0.0
+
 
 def detect_device() -> torch.device:
     if torch.backends.mps.is_available():
@@ -510,6 +516,11 @@ def add_training_args(parser: ArgumentParser) -> None:
         "--grokfast-lamb", type=float, default=2.0,
         help="Grokfast amplification factor (default: 2.0)",
     )
+    # EMA
+    g.add_argument(
+        "--ema-decay", type=float, default=0.0,
+        help="EMA decay for shadow model evaluation (0=disabled, 0.999=typical)",
+    )
 
 
 def add_phase3_args(parser: ArgumentParser) -> None:
@@ -580,6 +591,7 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         grokfast=args.grokfast,
         grokfast_alpha=args.grokfast_alpha,
         grokfast_lamb=args.grokfast_lamb,
+        ema_decay=args.ema_decay,
     )
 
 

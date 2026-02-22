@@ -39,6 +39,7 @@ from denoisr.scripts.config import (
     save_checkpoint,
     training_config_from_args,
 )
+from denoisr.training.ema import ModelEMA
 from denoisr.training.logger import TrainingLogger
 from denoisr.training.loss import ChessLossComputer
 from denoisr.training.plateau_detector import PlateauDetector
@@ -265,6 +266,23 @@ def main() -> None:
         curriculum_growth=tcfg.curriculum_growth,
     )
 
+    # --- EMA shadow model (opt-in) ---
+    model_ema: ModelEMA | None = None
+    if tcfg.ema_decay > 0:
+        model_ema = ModelEMA(
+            {
+                "encoder": encoder,
+                "backbone": backbone,
+                "policy_head": policy_head,
+                "value_head": value_head,
+                "world_model": world_model,
+                "diffusion": diffusion_mod,
+                "consistency": consistency,
+            },
+            decay=tcfg.ema_decay,
+        )
+        log.info("EMA enabled  decay=%.4f", tcfg.ema_decay)
+
     # --- Extract enriched trajectories ---
     board_encoder = build_board_encoder(cfg)
     trajectory_data = extract_trajectories(
@@ -351,6 +369,8 @@ def main() -> None:
 
                 compute_start = time.monotonic()
                 loss, breakdown = trainer.train_step(batch)
+                if model_ema is not None:
+                    model_ema.update()
                 compute_time += time.monotonic() - compute_start
 
                 logger.log_train_step(global_step, loss, breakdown)
@@ -448,6 +468,10 @@ def main() -> None:
 
             if avg_loss < best_loss:
                 best_loss = avg_loss
+                ema_kwargs: dict[str, object] = {}
+                if model_ema is not None:
+                    for name, sd in model_ema.state_dicts().items():
+                        ema_kwargs[f"ema_{name}"] = sd
                 save_checkpoint(
                     Path(args.output), cfg,
                     encoder=encoder.state_dict(),
@@ -457,6 +481,7 @@ def main() -> None:
                     world_model=world_model.state_dict(),
                     diffusion=diffusion_mod.state_dict(),
                     consistency=consistency.state_dict(),
+                    **ema_kwargs,
                 )
 
         # --- Phase 2 gate ---
@@ -490,6 +515,24 @@ def main() -> None:
             single_acc * 100, diff_acc * 100,
             delta, tcfg.phase2_gate,
         )
+        if model_ema is not None:
+            with model_ema.apply():
+                ema_single, ema_diff, ema_delta = evaluate_phase2_gate(
+                    encoder=encoder,
+                    backbone=backbone,
+                    policy_head=policy_head,
+                    diffusion=diffusion_mod,
+                    schedule=schedule,
+                    boards=holdout_boards,
+                    target_from=holdout_from,
+                    target_to=holdout_to,
+                    device=device,
+                )
+            log.info(
+                "Phase 2 gate (EMA): single=%.1f%%  diffusion=%.1f%%  "
+                "delta=%.1fpp",
+                ema_single * 100, ema_diff * 100, ema_delta,
+            )
         if delta > tcfg.phase2_gate:
             log.info(
                 "Phase 2 gate PASSED (delta %.1fpp > %.1fpp)",
