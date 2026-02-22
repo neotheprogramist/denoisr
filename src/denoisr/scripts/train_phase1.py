@@ -390,15 +390,43 @@ def main() -> None:
             current_lr = trainer.optimizer.param_groups[0]["lr"]
             head_lr = trainer.optimizer.param_groups[2]["lr"]
 
-            logger.log_epoch(epoch, avg_loss, top1, top5, current_lr)
+            resource_metrics = monitor.summarize()
+            resources: dict[str, str] | None = None
+            if resource_metrics:
+                resources = {
+                    "cpu_pct": f"{resource_metrics['cpu_percent_avg']:.0f}%",
+                    "cpu_max": f"{resource_metrics['cpu_percent_peak']:.0f}%",
+                    "ram_mb": f"{resource_metrics['ram_mb_avg']:.0f}",
+                }
+                if "gpu_util_avg" in resource_metrics:
+                    resources["gpu_util"] = f"{resource_metrics['gpu_util_avg']:.0f}%"
+                if "gpu_mem_mb_avg" in resource_metrics:
+                    resources["gpu_mem_mb"] = f"{resource_metrics['gpu_mem_mb_avg']:.0f}"
+                if "gpu_temp_avg" in resource_metrics:
+                    resources["gpu_temp"] = f"{resource_metrics['gpu_temp_avg']:.0f}"
+                if "gpu_power_avg" in resource_metrics:
+                    resources["gpu_power"] = f"{resource_metrics['gpu_power_avg']:.0f}"
+
+            logger.log_epoch_line(
+                epoch=epoch,
+                total_epochs=args.epochs,
+                losses={
+                    "loss": avg_loss,
+                    "pol": breakdown["policy"],
+                    "val": breakdown["value"],
+                },
+                accuracy={"top1": top1 * 100, "top5": top5 * 100},
+                lr=current_lr,
+                grad_norms=step_grad_norms,
+                samples_per_sec=samples_per_sec,
+                duration_s=epoch_duration,
+                resources=resources,
+                data_pct=data_time / max(epoch_duration, 1e-9) * 100,
+                overflows=overflow_count,
+                phase="phase1",
+            )
             logger._writer.add_scalar("lr/encoder", current_lr, epoch)
             logger._writer.add_scalar("lr/head", head_lr, epoch)
-            logger.log_epoch_timing(epoch, epoch_duration, samples_per_sec)
-
-            resource_metrics = monitor.summarize()
-            logger.log_resource_metrics(epoch, resource_metrics)
-            logger.log_training_dynamics(epoch, step_losses, step_grad_norms)
-            logger.log_pipeline_timing(epoch, data_time, compute_time)
 
             # --- Grokking detection: evaluate all holdout splits ---
             if grok_tracker is not None:
@@ -413,36 +441,6 @@ def main() -> None:
                     epoch, avg_loss, holdout_results
                 )
                 logger.log_grok_metrics(epoch, grok_epoch_metrics)
-
-            # --- Consolidated epoch summary via logging ---
-            total_time = data_time + compute_time
-            summary: dict[str, str] = {
-                "epoch": f"{epoch+1}/{args.epochs}",
-                "loss": f"{avg_loss:.4f}",
-                "policy_loss": f"{breakdown['policy']:.4f}",
-                "value_loss": f"{breakdown['value']:.4f}",
-                "top1": f"{top1:.1%}",
-                "top5": f"{top5:.1%}",
-                "lr_enc": f"{current_lr:.2e}",
-                "lr_head": f"{head_lr:.2e}",
-                "grad_norm_avg": f"{sum(step_grad_norms)/len(step_grad_norms):.3f}" if step_grad_norms else "n/a",
-                "grad_norm_peak": f"{max(step_grad_norms):.3f}" if step_grad_norms else "n/a",
-                "samples/s": f"{samples_per_sec:.0f}",
-                "epoch_time": f"{epoch_duration:.1f}s",
-                "data_pct": f"{data_time / total_time:.0%}" if total_time > 0 else "0%",
-                "overflows": str(overflow_count),
-            }
-            if "cpu_percent_avg" in resource_metrics:
-                summary["cpu"] = f"{resource_metrics['cpu_percent_avg']:.0f}%/{resource_metrics['cpu_percent_peak']:.0f}%"
-            if "ram_mb_avg" in resource_metrics:
-                summary["ram"] = f"{resource_metrics['ram_mb_avg']:.0f}mb"
-            if "gpu_util_avg" in resource_metrics:
-                summary["gpu"] = f"{resource_metrics['gpu_util_avg']:.0f}%/{resource_metrics['gpu_util_peak']:.0f}%"
-            if "gpu_temp_avg" in resource_metrics:
-                summary["gpu_temp"] = f"{resource_metrics['gpu_temp_avg']:.0f}C"
-            if "gpu_power_avg" in resource_metrics:
-                summary["gpu_power"] = f"{resource_metrics['gpu_power_avg']:.0f}W"
-            logger.log_epoch_summary(summary)
 
             # Plateau detection
             grad_norm_avg = (
