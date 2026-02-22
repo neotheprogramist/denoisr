@@ -381,69 +381,60 @@ def main() -> None:
             num_samples = len(train_dataset)
             avg_loss = epoch_loss / max(num_batches, 1)
 
-            logger.log_diffusion(
-                epoch, avg_loss, trainer.current_max_steps,
-            )
-            logger.log_epoch_timing(
-                epoch, epoch_duration,
-                num_samples / epoch_duration,
+            samples_per_sec = num_samples / max(epoch_duration, 1e-9)
+            current_lr = trainer.optimizer.param_groups[0]["lr"]
+
+            # Build resource dict in the format log_epoch_line expects
+            raw_res = monitor.summarize()
+            resource_metrics: dict[str, str] | None = None
+            if raw_res:
+                resource_metrics = {
+                    "cpu_pct": f"{raw_res['cpu_percent_avg']:.0f}%",
+                    "cpu_max": f"{raw_res['cpu_percent_peak']:.0f}%",
+                    "ram_mb": f"{raw_res['ram_mb_avg']:.0f}",
+                }
+                if "gpu_util_avg" in raw_res:
+                    resource_metrics["gpu_util"] = (
+                        f"{raw_res['gpu_util_avg']:.0f}%"
+                    )
+                if "gpu_mem_mb_avg" in raw_res:
+                    resource_metrics["gpu_mem_mb"] = (
+                        f"{raw_res['gpu_mem_mb_avg']:.0f}"
+                    )
+                if "gpu_temp_avg" in raw_res:
+                    resource_metrics["gpu_temp"] = (
+                        f"{raw_res['gpu_temp_avg']:.0f}"
+                    )
+                if "gpu_power_avg" in raw_res:
+                    resource_metrics["gpu_power"] = (
+                        f"{raw_res['gpu_power_avg']:.0f}"
+                    )
+
+            logger.log_epoch_line(
+                epoch=epoch,
+                total_epochs=args.epochs,
+                losses={
+                    "loss": avg_loss,
+                    "pol": last_breakdown.get("policy", 0.0),
+                    "val": last_breakdown.get("value", 0.0),
+                    "diff": last_breakdown.get("diffusion", 0.0),
+                    "cons": last_breakdown.get("consistency", 0.0),
+                    "state": last_breakdown.get("state", 0.0),
+                    "rew": last_breakdown.get("reward", 0.0),
+                },
+                lr=current_lr,
+                grad_norms=step_grad_norms,
+                samples_per_sec=samples_per_sec,
+                duration_s=epoch_duration,
+                resources=resource_metrics,
+                data_pct=data_time / max(epoch_duration, 1e-9) * 100,
+                overflows=overflow_count,
+                phase="phase2",
             )
 
-            resource_metrics = monitor.summarize()
-            logger.log_resource_metrics(epoch, resource_metrics)
-            logger.log_training_dynamics(
-                epoch, step_losses, step_grad_norms,
-            )
-            logger.log_pipeline_timing(
-                epoch, data_time, compute_time,
-            )
-
-            # LR logging
-            logger._writer.add_scalar("lr/backbone", trainer.optimizer.param_groups[0]["lr"], epoch)
+            # Per-param-group LR (extra detail beyond log_epoch_line)
+            logger._writer.add_scalar("lr/backbone", current_lr, epoch)
             logger._writer.add_scalar("lr/heads", trainer.optimizer.param_groups[1]["lr"], epoch)
-
-            total_time = data_time + compute_time
-            summary: dict[str, str] = {
-                "epoch": f"{epoch+1}/{args.epochs}",
-                "total_loss": f"{avg_loss:.4f}",
-                "policy_loss": f"{last_breakdown.get('policy', 0):.4f}",
-                "value_loss": f"{last_breakdown.get('value', 0):.4f}",
-                "diffusion_loss": f"{last_breakdown.get('diffusion', 0):.4f}",
-                "consistency_loss": f"{last_breakdown.get('consistency', 0):.4f}",
-                "state_loss": f"{last_breakdown.get('state', 0):.4f}",
-                "reward_loss": f"{last_breakdown.get('reward', 0):.4f}",
-                "curriculum_steps": str(trainer.current_max_steps),
-                "grad_norm_avg": (
-                    f"{sum(step_grad_norms)/len(step_grad_norms):.3f}"
-                    if step_grad_norms else "n/a"
-                ),
-                "grad_norm_peak": (
-                    f"{max(step_grad_norms):.3f}"
-                    if step_grad_norms else "n/a"
-                ),
-                "overflows": str(overflow_count),
-                "samples/s": f"{num_samples / epoch_duration:.0f}",
-                "epoch_time": f"{epoch_duration:.1f}s",
-                "data_pct": (
-                    f"{data_time / total_time:.0%}"
-                    if total_time > 0 else "0%"
-                ),
-            }
-            resource_summary = monitor.summarize()
-            if "cpu_percent_avg" in resource_summary:
-                summary["cpu"] = f"{resource_summary['cpu_percent_avg']:.0f}%/{resource_summary['cpu_percent_peak']:.0f}%"
-            if "ram_mb_avg" in resource_summary:
-                summary["ram"] = f"{resource_summary['ram_mb_avg']:.0f}mb"
-            if "gpu_util_avg" in resource_summary:
-                summary["gpu"] = f"{resource_summary['gpu_util_avg']:.0f}%/{resource_summary['gpu_util_peak']:.0f}%"
-            if "gpu_temp_avg" in resource_summary:
-                summary["gpu_temp"] = f"{resource_summary['gpu_temp_avg']:.0f}C"
-            if "gpu_power_avg" in resource_summary:
-                summary["gpu_power"] = f"{resource_summary['gpu_power_avg']:.0f}W"
-            if tcfg.use_harmony_dream:
-                for k, v in loss_fn.get_coefficients().items():
-                    summary[f"hd_{k}"] = f"{v:.3f}"
-            logger.log_epoch_summary(summary)
 
             # Plateau detection
             grad_norm_avg = (
