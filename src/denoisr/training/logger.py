@@ -1,11 +1,11 @@
 """TensorBoard training logger for denoisr.
 
 Writes both TensorBoard event files (for interactive visualization)
-and human-readable text logs (for quick inspection without a viewer).
+and human-readable text logs via Python's logging module.
 
-Text logs written:
-    logs/<run-name>/metrics.log   — tab-separated epoch metrics
-    logs/<run-name>/hparams.txt   — hyperparameter dump
+Logs written:
+    logs/<run-name>/metrics.log   -- single-line-per-epoch metrics
+    logs/<run-name>/hparams.txt   -- hyperparameter dump
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import logging
 import math
 from datetime import datetime
 from pathlib import Path
+from statistics import mean, stdev
 from typing import Any
 
 import torch
@@ -28,6 +29,7 @@ class TrainingLogger:
     Usage:
         with TrainingLogger(Path("logs"), run_name="lr1e-4") as logger:
             logger.log_train_step(step, loss, breakdown)
+            logger.log_epoch_line(epoch=1, total_epochs=100, ...)
     """
 
     def __init__(
@@ -40,9 +42,25 @@ class TrainingLogger:
         self._run_dir = log_dir / run_name
         self._run_dir.mkdir(parents=True, exist_ok=True)
         self._writer = SummaryWriter(str(self._run_dir))
-        self._log_file = open(  # noqa: SIM115
-            self._run_dir / "metrics.log", "a", encoding="utf-8"
-        )
+
+        # Dedicated metrics logger (file + console), not the module-level one
+        self._metrics_logger = logging.getLogger(f"denoisr.metrics.{run_name}")
+        self._metrics_logger.setLevel(logging.INFO)
+        self._metrics_logger.propagate = False  # don't bubble to root
+
+        # File handler: write to metrics.log
+        fh = logging.FileHandler(self._run_dir / "metrics.log", encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(message)s"))
+        self._metrics_logger.addHandler(fh)
+
+        # Console handler: same format
+        ch = logging.StreamHandler()
+        ch.setFormatter(logging.Formatter("%(message)s"))
+        self._metrics_logger.addHandler(ch)
+
+    # ------------------------------------------------------------------
+    # Per-batch logging (unchanged)
+    # ------------------------------------------------------------------
 
     def log_train_step(
         self, step: int, loss: float, breakdown: dict[str, float]
@@ -57,34 +75,189 @@ class TrainingLogger:
             else:
                 self._writer.add_scalar(f"loss/{key}", value, step)
 
-    def log_epoch(
-        self,
-        epoch: int,
-        avg_loss: float,
-        top1: float,
-        top5: float,
-        lr: float,
-    ) -> None:
-        """Log per-epoch summary metrics."""
-        self._writer.add_scalar("epoch/avg_loss", avg_loss, epoch)
-        self._writer.add_scalar("accuracy/top1", top1, epoch)
-        self._writer.add_scalar("accuracy/top5", top5, epoch)
-        self._writer.add_scalar("lr", lr, epoch)
-        self._write_text(
-            f"epoch={epoch}\tavg_loss={avg_loss:.6f}\t"
-            f"top1={top1:.4f}\ttop5={top5:.4f}\tlr={lr:.2e}"
-        )
+    # ------------------------------------------------------------------
+    # Single-line epoch logging (replaces 6 per-epoch methods)
+    # ------------------------------------------------------------------
 
-    def log_epoch_timing(
+    def log_epoch_line(
+        self,
+        *,
+        epoch: int,
+        total_epochs: int,
+        losses: dict[str, float],
+        lr: float,
+        grad_norms: list[float],
+        samples_per_sec: float,
+        duration_s: float,
+        accuracy: dict[str, float] | None = None,
+        resources: dict[str, str] | None = None,
+        data_pct: float = 0.0,
+        overflows: int = 0,
+        phase: str = "phase1",
+        # Phase 2 specific
+        generation: int | None = None,
+        total_generations: int | None = None,
+    ) -> None:
+        """Emit one compact line per epoch and write all scalars to TensorBoard.
+
+        Consolidates the previous log_epoch, log_epoch_timing,
+        log_resource_metrics, log_training_dynamics, log_pipeline_timing,
+        and log_diffusion methods into a single call.
+        """
+        # --- Build the human-readable line ---
+        parts: list[str] = []
+
+        # Epoch
+        parts.append(f"E={epoch}/{total_epochs}")
+
+        # Losses
+        for k, v in losses.items():
+            parts.append(f"{k}={v:.4f}" if abs(v) < 10 else f"{k}={v:.2f}")
+
+        # Accuracy (Phase 1 only)
+        if accuracy:
+            for k, v in accuracy.items():
+                parts.append(f"{k}={v:.1f}%")
+
+        # Learning rate
+        parts.append(f"lr={lr:.1e}")
+
+        # Grad norms (avg/peak)
+        if grad_norms:
+            finite_norms = [n for n in grad_norms if math.isfinite(n)]
+            if finite_norms:
+                avg_gn = sum(finite_norms) / len(finite_norms)
+                peak_gn = max(finite_norms)
+                parts.append(f"gnorm={avg_gn:.1f}/{peak_gn:.1f}")
+
+        # Overflows
+        if overflows > 0:
+            parts.append(f"ovf={overflows}")
+
+        # Speed
+        parts.append(f"sps={samples_per_sec:.0f}")
+
+        # Duration
+        parts.append(f"t={duration_s:.1f}s")
+
+        # Resource metrics
+        if resources:
+            r = resources
+            if "cpu_pct" in r:
+                parts.append(f"cpu={r['cpu_pct']}/{r.get('cpu_max', 'n/a')}")
+            if "ram_mb" in r:
+                parts.append(f"ram={r['ram_mb']}mb")
+            if "gpu_util" in r:
+                gpu_part = f"gpu={r['gpu_util']}/{r.get('gpu_mem_pct', 'n/a')}"
+                if "gpu_mem_mb" in r:
+                    gpu_part += f" {r['gpu_mem_mb']}mb"
+                if "gpu_temp" in r:
+                    gpu_part += f" {r['gpu_temp']}C"
+                if "gpu_power" in r:
+                    gpu_part += f" {r['gpu_power']}W"
+                parts.append(gpu_part)
+
+        # Data pipeline percentage
+        parts.append(f"data={data_pct:.0f}%")
+
+        line = " ".join(parts)
+        self._metrics_logger.info(line)
+
+        # --- TensorBoard scalar writes ---
+        self._tb_losses(epoch, losses)
+        self._tb_accuracy(epoch, accuracy)
+        self._tb_lr(epoch, lr)
+        self._tb_timing(epoch, duration_s, samples_per_sec)
+        self._tb_dynamics(epoch, losses, grad_norms)
+        self._tb_resources(epoch, resources)
+        self._tb_pipeline(epoch, data_pct, duration_s)
+
+    # ------------------------------------------------------------------
+    # TensorBoard scalar helpers (internal)
+    # ------------------------------------------------------------------
+
+    def _tb_losses(self, epoch: int, losses: dict[str, float]) -> None:
+        """Write loss scalars."""
+        if "loss" in losses:
+            self._writer.add_scalar("epoch/avg_loss", losses["loss"], epoch)
+        if "diff" in losses or "diffusion" in losses:
+            diff_val = losses.get("diff", losses.get("diffusion", 0.0))
+            self._writer.add_scalar("diffusion/loss", diff_val, epoch)
+        for k, v in losses.items():
+            if k not in ("loss",):
+                self._writer.add_scalar(f"epoch/{k}_loss", v, epoch)
+
+    def _tb_accuracy(
+        self, epoch: int, accuracy: dict[str, float] | None
+    ) -> None:
+        """Write accuracy scalars."""
+        if not accuracy:
+            return
+        if "top1" in accuracy:
+            self._writer.add_scalar("accuracy/top1", accuracy["top1"] / 100, epoch)
+        if "top5" in accuracy:
+            self._writer.add_scalar("accuracy/top5", accuracy["top5"] / 100, epoch)
+
+    def _tb_lr(self, epoch: int, lr: float) -> None:
+        self._writer.add_scalar("lr", lr, epoch)
+
+    def _tb_timing(
         self, epoch: int, duration_s: float, samples_per_sec: float
     ) -> None:
-        """Log epoch timing metrics."""
         self._writer.add_scalar("timing/epoch_duration_s", duration_s, epoch)
         self._writer.add_scalar("timing/samples_per_sec", samples_per_sec, epoch)
-        self._write_text(
-            f"epoch={epoch}\tduration_s={duration_s:.2f}\t"
-            f"samples_per_sec={samples_per_sec:.1f}"
-        )
+
+    def _tb_dynamics(
+        self,
+        epoch: int,
+        losses: dict[str, float],
+        grad_norms: list[float],
+    ) -> None:
+        if not grad_norms:
+            return
+        finite_norms = [n for n in grad_norms if math.isfinite(n)]
+        if not finite_norms:
+            return
+        gn_avg = mean(finite_norms)
+        gn_peak = max(finite_norms)
+        self._writer.add_scalar("dynamics/grad_norm_avg", gn_avg, epoch)
+        self._writer.add_scalar("dynamics/grad_norm_peak", gn_peak, epoch)
+
+        loss_vals = list(losses.values())
+        loss_sd = stdev(loss_vals) if len(loss_vals) > 1 else 0.0
+        self._writer.add_scalar("dynamics/loss_stddev", loss_sd, epoch)
+
+    def _tb_resources(
+        self, epoch: int, resources: dict[str, str] | None
+    ) -> None:
+        """Write resource metrics to TensorBoard.
+
+        Accepts the string-valued dict from log_epoch_line and parses
+        numeric values where possible.
+        """
+        if not resources:
+            return
+        # Try to parse and write numeric resource values
+        for key, val in resources.items():
+            try:
+                numeric = float(val.rstrip("%CWmb"))
+                self._writer.add_scalar(f"resources/{key}", numeric, epoch)
+            except (ValueError, AttributeError):
+                pass
+
+    def _tb_pipeline(
+        self, epoch: int, data_pct: float, duration_s: float
+    ) -> None:
+        data_frac = data_pct / 100.0
+        compute_frac = 1.0 - data_frac
+        data_time = duration_s * data_frac
+        self._writer.add_scalar("pipeline/data_wait_s", data_time, epoch)
+        self._writer.add_scalar("pipeline/data_wait_frac", data_frac, epoch)
+        self._writer.add_scalar("pipeline/compute_frac", compute_frac, epoch)
+
+    # ------------------------------------------------------------------
+    # GPU memory (unchanged)
+    # ------------------------------------------------------------------
 
     def log_gpu(self, step: int) -> None:
         """Log GPU memory metrics. No-op on CPU/MPS."""
@@ -95,96 +268,9 @@ class TrainingLogger:
         self._writer.add_scalar("gpu/memory_allocated_mb", allocated, step)
         self._writer.add_scalar("gpu/memory_reserved_mb", reserved, step)
 
-    def log_diffusion(
-        self, epoch: int, avg_loss: float, curriculum_steps: int
-    ) -> None:
-        """Log diffusion training metrics."""
-        self._writer.add_scalar("diffusion/loss", avg_loss, epoch)
-        self._writer.add_scalar(
-            "diffusion/curriculum_steps", curriculum_steps, epoch
-        )
-        self._write_text(
-            f"epoch={epoch}\tdiffusion_loss={avg_loss:.6f}\t"
-            f"curriculum_steps={curriculum_steps}"
-        )
-
-    def log_resource_metrics(self, epoch: int, metrics: dict[str, float]) -> None:
-        """Log per-epoch resource utilization avg/peak."""
-        for key, value in metrics.items():
-            self._writer.add_scalar(f"resources/{key}", value, epoch)
-
-        parts: list[str] = [f"epoch={epoch}"]
-        if "cpu_percent_avg" in metrics:
-            parts.append(f"cpu_avg={metrics['cpu_percent_avg']:.1f}%")
-            parts.append(f"cpu_peak={metrics['cpu_percent_peak']:.1f}%")
-        if "ram_mb_avg" in metrics:
-            parts.append(f"ram_avg={metrics['ram_mb_avg']:.0f}mb")
-            parts.append(f"ram_peak={metrics['ram_mb_peak']:.0f}mb")
-        self._write_text("\t".join(parts))
-
-        gpu_parts: list[str] = [f"epoch={epoch}"]
-        has_gpu = False
-        if "gpu_util_avg" in metrics:
-            gpu_parts.append(f"gpu_util_avg={metrics['gpu_util_avg']:.1f}%")
-            gpu_parts.append(f"gpu_util_peak={metrics['gpu_util_peak']:.1f}%")
-            has_gpu = True
-        if "gpu_mem_mb_avg" in metrics:
-            gpu_parts.append(f"gpu_mem_avg={metrics['gpu_mem_mb_avg']:.0f}mb")
-            gpu_parts.append(f"gpu_mem_peak={metrics['gpu_mem_mb_peak']:.0f}mb")
-            has_gpu = True
-        if "gpu_temp_avg" in metrics:
-            gpu_parts.append(f"gpu_temp_avg={metrics['gpu_temp_avg']:.0f}C")
-            has_gpu = True
-        if "gpu_power_avg" in metrics:
-            gpu_parts.append(f"gpu_power_avg={metrics['gpu_power_avg']:.0f}W")
-            has_gpu = True
-        if has_gpu:
-            self._write_text("\t".join(gpu_parts))
-
-    def log_training_dynamics(
-        self,
-        epoch: int,
-        losses: list[float],
-        grad_norms: list[float],
-    ) -> None:
-        """Log per-epoch training dynamics (grad norm stats, loss std dev)."""
-        from statistics import mean, stdev
-
-        if not grad_norms:
-            return
-
-        finite_norms = [n for n in grad_norms if math.isfinite(n)]
-        if not finite_norms:
-            return
-        gn_avg = mean(finite_norms)
-        gn_peak = max(finite_norms)
-        self._writer.add_scalar("dynamics/grad_norm_avg", gn_avg, epoch)
-        self._writer.add_scalar("dynamics/grad_norm_peak", gn_peak, epoch)
-
-        loss_sd = stdev(losses) if len(losses) > 1 else 0.0
-        self._writer.add_scalar("dynamics/loss_stddev", loss_sd, epoch)
-
-        self._write_text(
-            f"epoch={epoch}\tgrad_norm_avg={gn_avg:.3f}\t"
-            f"grad_norm_peak={gn_peak:.3f}\tloss_std={loss_sd:.4f}"
-        )
-
-    def log_pipeline_timing(
-        self, epoch: int, data_time: float, compute_time: float
-    ) -> None:
-        """Log data pipeline vs. compute time split."""
-        total = data_time + compute_time
-        data_frac = data_time / total if total > 0 else 0.0
-        compute_frac = compute_time / total if total > 0 else 0.0
-
-        self._writer.add_scalar("pipeline/data_wait_s", data_time, epoch)
-        self._writer.add_scalar("pipeline/data_wait_frac", data_frac, epoch)
-        self._writer.add_scalar("pipeline/compute_frac", compute_frac, epoch)
-
-        self._write_text(
-            f"epoch={epoch}\tdata_wait_s={data_time:.2f}\t"
-            f"data_wait_frac={data_frac:.2f}\tcompute_frac={compute_frac:.2f}"
-        )
+    # ------------------------------------------------------------------
+    # Epoch summary (redirected to _metrics_logger)
+    # ------------------------------------------------------------------
 
     def log_epoch_summary(self, parts: dict[str, str]) -> None:
         """Emit a single consolidated epoch summary via logging.
@@ -193,7 +279,11 @@ class TrainingLogger:
         with all metrics, easily parsed via key=value splitting.
         """
         line = "  ".join(f"{k}={v}" for k, v in parts.items())
-        log.info(line)
+        self._metrics_logger.info(line)
+
+    # ------------------------------------------------------------------
+    # Hyperparameters (unchanged)
+    # ------------------------------------------------------------------
 
     def log_hparams(
         self, hparams: dict[str, Any], metrics: dict[str, float]
@@ -204,6 +294,10 @@ class TrainingLogger:
         with open(hparams_path, "w", encoding="utf-8") as f:
             for key, value in hparams.items():
                 f.write(f"{key}={value}\n")
+
+    # ------------------------------------------------------------------
+    # Grokking detection (redirected to _metrics_logger)
+    # ------------------------------------------------------------------
 
     def log_grok_metrics(self, step: int, metrics: dict[str, float]) -> None:
         """Log grokking detection metrics to TensorBoard."""
@@ -218,20 +312,22 @@ class TrainingLogger:
         trigger: str,
     ) -> None:
         """Log grokking state transition to text log."""
-        self._write_text(
+        self._metrics_logger.info(
             f"GROKKING step={step}\t{old_state}->{new_state}\ttrigger={trigger}"
         )
 
-    def _write_text(self, line: str) -> None:
-        """Append a line to the text log file."""
-        self._log_file.write(line + "\n")
-        self._log_file.flush()
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def close(self) -> None:
         """Flush and close all writers."""
         self._writer.flush()
         self._writer.close()
-        self._log_file.close()
+        # Clean up logging handlers to release file handles
+        for handler in self._metrics_logger.handlers[:]:
+            handler.close()
+            self._metrics_logger.removeHandler(handler)
 
     def __enter__(self) -> TrainingLogger:
         return self
