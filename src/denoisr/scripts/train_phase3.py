@@ -8,6 +8,7 @@ trajectories with the latest model weights.
 """
 
 import argparse
+import logging
 from pathlib import Path
 
 import torch
@@ -41,6 +42,8 @@ from denoisr.training.self_play import (
     TemperatureSchedule,
 )
 
+log = logging.getLogger(__name__)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 3: RL self-play")
@@ -60,13 +63,15 @@ def main() -> None:
     add_phase3_args(parser)
     args = parser.parse_args()
 
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     device = detect_device()
     tcfg = full_training_config_from_args(args)
-    print(f"Device: {device}")
+    log.info("device=%s", device)
 
     # --- Load Phase 2 ---
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
-    print(f"Loaded Phase 2 checkpoint: d_s={cfg.d_s}")
+    log.info("checkpoint loaded d_s=%d", cfg.d_s)
 
     encoder = build_encoder(cfg).to(device)
     backbone = build_backbone(cfg).to(device)
@@ -212,12 +217,17 @@ def main() -> None:
             D=results["draws"],
             L=results["losses"],
         )
-        tqdm.write(
-            f"Gen {gen+1}/{args.generations}: "
-            f"buffer={len(buffer)} alpha={alpha:.2f} "
-            f"temp={temp_base:.3f} "
-            f"W/D/L={results['wins']}/{results['draws']}/{results['losses']} "
-            f"reanalysed={reanalyse_count}"
+        log.info(
+            "gen %d/%d buffer=%d alpha=%.2f temp=%.3f W/D/L=%d/%d/%d reanalysed=%d",
+            gen + 1,
+            args.generations,
+            len(buffer),
+            alpha,
+            temp_base,
+            results["wins"],
+            results["draws"],
+            results["losses"],
+            reanalyse_count,
         )
 
         # 4. Checkpoint
@@ -235,7 +245,7 @@ def main() -> None:
                 generation=gen + 1,
             )
 
-    print("Phase 3 training complete.")
+    log.info("Phase 3 training complete")
 
 
 if __name__ == "__main__":
