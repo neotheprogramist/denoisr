@@ -18,7 +18,6 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.scripts.config import (
@@ -55,7 +54,7 @@ log = logging.getLogger(__name__)
 
 def extract_trajectories(
     pgn_path: Path,
-    encoder: SimpleBoardEncoder | ExtendedBoardEncoder,
+    encoder: ExtendedBoardEncoder,
     seq_len: int,
     max_trajectories: int,
     min_elo: int | None = None,

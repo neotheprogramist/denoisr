@@ -2,7 +2,7 @@ import chess
 import pytest
 import torch
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.game.chess_game import ChessGame
 from denoisr.training.reanalyse import ReanalyseActor
 from denoisr.types import Action, GameRecord, TrainingExample
@@ -37,7 +37,7 @@ class TestReanalyseActor:
             world_model_fn=model.predict_next,
             encode_fn=model.encode,
             game=ChessGame(),
-            board_encoder=SimpleBoardEncoder(),
+            board_encoder=ExtendedBoardEncoder(),
             num_simulations=10,
         )
 

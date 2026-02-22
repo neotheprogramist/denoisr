@@ -2,7 +2,7 @@ import chess
 import pytest
 import torch
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.inference.engine import ChessEngine
 from denoisr.nn.encoder import ChessEncoder
 from denoisr.nn.policy_backbone import ChessPolicyBackbone
@@ -21,7 +21,7 @@ class TestChessEngine:
     @pytest.fixture
     def engine(self, device: torch.device) -> ChessEngine:
         return ChessEngine(
-            encoder=ChessEncoder(12, SMALL_D_S).to(device),
+            encoder=ChessEncoder(122, SMALL_D_S).to(device),
             backbone=ChessPolicyBackbone(
                 SMALL_D_S,
                 SMALL_NUM_HEADS,
@@ -30,7 +30,7 @@ class TestChessEngine:
             ).to(device),
             policy_head=ChessPolicyHead(SMALL_D_S).to(device),
             value_head=ChessValueHead(SMALL_D_S).to(device),
-            board_encoder=SimpleBoardEncoder(),
+            board_encoder=ExtendedBoardEncoder(),
             device=device,
         )
 

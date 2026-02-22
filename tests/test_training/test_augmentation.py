@@ -1,7 +1,6 @@
 import chess
 import torch
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.nn.encoder import ChessEncoder
 from denoisr.training.augmentation import flip_board, flip_policy, flip_value
@@ -12,24 +11,24 @@ from conftest import SMALL_D_S
 class TestBoardFlip:
     def test_flip_is_involution(self) -> None:
         """Flipping twice returns the original."""
-        board = torch.randn(12, 8, 8)
-        assert torch.allclose(flip_board(flip_board(board, 12), 12), board)
+        board = torch.randn(122, 8, 8)
+        assert torch.allclose(flip_board(flip_board(board, 122), 122), board)
 
     def test_flip_swaps_colors(self) -> None:
         """White pawns (plane 0) become black pawns (plane 6) after flip."""
-        encoder = SimpleBoardEncoder()
+        encoder = ExtendedBoardEncoder()
         board = chess.Board()
         tensor = encoder.encode(board).data
-        flipped = flip_board(tensor, 12)
+        flipped = flip_board(tensor, 122)
         # White pawns on rank 1 should now be black pawns on rank 6
         assert flipped[6, 6, :].sum() == 8.0  # 8 pawns
 
     def test_flip_mirrors_ranks(self) -> None:
         """Rank 0 becomes rank 7 after flip."""
-        encoder = SimpleBoardEncoder()
+        encoder = ExtendedBoardEncoder()
         board = chess.Board()
         tensor = encoder.encode(board).data
-        flipped = flip_board(tensor, 12)
+        flipped = flip_board(tensor, 122)
         # White rook was at (plane=3, rank=0, file=0), after flip
         # it becomes black rook at (plane=9, rank=7, file=0)
         assert flipped[9, 7, 0] == 1.0

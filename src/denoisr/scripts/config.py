@@ -14,7 +14,6 @@ from typing import Any, TypeVar
 import torch
 from torch import nn
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.nn.consistency import ChessConsistencyProjector
 from denoisr.nn.diffusion import ChessDiffusionModule, CosineNoiseSchedule
@@ -32,9 +31,8 @@ from denoisr.nn.world_model import ChessWorldModel
 
 @dataclass(frozen=True)
 class ModelConfig:
-    # Number of input feature planes from the board encoder.
-    # 12 = simple (one plane per piece type), 122 = extended (AlphaVile-style
-    # with attack maps, pin maps, mobility, threat maps, and game-phase features).
+    # Number of input feature planes from ExtendedBoardEncoder (122 planes:
+    # 12 piece placement + 84 history + 14 metadata + 12 tactical).
     num_planes: int = 122
 
     # Latent dimension per square token. All transformer layers, heads, and
@@ -292,10 +290,8 @@ def build_encoder(cfg: ModelConfig) -> ChessEncoder:
     return ChessEncoder(num_planes=cfg.num_planes, d_s=cfg.d_s)
 
 
-def build_board_encoder(cfg: ModelConfig) -> SimpleBoardEncoder | ExtendedBoardEncoder:
-    """Return the appropriate board encoder based on config num_planes."""
-    if cfg.num_planes == 12:
-        return SimpleBoardEncoder()
+def build_board_encoder(cfg: ModelConfig) -> ExtendedBoardEncoder:
+    """Return the board encoder (always ExtendedBoardEncoder, 122 planes)."""
     return ExtendedBoardEncoder()
 
 
@@ -347,10 +343,6 @@ def build_schedule(cfg: ModelConfig) -> CosineNoiseSchedule:
 def add_model_args(parser: ArgumentParser) -> None:
     """Register CLI flags for model architecture hyperparameters."""
     g = parser.add_argument_group("model")
-    g.add_argument(
-        "--num-planes", type=int, default=122,
-        help="board encoder feature planes: 12=simple, 122=extended (default: 122)",
-    )
     g.add_argument(
         "--d-s", type=int, default=256,
         help="latent dimension per square token (default: 256)",
@@ -620,7 +612,6 @@ def resolve_gradient_checkpointing(
 
 def config_from_args(args: Namespace) -> ModelConfig:
     return ModelConfig(
-        num_planes=args.num_planes,
         d_s=args.d_s,
         num_heads=args.num_heads,
         num_layers=args.num_layers,

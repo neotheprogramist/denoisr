@@ -10,7 +10,7 @@ from conftest import (
     SMALL_NUM_LAYERS,
     SMALL_NUM_TIMESTEPS,
 )
-from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.nn.consistency import ChessConsistencyProjector
 from denoisr.nn.diffusion import ChessDiffusionModule, CosineNoiseSchedule
 from denoisr.nn.encoder import ChessEncoder
@@ -25,7 +25,7 @@ from denoisr.training.phase2_trainer import Phase2Trainer, TrajectoryBatch, eval
 
 class TestTrajectoryBatch:
     def test_valid_shapes(self) -> None:
-        B, T, C = 4, 5, 12
+        B, T, C = 4, 5, 122
         batch = TrajectoryBatch(
             boards=torch.randn(B, T, C, 8, 8),
             actions_from=torch.randint(0, 64, (B, T - 1)),
@@ -42,7 +42,7 @@ class TestTrajectoryBatch:
 
     def test_frozen(self) -> None:
         batch = TrajectoryBatch(
-            boards=torch.randn(2, 3, 12, 8, 8),
+            boards=torch.randn(2, 3, 122, 8, 8),
             actions_from=torch.zeros(2, 2, dtype=torch.long),
             actions_to=torch.zeros(2, 2, dtype=torch.long),
             policies=torch.zeros(2, 2, 64, 64),
@@ -50,12 +50,12 @@ class TestTrajectoryBatch:
             rewards=torch.zeros(2, 2),
         )
         with pytest.raises(AttributeError):
-            batch.boards = torch.randn(2, 3, 12, 8, 8)  # type: ignore[misc]
+            batch.boards = torch.randn(2, 3, 122, 8, 8)  # type: ignore[misc]
 
     def test_rejects_mismatched_time_dims(self) -> None:
         with pytest.raises(ValueError, match="time"):
             TrajectoryBatch(
-                boards=torch.randn(2, 5, 12, 8, 8),
+                boards=torch.randn(2, 5, 122, 8, 8),
                 actions_from=torch.zeros(2, 3, dtype=torch.long),  # should be 4
                 actions_to=torch.zeros(2, 4, dtype=torch.long),
                 policies=torch.zeros(2, 4, 64, 64),
@@ -66,7 +66,7 @@ class TestTrajectoryBatch:
     def test_rejects_mismatched_batch_dims(self) -> None:
         with pytest.raises(ValueError, match="batch"):
             TrajectoryBatch(
-                boards=torch.randn(4, 5, 12, 8, 8),
+                boards=torch.randn(4, 5, 122, 8, 8),
                 actions_from=torch.zeros(2, 4, dtype=torch.long),  # B=2 vs 4
                 actions_to=torch.zeros(4, 4, dtype=torch.long),
                 policies=torch.zeros(4, 4, 64, 64),
@@ -78,7 +78,7 @@ class TestTrajectoryBatch:
 def _make_trajectory_batch(
     B: int = 2,
     T: int = 5,
-    C: int = 12,
+    C: int = 122,
     device: torch.device = torch.device("cpu"),
 ) -> TrajectoryBatch:
     policies = torch.zeros(B, T - 1, 64, 64, device=device)
@@ -98,7 +98,7 @@ def _make_trajectory_batch(
 class TestPhase2Trainer:
     @pytest.fixture
     def trainer(self, device: torch.device) -> Phase2Trainer:
-        encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
+        encoder = ChessEncoder(num_planes=122, d_s=SMALL_D_S).to(device)
         backbone = ChessPolicyBackbone(
             d_s=SMALL_D_S,
             num_heads=SMALL_NUM_HEADS,
@@ -220,7 +220,7 @@ class TestExtractTrajectories:
         return pgn
 
     def test_returns_trajectory_batch(self, pgn_file: Path) -> None:
-        encoder = SimpleBoardEncoder()
+        encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
             pgn_file, encoder, seq_len=3, max_trajectories=100,
         )
@@ -234,7 +234,7 @@ class TestExtractTrajectories:
     def test_policy_targets_are_one_hot(
         self, pgn_file: Path,
     ) -> None:
-        encoder = SimpleBoardEncoder()
+        encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
             pgn_file, encoder, seq_len=3, max_trajectories=100,
         )
@@ -245,7 +245,7 @@ class TestExtractTrajectories:
                 )
 
     def test_values_are_valid_wdl(self, pgn_file: Path) -> None:
-        encoder = SimpleBoardEncoder()
+        encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
             pgn_file, encoder, seq_len=3, max_trajectories=100,
         )
@@ -255,7 +255,7 @@ class TestExtractTrajectories:
             )
 
     def test_rewards_match_result(self, pgn_file: Path) -> None:
-        encoder = SimpleBoardEncoder()
+        encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
             pgn_file, encoder, seq_len=3, max_trajectories=100,
         )
@@ -267,7 +267,7 @@ class TestExtractTrajectories:
 class TestPhase2Gate:
     def test_returns_three_floats(self, device: torch.device) -> None:
         encoder = ChessEncoder(
-            num_planes=12, d_s=SMALL_D_S,
+            num_planes=122, d_s=SMALL_D_S,
         ).to(device)
         backbone = ChessPolicyBackbone(
             d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
@@ -283,7 +283,7 @@ class TestPhase2Gate:
             num_timesteps=SMALL_NUM_TIMESTEPS,
         ).to(device)
 
-        boards = torch.randn(8, 12, 8, 8, device=device)
+        boards = torch.randn(8, 122, 8, 8, device=device)
         target_from = torch.randint(0, 64, (8,), device=device)
         target_to = torch.randint(0, 64, (8,), device=device)
 

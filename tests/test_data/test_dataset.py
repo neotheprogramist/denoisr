@@ -2,7 +2,7 @@ import chess
 import pytest
 import torch
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.data.dataset import ChessDataset, generate_examples_from_game
 from denoisr.types import (
     Action,
@@ -16,7 +16,7 @@ from denoisr.types import (
 
 def _make_example(result: float = 1.0) -> TrainingExample:
     return TrainingExample(
-        board=BoardTensor(torch.zeros(12, 8, 8)),
+        board=BoardTensor(torch.zeros(122, 8, 8)),
         policy=PolicyTarget(torch.zeros(64, 64)),
         value=ValueTarget(
             win=max(result, 0.0),
@@ -35,7 +35,7 @@ class TestChessDataset:
     def test_getitem_shapes(self) -> None:
         ds = ChessDataset([_make_example()])
         board, policy, value = ds[0]
-        assert board.shape == (12, 8, 8)
+        assert board.shape == (122, 8, 8)
         assert policy.shape == (64, 64)
         assert value.shape == (3,)
 
@@ -62,11 +62,11 @@ class TestGenerateExamples:
             ),
             result=1.0,
         )
-        encoder = SimpleBoardEncoder()
+        encoder = ExtendedBoardEncoder()
         examples = list(generate_examples_from_game(record, encoder))
         assert len(examples) == 7  # one per position before each move
         for ex in examples:
-            assert ex.board.data.shape == (12, 8, 8)
+            assert ex.board.data.shape == (122, 8, 8)
             assert ex.value.win + ex.value.draw + ex.value.loss == pytest.approx(1.0)
 
     def test_policy_target_has_played_move(self) -> None:
@@ -75,7 +75,7 @@ class TestGenerateExamples:
             actions=(Action(move.from_square, move.to_square, move.promotion),),
             result=0.0,
         )
-        encoder = SimpleBoardEncoder()
+        encoder = ExtendedBoardEncoder()
         examples = list(generate_examples_from_game(record, encoder))
         assert len(examples) == 1
         assert examples[0].policy.data[move.from_square, move.to_square].item() == 1.0

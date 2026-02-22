@@ -2,7 +2,7 @@ import chess
 import pytest
 import torch
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.inference.diffusion_engine import DiffusionChessEngine
 from denoisr.nn.diffusion import ChessDiffusionModule, CosineNoiseSchedule
 from denoisr.nn.encoder import ChessEncoder
@@ -23,7 +23,7 @@ class TestDiffusionChessEngine:
     @pytest.fixture
     def engine(self, device: torch.device) -> DiffusionChessEngine:
         return DiffusionChessEngine(
-            encoder=ChessEncoder(12, SMALL_D_S).to(device),
+            encoder=ChessEncoder(122, SMALL_D_S).to(device),
             backbone=ChessPolicyBackbone(
                 SMALL_D_S, SMALL_NUM_HEADS, SMALL_NUM_LAYERS, SMALL_FFN_DIM
             ).to(device),
@@ -33,7 +33,7 @@ class TestDiffusionChessEngine:
                 SMALL_D_S, SMALL_NUM_HEADS, SMALL_NUM_LAYERS, SMALL_NUM_TIMESTEPS
             ).to(device),
             schedule=CosineNoiseSchedule(SMALL_NUM_TIMESTEPS),
-            board_encoder=SimpleBoardEncoder(),
+            board_encoder=ExtendedBoardEncoder(),
             device=device,
             num_denoising_steps=5,
         )
@@ -56,7 +56,7 @@ class TestDiffusionChessEngine:
     def test_anytime_property(self, device: torch.device) -> None:
         """Different denoising step counts should both produce legal moves."""
         args = dict(
-            encoder=ChessEncoder(12, SMALL_D_S).to(device),
+            encoder=ChessEncoder(122, SMALL_D_S).to(device),
             backbone=ChessPolicyBackbone(
                 SMALL_D_S, SMALL_NUM_HEADS, SMALL_NUM_LAYERS, SMALL_FFN_DIM
             ).to(device),
@@ -66,7 +66,7 @@ class TestDiffusionChessEngine:
                 SMALL_D_S, SMALL_NUM_HEADS, SMALL_NUM_LAYERS, SMALL_NUM_TIMESTEPS
             ).to(device),
             schedule=CosineNoiseSchedule(SMALL_NUM_TIMESTEPS),
-            board_encoder=SimpleBoardEncoder(),
+            board_encoder=ExtendedBoardEncoder(),
             device=device,
         )
         engine_1 = DiffusionChessEngine(**args, num_denoising_steps=1)

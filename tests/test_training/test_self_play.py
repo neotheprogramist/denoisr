@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
+from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.game.chess_game import ChessGame
 from denoisr.training.self_play import (
     SelfPlayActor,
@@ -39,7 +39,7 @@ class TestSelfPlayActor:
             world_model_fn=model.predict_next,
             encode_fn=model.encode,
             game=ChessGame(),
-            board_encoder=SimpleBoardEncoder(),
+            board_encoder=ExtendedBoardEncoder(),
             config=SelfPlayConfig(
                 num_simulations=10, max_moves=50, temperature=1.0
             ),

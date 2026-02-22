@@ -281,15 +281,9 @@ class MLXChessEngine:
         """
         import chess as chess_lib
 
-        from denoisr.data.board_encoder import SimpleBoardEncoder
         from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 
-        if self._num_planes == 12:
-            board_encoder: SimpleBoardEncoder | ExtendedBoardEncoder = (
-                SimpleBoardEncoder()
-            )
-        else:
-            board_encoder = ExtendedBoardEncoder()
+        board_encoder = ExtendedBoardEncoder()
 
         board_tensor = board_encoder.encode(board).data
         x = mx.array(board_tensor.numpy())[None]  # [1, C, 8, 8]

@@ -5,7 +5,6 @@ import chess
 import torch
 from torch import Tensor
 
-from denoisr.data.board_encoder import SimpleBoardEncoder
 from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.game.chess_game import ChessGame
 from denoisr.training.mcts import MCTS, MCTSConfig
@@ -49,7 +48,7 @@ class SelfPlayActor:
         world_model_fn: Callable[[Tensor, int, int], tuple[Tensor, float]],
         encode_fn: Callable[[Tensor], Tensor],
         game: ChessGame,
-        board_encoder: SimpleBoardEncoder | ExtendedBoardEncoder,
+        board_encoder: ExtendedBoardEncoder,
         config: SelfPlayConfig,
     ) -> None:
         self._game = game
