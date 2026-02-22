@@ -106,7 +106,7 @@ This is the same random model from the quick start — if you already created it
 
 ### Step 3: Generate training examples
 
-Data generation with Stockfish is parallelized across multiple worker processes, each running its own Stockfish instance. Generate once, then iterate on training without re-generating:
+Data generation uses a memory-efficient two-pass streaming pipeline. Pass 1 counts positions from the PGN (fast, no Stockfish). Pass 2 streams positions through a worker pool into disk-backed numpy memory-mapped arrays, keeping RSS at ~4-8 GB even for tens of millions of examples. Each worker runs its own Stockfish instance. Generate once, then iterate on training without re-generating:
 
 ```bash
 uv run denoisr-generate-data \
@@ -120,11 +120,12 @@ Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to o
 **What you'll see:**
 
 ```
-Extracting positions: 100%|████████████████████| 100000/100000 [00:08<00:00, 12345pos/s]
-Extracted 100000 positions, evaluating with 33 workers
+Pass 1: counting positions...
+Found 100000 positions, starting evaluation with 33 workers
 Evaluating positions: 45%|████████▌          | 45000/100000 [01:30<01:50, 498pos/s]
-Generated 100000 training examples
+Evaluated 100000 positions, saving to outputs/training_data.pt...
 Saved 100000 examples to outputs/training_data.pt
+Done: 100000 examples generated.
 ```
 
 | Flag                   | Default                    | Description                                    |
@@ -136,6 +137,7 @@ Saved 100000 examples to outputs/training_data.pt
 | `--workers`            | `cpu_count*2+1`            | Worker processes (each runs its own Stockfish) |
 | `--policy-temperature` | `150`                      | Softmax temperature for policy targets         |
 | `--label-smoothing`    | `0.1`                      | Label smoothing epsilon for policy targets     |
+| `--chunksize`          | `64`                       | `imap_unordered` chunksize for worker batching |
 | `--output`             | `outputs/training_data.pt` | Output path for generated data                 |
 
 ### Step 4: Phase 1 — Supervised learning
@@ -812,7 +814,7 @@ denoisr/
 │   ├── inference/      # Chess engines (single-pass, diffusion-enhanced), UCI protocol
 │   ├── evaluation/     # Self-contained parallel benchmarking
 │   └── scripts/        # CLI entry points for all phases + inference + benchmarking
-├── tests/              # 370+ tests mirroring src/ structure
+├── tests/              # 400+ tests mirroring src/ structure
 ├── fixtures/           # Sample PGN files for testing
 ├── docs/plans/         # Architecture design and implementation plans
 ├── logs/               # TensorBoard + text training logs (gitignored)

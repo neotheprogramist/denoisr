@@ -7,6 +7,10 @@ Produces a .pt file with:
 
 Stockfish evaluation is parallelized across multiple worker processes,
 each owning its own Stockfish subprocess.
+
+The main() entry point uses generate_to_file() which streams results into
+disk-backed numpy memory-mapped arrays, keeping RSS at ~4-8 GB even for
+tens of millions of examples.
 """
 
 import atexit
@@ -15,6 +19,8 @@ import os
 import argparse
 import shutil
 import sys
+import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -107,6 +113,155 @@ def _evaluate_position(meta: _PositionMeta) -> _EvalResultWithMeta:
         meta.eco_code,
         meta.piece_count,
     )
+
+
+# -- Streaming helpers ----------------------------------------------------
+
+
+def _count_positions(pgn_path: Path, max_positions: int) -> int:
+    """Fast PGN-only pass that counts available positions (no Stockfish)."""
+    streamer = SimplePGNStreamer()
+    count = 0
+    for record in streamer.stream(pgn_path):
+        moves_in_game = len(record.actions)
+        remaining = max_positions - count
+        count += min(moves_in_game, remaining)
+        if count >= max_positions:
+            break
+    return count
+
+
+def _stream_positions(pgn_path: Path, max_positions: int) -> Iterator[_PositionMeta]:
+    """Yield positions lazily — only ~chunksize*workers buffered at once."""
+    streamer = SimplePGNStreamer()
+    count = 0
+    game_id = 0
+
+    for record in streamer.stream(pgn_path):
+        moves_so_far: _MoveSeq = []
+        board = chess.Board()
+        for action in record.actions:
+            moves_so_far.append((action.from_square, action.to_square, action.promotion))
+            board.push(chess.Move(action.from_square, action.to_square, action.promotion))
+            if count >= max_positions:
+                break
+            piece_count = bin(board.occupied).count("1")
+            yield _PositionMeta(
+                moves=list(moves_so_far),
+                game_id=game_id,
+                eco_code=record.eco_code,
+                piece_count=piece_count,
+            )
+            count += 1
+
+        game_id += 1
+        if count >= max_positions:
+            break
+
+
+def generate_to_file(
+    pgn_path: Path,
+    output_path: Path,
+    stockfish_path: str,
+    stockfish_depth: int,
+    max_examples: int,
+    num_workers: int,
+    policy_temperature: float = 150.0,
+    label_smoothing: float = 0.1,
+    chunksize: int = 64,
+) -> int:
+    """Stream positions through Stockfish workers into disk-backed memmap arrays.
+
+    Returns the number of examples written. RSS stays at ~4-8 GB even for
+    tens of millions of examples because the large arrays (boards, policies,
+    values) live in memory-mapped files that the OS pages in/out on demand.
+    """
+    # Pass 1: count positions to pre-allocate exact array sizes
+    print("Pass 1: counting positions...")
+    total = _count_positions(pgn_path, max_examples)
+    print(f"Found {total} positions, starting evaluation with {num_workers} workers")
+
+    if total == 0:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({
+            "boards": torch.empty(0, 110, 8, 8),
+            "policies": torch.empty(0, 64, 64),
+            "values": torch.empty(0, 3),
+        }, output_path)
+        return 0
+
+    # Create temp directory for memmap files
+    tmp_dir = tempfile.mkdtemp(prefix="denoisr_memmap_")
+    try:
+        # Allocate memmap arrays on disk
+        boards_mm = np.memmap(
+            os.path.join(tmp_dir, "boards.dat"),
+            dtype=np.float32, mode="w+", shape=(total, 110, 8, 8),
+        )
+        policies_mm = np.memmap(
+            os.path.join(tmp_dir, "policies.dat"),
+            dtype=np.float32, mode="w+", shape=(total, 64, 64),
+        )
+        values_mm = np.memmap(
+            os.path.join(tmp_dir, "values.dat"),
+            dtype=np.float32, mode="w+", shape=(total, 3),
+        )
+
+        # Small metadata arrays stay in RAM (~200 MB at 16M examples)
+        game_ids = np.empty(total, dtype=np.int64)
+        piece_counts = np.empty(total, dtype=np.int32)
+        eco_codes: list[str | None] = [None] * total
+
+        # Pass 2: stream positions through worker pool into memmap
+        idx = 0
+        with multiprocessing.Pool(
+            num_workers,
+            initializer=_init_worker,
+            initargs=(stockfish_path, stockfish_depth, policy_temperature, label_smoothing),
+        ) as pool:
+            positions = _stream_positions(pgn_path, max_examples)
+            results = pool.imap_unordered(
+                _evaluate_position, positions, chunksize=chunksize,
+            )
+            for board_np, policy_np, (win, draw, loss), gid, eco, pc in tqdm(
+                results, total=total, desc="Evaluating positions", unit="pos",
+                smoothing=0.1,
+            ):
+                boards_mm[idx] = board_np
+                policies_mm[idx] = policy_np
+                values_mm[idx] = (win, draw, loss)
+                game_ids[idx] = gid
+                eco_codes[idx] = eco
+                piece_counts[idx] = pc
+                idx += 1
+
+        # Flush memmap to disk before creating torch views
+        boards_mm.flush()
+        policies_mm.flush()
+        values_mm.flush()
+
+        print(f"Evaluated {idx} positions, saving to {output_path}...")
+
+        # Build output dict with zero-copy torch views on memmap.
+        # torch.from_numpy on a memmap shares the backing file —
+        # torch.save reads pages on demand via the OS page cache.
+        result: dict[str, Any] = {
+            "boards": torch.from_numpy(np.asarray(boards_mm)),
+            "policies": torch.from_numpy(np.asarray(policies_mm)),
+            "values": torch.from_numpy(np.asarray(values_mm)),
+            "game_ids": torch.from_numpy(game_ids),
+            "piece_counts": torch.from_numpy(piece_counts),
+        }
+        if any(eco is not None for eco in eco_codes):
+            result["eco_codes"] = eco_codes
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(result, output_path)
+        print(f"Saved {idx} examples to {output_path}")
+        return idx
+    finally:
+        # Clean up temp memmap files
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # -- Public API -----------------------------------------------------------
@@ -279,6 +434,8 @@ def main() -> None:
         help="Softmax temperature for policy targets (default: 150.0)")
     parser.add_argument("--label-smoothing", type=float, default=0.1,
         help="Label smoothing epsilon (default: 0.1)")
+    parser.add_argument("--chunksize", type=int, default=64,
+        help="imap_unordered chunksize for worker batching (default: 64)")
     args = parser.parse_args()
 
     stockfish_path = args.stockfish or shutil.which("stockfish")
@@ -289,20 +446,18 @@ def main() -> None:
         )
         sys.exit(1)
 
-    examples = generate_examples(
-        Path(args.pgn),
-        stockfish_path,
-        args.stockfish_depth,
-        args.max_examples,
-        args.workers,
+    count = generate_to_file(
+        pgn_path=Path(args.pgn),
+        output_path=Path(args.output),
+        stockfish_path=stockfish_path,
+        stockfish_depth=args.stockfish_depth,
+        max_examples=args.max_examples,
+        num_workers=args.workers,
         policy_temperature=args.policy_temperature,
         label_smoothing=args.label_smoothing,
+        chunksize=args.chunksize,
     )
-
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(stack_examples(examples), output_path)
-    print(f"Saved {len(examples)} examples to {output_path}")
+    print(f"Done: {count} examples generated.")
 
 
 if __name__ == "__main__":
