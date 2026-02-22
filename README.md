@@ -83,7 +83,7 @@ The simplest way to train is the unified pipeline command. It handles data downl
 uv run denoisr-train --config pipeline.toml
 ```
 
-Create a `pipeline.toml` file (all sections are optional -- defaults are shown):
+A default `pipeline.toml` is included in the repo. All sections are optional -- defaults are shown:
 
 ```toml
 [data]

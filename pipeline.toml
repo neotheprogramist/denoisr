@@ -1,0 +1,116 @@
+# Denoisr training pipeline configuration
+# Run with: uv run denoisr-train --config pipeline.toml
+#
+# All fields are optional. Omitted values use the defaults shown below.
+# Override individual values via CLI: --only fetch,sort,phase1
+
+# ---------------------------------------------------------------------------
+# Data acquisition
+# ---------------------------------------------------------------------------
+[data]
+
+# Standard Lichess rated games (all Elos, .pgn.zst format).
+# Browse available months at https://database.lichess.org/
+pgn_url = "https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst"
+pgn_path = "data/lichess.pgn.zst"
+
+# Elo-sorted bucket files produced by the sort step
+sorted_dir = "data/sorted/"
+
+# Stockfish binary (empty = auto-detect from PATH)
+stockfish_path = ""
+stockfish_depth = 10
+
+# Training examples generated per Elo tier
+examples_per_tier = 200_000
+
+# Fraction of examples from tactical positions (captures, hanging pieces,
+# endgames). Higher values teach the model to handle critical moments.
+tactical_fraction = 0.25
+
+# Data generation worker count (0 = auto: cpu_count * 2 + 1)
+workers = 0
+
+# ---------------------------------------------------------------------------
+# Elo curriculum — progressive training on harder games
+# ---------------------------------------------------------------------------
+[elo_curriculum]
+
+# Cumulative Elo tiers: each tier includes all games >= threshold.
+# Tier 800+: basic piece movement, captures
+# Tier 1200+: opening principles, basic endgames
+# Tier 1600+: positional play, tactical combinations
+# Tier 2000+: deeper strategy, pawn structures
+# Tier 2400+: master-level subtleties
+tiers = [800, 1200, 1600, 2000, 2400]
+
+# Top-1 move prediction accuracy required to advance to next tier
+gate_accuracy = 0.50
+
+# Safety cap: advance to next tier after this many epochs even if gate not met
+max_epochs_per_tier = 100
+
+# ---------------------------------------------------------------------------
+# Model architecture
+# ---------------------------------------------------------------------------
+[model]
+
+# Latent dimension per square token (all layers use this width)
+d_s = 256
+
+# Attention heads in the policy backbone (must divide d_s)
+num_heads = 8
+
+# Transformer depth
+num_layers = 15
+
+# Feed-forward hidden dimension
+ffn_dim = 1024
+
+# Diffusion timesteps (denoising schedule length)
+num_timesteps = 100
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Supervised policy + value training
+# ---------------------------------------------------------------------------
+[phase1]
+
+lr = 3e-4
+batch_size = 1024
+warmup_epochs = 5
+weight_decay = 1e-4
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Diffusion world model bootstrapping
+# ---------------------------------------------------------------------------
+[phase2]
+
+epochs = 200
+lr = 3e-4
+batch_size = 128
+
+# Trajectory sequence length (consecutive board states per training example)
+seq_len = 10
+
+# Maximum game trajectories to extract from PGN
+max_trajectories = 50_000
+
+# ---------------------------------------------------------------------------
+# Phase 3 — RL self-play with MCTS
+# ---------------------------------------------------------------------------
+[phase3]
+
+generations = 1000
+games_per_gen = 100
+mcts_sims = 800
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+[output]
+
+# All checkpoints, state files, and TensorBoard logs go here
+dir = "outputs/"
+
+# Run name for TensorBoard (empty = auto-timestamp)
+run_name = ""
