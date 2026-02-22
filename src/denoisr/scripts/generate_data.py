@@ -36,6 +36,7 @@ from tqdm import tqdm
 from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.data.stockfish_oracle import StockfishOracle
+from denoisr.scripts.config import resolve_workers
 
 log = logging.getLogger(__name__)
 
@@ -449,8 +450,6 @@ def generate_to_file(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _default_num_workers() -> int:
-    return (os.cpu_count() or 1) * 2 + 1
 
 
 def main() -> None:
@@ -469,8 +468,8 @@ def main() -> None:
     parser.add_argument(
         "--workers",
         type=int,
-        default=_default_num_workers(),
-        help=f"Worker processes (default: cpu_count*2+1 = {_default_num_workers()})",
+        default=0,
+        help="Worker processes (0 = auto: cpu_count*2+1)",
     )
     parser.add_argument(
         "--output", type=str, default="outputs/training_data.pt"
@@ -516,7 +515,7 @@ def main() -> None:
         stockfish_path=stockfish_path,
         stockfish_depth=args.stockfish_depth,
         max_examples=args.max_examples,
-        num_workers=args.workers,
+        num_workers=resolve_workers(args.workers),
         policy_temperature=args.policy_temperature,
         label_smoothing=args.label_smoothing,
         chunksize=args.chunksize,

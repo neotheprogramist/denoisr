@@ -7,6 +7,7 @@ All tunable hyperparameters live here in two frozen dataclasses:
 
 import argparse
 import logging
+import os
 from argparse import ArgumentParser, Namespace
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -122,7 +123,7 @@ class TrainingConfig:
     # Enable cosine annealing with warm restarts (T_0=20, T_mult=2) instead
     # of plain CosineAnnealingLR. Periodically resets LR to help escape local
     # basins when training stalls.
-    use_warm_restarts: bool = False
+    use_warm_restarts: bool = True
 
     # -- Loss weights -------------------------------------------------------
     # These control the relative importance of each training objective.
@@ -171,7 +172,7 @@ class TrainingConfig:
     # When active, loss coefficients auto-adjust inversely proportional
     # to each loss's EMA magnitude, keeping all objectives balanced.
     # Recommended for Phase 2+ when all 6 losses are active.
-    use_harmony_dream: bool = False
+    use_harmony_dream: bool = True
 
     # EMA decay for tracking per-loss magnitudes in HarmonyDream.
     # Higher = smoother, slower adaptation. 0.99 means ~100 steps to
@@ -192,10 +193,9 @@ class TrainingConfig:
 
     # -- Data loading -------------------------------------------------------
 
-    # Number of DataLoader worker processes for parallel data loading.
-    # Higher values overlap CPU preprocessing with GPU compute.
-    # Set to 0 for debugging (single-process), 2-4 for typical training.
-    num_workers: int = 2
+    # DataLoader worker processes for parallel data loading (0 = auto:
+    # cpu_count * 2 + 1). Set to 1 for debugging (single-process).
+    workers: int = 0
 
     # -- Phase gates --------------------------------------------------------
 
@@ -259,22 +259,30 @@ class TrainingConfig:
 
     # -- Grokking detection ---------------------------------------------------
 
-    grok_tracking: bool = False
+    grok_tracking: bool = True
     grok_erank_freq: int = 1000
     grok_spectral_freq: int = 5000
     grok_onset_threshold: float = 0.95
 
     # -- Grokfast acceleration ------------------------------------------------
 
-    grokfast: bool = False
+    grokfast: bool = True
     grokfast_alpha: float = 0.98
     grokfast_lamb: float = 2.0
 
     # -- EMA shadow model evaluation ------------------------------------------
 
-    # EMA decay for shadow model evaluation. 0 = disabled. Common values:
-    # 0.999 for large datasets, 0.9999 for very long training.
-    ema_decay: float = 0.0
+    # EMA decay for shadow model evaluation. 0 = disabled.
+    # 0.999 for large datasets, 0.9999 for very long training. Enabled by
+    # default — the shadow model provides smoother evaluation metrics.
+    ema_decay: float = 0.999
+
+
+def resolve_workers(workers: int) -> int:
+    """Resolve worker count: 0 means auto (cpu_count * 2 + 1)."""
+    if workers > 0:
+        return workers
+    return max(1, (os.cpu_count() or 1) * 2 + 1)
 
 
 def detect_device() -> torch.device:
@@ -417,8 +425,8 @@ def add_training_args(parser: ArgumentParser) -> None:
     )
     g.add_argument(
         "--warm-restarts",
-        action=argparse.BooleanOptionalAction, default=False,
-        help="use cosine annealing with warm restarts (default: off)",
+        action=argparse.BooleanOptionalAction, default=True,
+        help="use cosine annealing with warm restarts (default: on)",
     )
     g.add_argument(
         "--threat-weight", type=float, default=0.1,
@@ -454,8 +462,8 @@ def add_training_args(parser: ArgumentParser) -> None:
     )
     g.add_argument(
         "--harmony-dream",
-        action=argparse.BooleanOptionalAction, default=False,
-        help="enable HarmonyDream dynamic loss balancing (default: off)",
+        action=argparse.BooleanOptionalAction, default=True,
+        help="enable HarmonyDream dynamic loss balancing (default: on)",
     )
     g.add_argument(
         "--harmony-ema-decay", type=float, default=0.99,
@@ -470,8 +478,8 @@ def add_training_args(parser: ArgumentParser) -> None:
         help="per-epoch multiplier for curriculum steps (default: 1.02)",
     )
     g.add_argument(
-        "--num-workers", type=int, default=2,
-        help="DataLoader worker processes (default: 2)",
+        "--workers", type=int, default=0,
+        help="DataLoader worker processes (0 = auto: cpu_count*2+1)",
     )
     g.add_argument(
         "--tqdm", action="store_true", default=False,
@@ -488,8 +496,8 @@ def add_training_args(parser: ArgumentParser) -> None:
     # Grokking detection
     g.add_argument(
         "--grok-tracking",
-        action=argparse.BooleanOptionalAction, default=False,
-        help="enable grokking detection metrics (default: off)",
+        action=argparse.BooleanOptionalAction, default=True,
+        help="enable grokking detection metrics (default: on)",
     )
     g.add_argument(
         "--grok-erank-freq", type=int, default=1000,
@@ -505,8 +513,8 @@ def add_training_args(parser: ArgumentParser) -> None:
     )
     g.add_argument(
         "--grokfast",
-        action=argparse.BooleanOptionalAction, default=False,
-        help="enable Grokfast EMA gradient filtering (default: off)",
+        action=argparse.BooleanOptionalAction, default=True,
+        help="enable Grokfast EMA gradient filtering (default: on)",
     )
     g.add_argument(
         "--grokfast-alpha", type=float, default=0.98,
@@ -518,8 +526,8 @@ def add_training_args(parser: ArgumentParser) -> None:
     )
     # EMA
     g.add_argument(
-        "--ema-decay", type=float, default=0.0,
-        help="EMA decay for shadow model evaluation (0=disabled, 0.999=typical)",
+        "--ema-decay", type=float, default=0.999,
+        help="EMA decay for shadow model evaluation (0=disabled, default: 0.999)",
     )
 
 
@@ -581,7 +589,7 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         harmony_ema_decay=args.harmony_ema_decay,
         curriculum_initial_fraction=args.curriculum_initial_fraction,
         curriculum_growth=args.curriculum_growth,
-        num_workers=args.num_workers,
+        workers=args.workers,
         phase1_gate=args.phase1_gate,
         phase2_gate=args.phase2_gate,
         grok_tracking=args.grok_tracking,

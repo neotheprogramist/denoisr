@@ -226,7 +226,9 @@ def step_generate_tier_data(
 
     stockfish_path = cfg.data.stockfish_path or shutil.which("stockfish") or ""
 
-    workers = cfg.data.workers if cfg.data.workers > 0 else max(1, (_cpu_count() * 2 + 1))
+    from denoisr.scripts.config import resolve_workers
+
+    workers = resolve_workers(cfg.data.workers)
 
     log.info(
         "Generating tier %d data (min_elo=%d, max_examples=%d, workers=%d)",
@@ -253,11 +255,6 @@ def step_generate_tier_data(
     log.info("Generated %d examples for tier %d at %s", count, tier_index, data_path)
 
 
-def _cpu_count() -> int:
-    """Return CPU count, defaulting to 1 if indeterminate."""
-    import os
-
-    return os.cpu_count() or 1
 
 
 # ---------------------------------------------------------------------------

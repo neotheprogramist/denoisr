@@ -1,5 +1,5 @@
 # Denoisr training pipeline configuration
-# Run with: uv run denoisr-train --config pipeline.toml
+# Run with: uv run denoisr-train
 #
 # All fields are optional. Omitted values use the defaults shown below.
 # Override individual values via CLI: --only fetch,sort,phase1
@@ -22,7 +22,7 @@ stockfish_path = ""
 stockfish_depth = 10
 
 # Training examples generated per Elo tier
-examples_per_tier = 200_000
+examples_per_tier = 2_000_000
 
 # Fraction of examples from tactical positions (captures, hanging pieces,
 # endgames). Higher values teach the model to handle critical moments.

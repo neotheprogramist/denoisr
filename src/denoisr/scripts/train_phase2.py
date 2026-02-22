@@ -36,6 +36,7 @@ from denoisr.scripts.config import (
     load_checkpoint,
     maybe_compile,
     resolve_gradient_checkpointing,
+    resolve_workers,
     save_checkpoint,
     training_config_from_args,
 )
@@ -307,7 +308,7 @@ def main() -> None:
     )
     loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=tcfg.num_workers,
+        num_workers=resolve_workers(tcfg.workers),
         pin_memory=(device.type == "cuda"),
         persistent_workers=True,
     )

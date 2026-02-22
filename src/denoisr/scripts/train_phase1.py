@@ -29,6 +29,7 @@ from denoisr.scripts.config import (
     load_checkpoint,
     maybe_compile,
     resolve_gradient_checkpointing,
+    resolve_workers,
     save_checkpoint,
     training_config_from_args,
 )
@@ -307,7 +308,7 @@ def main() -> None:
                 train_dataset,
                 batch_size=bs,
                 shuffle=True,
-                num_workers=tcfg.num_workers,
+                num_workers=resolve_workers(tcfg.workers),
                 pin_memory=(device.type == "cuda"),
                 persistent_workers=True,
             )
@@ -335,7 +336,7 @@ def main() -> None:
                 "policy_weight": tcfg.policy_weight,
                 "value_weight": tcfg.value_weight,
                 "use_harmony_dream": tcfg.use_harmony_dream,
-                "num_workers": tcfg.num_workers,
+                "workers": resolve_workers(tcfg.workers),
             },
             {"best_top1": 0.0},
         )

@@ -80,7 +80,7 @@ After seeing how the random model plays, train it through all three phases to pr
 The simplest way to train is the unified pipeline command. It handles data download, Elo sorting, model initialization, and all three training phases from a single TOML config:
 
 ```bash
-uv run denoisr-train --config pipeline.toml
+uv run denoisr-train
 ```
 
 A default `pipeline.toml` is included in the repo. All sections are optional -- defaults are shown:
@@ -91,7 +91,7 @@ pgn_url = "https://database.lichess.org/standard/lichess_db_standard_rated_2025-
 pgn_path = "data/lichess.pgn.zst"
 sorted_dir = "data/sorted/"
 stockfish_depth = 10
-examples_per_tier = 200_000
+examples_per_tier = 2_000_000
 tactical_fraction = 0.25
 
 [elo_curriculum]
@@ -133,20 +133,20 @@ The pipeline trains through 5 Elo tiers progressively (800+, 1200+, 1600+, 2000+
 
 ```bash
 # Resume from where you left off
-uv run denoisr-train --config pipeline.toml
+uv run denoisr-train
 
 # Start fresh, ignoring saved state
-uv run denoisr-train --config pipeline.toml --restart
+uv run denoisr-train --restart
 
 # Run only specific steps
-uv run denoisr-train --config pipeline.toml --only fetch,sort,init
+uv run denoisr-train --only fetch,sort,init
 ```
 
-| Flag        | Default         | Description                                                             |
-| ----------- | --------------- | ----------------------------------------------------------------------- |
-| `--config`  | `pipeline.toml` | Path to pipeline TOML config                                            |
-| `--restart` | off             | Ignore saved state and start fresh                                      |
-| `--only`    | (all steps)     | Comma-separated steps to run: `fetch,sort,init,phase1,phase2,phase3`    |
+| Flag        | Default         | Description                                                          |
+| ----------- | --------------- | -------------------------------------------------------------------- |
+| `--config`  | `pipeline.toml` | Path to pipeline TOML config                                         |
+| `--restart` | off             | Ignore saved state and start fresh                                   |
+| `--only`    | (all steps)     | Comma-separated steps to run: `fetch,sort,init,phase1,phase2,phase3` |
 
 ### Advanced: per-phase commands
 
@@ -327,17 +327,17 @@ Gen 51 self-play:  34%|██████▊             | 34/100 [08:12<15:55] 
 Gen 51/1000: buffer=5100 alpha=0.00 temp=0.220 W/D/L=48/21/31 reanalysed=450
 ```
 
-| Flag                  | Default             | Description                              |
-| --------------------- | ------------------- | ---------------------------------------- |
-| `--checkpoint`        | (required)          | Phase 2 checkpoint                       |
-| `--generations`       | `1000`              | Self-play generations                    |
-| `--games-per-gen`     | `100`               | Games per generation                     |
-| `--reanalyse-per-gen` | `50`                | Old games reanalysed per generation      |
-| `--mcts-sims`         | `800`               | MCTS simulations per move                |
-| `--buffer-capacity`   | `100000`            | Replay buffer capacity                   |
+| Flag                  | Default             | Description                               |
+| --------------------- | ------------------- | ----------------------------------------- |
+| `--checkpoint`        | (required)          | Phase 2 checkpoint                        |
+| `--generations`       | `1000`              | Self-play generations                     |
+| `--games-per-gen`     | `100`               | Games per generation                      |
+| `--reanalyse-per-gen` | `50`                | Old games reanalysed per generation       |
+| `--mcts-sims`         | `800`               | MCTS simulations per move                 |
+| `--buffer-capacity`   | `100000`            | Replay buffer capacity                    |
 | `--alpha-generations` | `50`                | Generations to transition MCTS->diffusion |
-| `--save-every`        | `10`                | Checkpoint every N generations           |
-| `--output`            | `outputs/phase3.pt` | Checkpoint path                          |
+| `--save-every`        | `10`                | Checkpoint every N generations            |
+| `--output`            | `outputs/phase3.pt` | Checkpoint path                           |
 
 Plus all [model architecture](#model-architecture-modelconfig), [training optimization](#training-optimization-trainingconfig), and [Phase 3 self-play](#phase-3-self-play-and-mcts-phase-3-only) flags.
 
@@ -520,17 +520,17 @@ Pass `--help` to any training command to see all available flags with defaults.
 
 These control the neural network structure. Changing them creates a new architecture — you cannot load a checkpoint trained with different values.
 
-| Flag                       | Default | What it controls                                                                                                                                                   |
-| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--d-s`                    | `256`   | Latent dimension per square token. All transformer layers use this width. Larger = more capacity but quadratic attention memory                                    |
-| `--num-heads`              | `8`     | Attention heads in the policy backbone. Must divide `d_s`. More heads = finer-grained attention patterns                                                           |
-| `--num-layers`             | `15`    | Policy backbone transformer depth. More layers = deeper positional reasoning. Matches Lc0 BT4                                                                      |
-| `--ffn-dim`                | `1024`  | Feed-forward hidden dim inside transformer blocks. Typically 4× `d_s`                                                                                              |
-| `--num-timesteps`          | `100`   | DDPM diffusion timesteps. More = finer noise schedule = better generation quality, but slower                                                                      |
-| `--world-model-layers`     | `12`    | World model transformer depth for latent dynamics prediction                                                                                                       |
-| `--diffusion-layers`       | `6`     | DiT denoiser depth. Fewer layers since it operates in latent space                                                                                                 |
-| `--proj-dim`               | `256`   | Consistency projector dimension for SimSiam collapse prevention                                                                                                    |
-| `--gradient-checkpointing` | off     | Trade compute for VRAM by recomputing activations in backward pass (~30% slower)                                                                                   |
+| Flag                       | Default | What it controls                                                                                                                |
+| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `--d-s`                    | `256`   | Latent dimension per square token. All transformer layers use this width. Larger = more capacity but quadratic attention memory |
+| `--num-heads`              | `8`     | Attention heads in the policy backbone. Must divide `d_s`. More heads = finer-grained attention patterns                        |
+| `--num-layers`             | `15`    | Policy backbone transformer depth. More layers = deeper positional reasoning. Matches Lc0 BT4                                   |
+| `--ffn-dim`                | `1024`  | Feed-forward hidden dim inside transformer blocks. Typically 4× `d_s`                                                           |
+| `--num-timesteps`          | `100`   | DDPM diffusion timesteps. More = finer noise schedule = better generation quality, but slower                                   |
+| `--world-model-layers`     | `12`    | World model transformer depth for latent dynamics prediction                                                                    |
+| `--diffusion-layers`       | `6`     | DiT denoiser depth. Fewer layers since it operates in latent space                                                              |
+| `--proj-dim`               | `256`   | Consistency projector dimension for SimSiam collapse prevention                                                                 |
+| `--gradient-checkpointing` | off     | Trade compute for VRAM by recomputing activations in backward pass (~30% slower)                                                |
 
 #### Training optimization (`TrainingConfig`)
 
@@ -862,19 +862,19 @@ Training proceeds in three phases, each gated on measurable quality thresholds t
 
 ## All available commands
 
-| Command                        | Description                                               |
-| ------------------------------ | --------------------------------------------------------- |
-| `uv run denoisr-train`         | **Full pipeline from TOML config** (recommended)          |
-| `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint          |
-| `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish               |
-| `uv run denoisr-sort-pgn`      | Sort PGN games into Elo-stratified `.pgn.zst` buckets     |
-| `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data          |
-| `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories          |
-| `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing       |
-| `uv run denoisr-play`          | UCI chess engine (single-pass or diffusion)               |
-| `uv run denoisr-benchmark`     | Parallel Elo benchmarking against Stockfish               |
-| `uv run denoisr-export-mlx`    | Export checkpoint to MLX safetensors for Apple Silicon     |
-| `uv run denoisr-gui`           | Chess GUI for play and engine-vs-engine matches           |
+| Command                        | Description                                            |
+| ------------------------------ | ------------------------------------------------------ |
+| `uv run denoisr-train`         | **Full pipeline from TOML config** (recommended)       |
+| `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint       |
+| `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish            |
+| `uv run denoisr-sort-pgn`      | Sort PGN games into Elo-stratified `.pgn.zst` buckets  |
+| `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data       |
+| `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories       |
+| `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing    |
+| `uv run denoisr-play`          | UCI chess engine (single-pass or diffusion)            |
+| `uv run denoisr-benchmark`     | Parallel Elo benchmarking against Stockfish            |
+| `uv run denoisr-export-mlx`    | Export checkpoint to MLX safetensors for Apple Silicon |
+| `uv run denoisr-gui`           | Chess GUI for play and engine-vs-engine matches        |
 
 All commands support `--help` for full flag documentation:
 

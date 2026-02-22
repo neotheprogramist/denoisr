@@ -15,7 +15,7 @@ class DataConfig:
     sorted_dir: str = "data/sorted/"
     stockfish_path: str = ""
     stockfish_depth: int = 10
-    examples_per_tier: int = 200_000
+    examples_per_tier: int = 2_000_000
     tactical_fraction: float = 0.25
     workers: int = 0
 

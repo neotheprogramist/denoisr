@@ -4,13 +4,13 @@ from denoisr.scripts.config import TrainingConfig, add_training_args, training_c
 
 
 class TestGrokConfig:
-    def test_default_grok_tracking_off(self) -> None:
+    def test_default_grok_tracking_on(self) -> None:
         cfg = TrainingConfig()
-        assert cfg.grok_tracking is False
+        assert cfg.grok_tracking is True
 
-    def test_default_grokfast_off(self) -> None:
+    def test_default_grokfast_on(self) -> None:
         cfg = TrainingConfig()
-        assert cfg.grokfast is False
+        assert cfg.grokfast is True
 
     def test_grok_fields_exist(self) -> None:
         cfg = TrainingConfig(
