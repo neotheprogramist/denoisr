@@ -88,11 +88,11 @@ A default `pipeline.toml` is included in the repo. All sections are optional -- 
 ```toml
 [data]
 pgn_url = "https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst"
-pgn_path = "data/lichess.pgn.zst"
-sorted_dir = "data/sorted/"
+data_dir = "data/"
 stockfish_depth = 10
 examples_per_tier = 2_000_000
 tactical_fraction = 0.25
+workers = 0
 
 [elo_curriculum]
 tiers = [800, 1200, 1600, 2000, 2400]
@@ -175,18 +175,18 @@ This is the same random model from the quick start -- if you already created it,
 
 #### Step 3: Generate training examples
 
-Data generation uses a memory-efficient two-pass streaming pipeline. Pass 1 counts positions from the PGN (fast, no Stockfish). Pass 2 streams positions through a worker pool into disk-backed numpy memory-mapped arrays, keeping RSS at ~4-8 GB even for tens of millions of examples. Each worker runs its own Stockfish instance. Generate once, then iterate on training without re-generating:
+Data generation reads pre-sorted `.games` files from `data_dir` using a memory-efficient streaming pipeline. Pass 1 counts positions across all `.games` files (fast, no Stockfish). Pass 2 streams positions through a worker pool into disk-backed numpy memory-mapped arrays, keeping RSS at ~4-8 GB even for tens of millions of examples. Each worker runs its own Stockfish instance. Generate once, then iterate on training without re-generating:
 
 ```bash
 uv run denoisr-generate-data \
-    --pgn data/lichess_db_standard_rated_2025-01.pgn.zst \
+    --data-dir data/ \
     --max-examples 1000000 \
     --output outputs/training_data.pt
 ```
 
 Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to override.
 
-Games below `--min-elo` (default 1200) are automatically filtered out. When the PGN contains more positions than `--max-examples`, positions are randomly sub-sampled across the entire file rather than taking the first N sequentially.
+Elo filtering is handled at the sort step (`denoisr-sort-pgn`), which produces `.games` files per Elo bucket. When the data contains more positions than `--max-examples`, positions are randomly sub-sampled across the entire dataset rather than taking the first N sequentially.
 
 **What you'll see:**
 
@@ -202,35 +202,32 @@ Done: 1000000 examples generated.
 **Elo-stratified generation** for balanced training across skill levels:
 
 ```bash
-# Step 1: Sort PGN by Elo into buckets
+# Step 1: Sort PGN by Elo into binary .games buckets
 uv run denoisr-sort-pgn \
-    --input data/lichess_db_standard_rated_2025-01.pgn.zst \
-    --output data/sorted/
+    --input data/raw.pgn.zst \
+    --output data/
 
-# Step 2: Generate from sorted buckets (round-robin across Elo ranges)
+# Step 2: Generate from .games buckets (round-robin across Elo ranges)
 uv run denoisr-generate-data \
-    --pgn data/lichess_db_standard_rated_2025-01.pgn.zst \
-    --elo-dir data/sorted/ \
+    --data-dir data/ \
     --tactical-fraction 0.25 \
     --max-examples 1000000 \
     --output outputs/training_data.pt
 ```
 
-| Flag                   | Default                    | Description                                                        |
-| ---------------------- | -------------------------- | ------------------------------------------------------------------ |
-| `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file                                  |
-| `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                                           |
-| `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)                         |
-| `--max-examples`       | `1000000`                  | Training examples to generate                                      |
-| `--workers`            | `cpu_count*2+1`            | Worker processes (each runs its own Stockfish)                     |
-| `--policy-temperature` | `80`                       | Softmax temperature for policy targets                             |
-| `--label-smoothing`    | `0.02`                     | Label smoothing epsilon for policy targets                         |
-| `--min-elo`            | `1200`                     | Minimum Elo to include games (min of white/black)                  |
-| `--elo-dir`            | (none)                     | Directory of Elo-sorted `.pgn.zst` files (from `denoisr-sort-pgn`) |
-| `--tactical-fraction`  | `0.25`                     | Target fraction of tactical positions (hanging pieces, endgames)   |
-| `--seed`               | (none)                     | Random seed for reproducible sampling                              |
-| `--chunksize`          | `64`                       | `imap_unordered` chunksize for worker batching                     |
-| `--output`             | `outputs/training_data.pt` | Output path for generated data                                     |
+| Flag                   | Default                    | Description                                                      |
+| ---------------------- | -------------------------- | ---------------------------------------------------------------- |
+| `--data-dir`           | (required)                 | Directory with `.games` files                                    |
+| `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                                         |
+| `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)                       |
+| `--max-examples`       | `1000000`                  | Training examples to generate                                    |
+| `--workers`            | `cpu_count*2+1`            | Worker processes (each runs its own Stockfish)                   |
+| `--policy-temperature` | `80`                       | Softmax temperature for policy targets                           |
+| `--label-smoothing`    | `0.02`                     | Label smoothing epsilon for policy targets                       |
+| `--tactical-fraction`  | `0.25`                     | Target fraction of tactical positions (hanging pieces, endgames) |
+| `--seed`               | (none)                     | Random seed for reproducible sampling                            |
+| `--chunksize`          | `64`                       | `imap_unordered` chunksize for worker batching                   |
+| `--output`             | `outputs/training_data.pt` | Output path for generated data                                   |
 
 #### Step 4: Phase 1 -- Supervised learning
 
@@ -275,7 +272,7 @@ Trains all 6 loss terms (policy, value, diffusion, world model state/reward, con
 ```bash
 uv run denoisr-train-phase2 \
     --checkpoint outputs/phase1.pt \
-    --pgn data/lichess_db_standard_rated_2025-01.pgn.zst \
+    --data-dir data/ \
     --max-trajectories 50000 \
     --epochs 200 \
     --output outputs/phase2.pt
@@ -291,18 +288,17 @@ Epoch 45/200: total_loss=0.0218 curriculum_steps=32
 
 Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 percentage points.
 
-| Flag                 | Default             | Description                                                 |
-| -------------------- | ------------------- | ----------------------------------------------------------- |
-| `--checkpoint`       | (required)          | Phase 1 checkpoint                                          |
-| `--pgn`              | (required)          | PGN file for trajectory extraction                          |
-| `--seq-len`          | `10`                | Board states per trajectory (9 future states for diffusion) |
-| `--max-trajectories` | `50000`             | Trajectories to extract                                     |
-| `--batch-size`       | `128`               | Batch size                                                  |
-| `--epochs`           | `200`               | Training epochs                                             |
-| `--lr`               | `3e-4`              | Learning rate                                               |
-| `--min-elo`          | `1200`              | Minimum Elo to include games (min of white/black)           |
-| `--output`           | `outputs/phase2.pt` | Checkpoint path                                             |
-| `--run-name`         | auto timestamp      | TensorBoard run name                                        |
+| Flag                 | Default             | Description                                                       |
+| -------------------- | ------------------- | ----------------------------------------------------------------- |
+| `--checkpoint`       | (required)          | Phase 1 checkpoint                                                |
+| `--data-dir`         | (required)          | Directory with `.games` files for trajectory extraction            |
+| `--seq-len`          | `10`                | Board states per trajectory (9 future states for diffusion)       |
+| `--max-trajectories` | `50000`             | Trajectories to extract                                           |
+| `--batch-size`       | `128`               | Batch size                                                        |
+| `--epochs`           | `200`               | Training epochs                                                   |
+| `--lr`               | `3e-4`              | Learning rate                                                     |
+| `--output`           | `outputs/phase2.pt` | Checkpoint path                                                   |
+| `--run-name`         | auto timestamp      | TensorBoard run name                                              |
 
 Plus all [model architecture](#model-architecture-modelconfig), [training optimization](#training-optimization-trainingconfig), and [diffusion curriculum](#diffusion-curriculum) flags.
 
@@ -544,7 +540,7 @@ These control how the model learns. Safe to change between runs without architec
 | `--encoder-lr-multiplier` | `1.0`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                             |
 | `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
 | `--warmup-epochs`         | `5`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
-| `--num-workers`           | `2`     | DataLoader worker processes. Set 0 for debugging, 2-4 for training                                                                                                  |
+| `--workers`               | `cpu_count*2+1` | Worker processes (0 = auto: cpu_count*2+1)                                                                                                                   |
 | `--warm-restarts`         | off     | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                            |
 | `--threat-weight`         | `0.1`   | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                                      |
 | `--tqdm`                  | off     | Show tqdm progress bars. Off by default for agent-friendly structured log output                                                                                    |
@@ -619,7 +615,7 @@ uv run denoisr-train-phase1 \
     --data outputs/training_data.pt \
     --batch-size 16 \
     --gradient-checkpointing \
-    --num-workers 0 \
+    --workers 0 \
     --run-name low-vram
 ```
 
@@ -867,7 +863,7 @@ Training proceeds in three phases, each gated on measurable quality thresholds t
 | `uv run denoisr-train`         | **Full pipeline from TOML config** (recommended)       |
 | `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint       |
 | `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish            |
-| `uv run denoisr-sort-pgn`      | Sort PGN games into Elo-stratified `.pgn.zst` buckets  |
+| `uv run denoisr-sort-pgn`      | Sort PGN games into Elo-stratified `.games` buckets    |
 | `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data       |
 | `uv run denoisr-train-phase2`  | Phase 2: Diffusion bootstrapping on trajectories       |
 | `uv run denoisr-train-phase3`  | Phase 3: RL self-play with MCTS-to-diffusion mixing    |
