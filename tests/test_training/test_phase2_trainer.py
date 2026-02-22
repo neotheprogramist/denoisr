@@ -208,21 +208,36 @@ class TestPhase2Trainer:
 
 class TestExtractTrajectories:
     @pytest.fixture
-    def pgn_file(self, tmp_path: Path) -> Path:
-        pgn = tmp_path / "test.pgn"
-        pgn.write_text(
-            '[Event "Test"]\n'
-            '[Result "1-0"]\n'
-            "\n"
-            "1. e2e4 e7e5 2. g1f3 b8c6 3. f1b5 a7a6 "
-            "4. b5a4 g8f6 5. e1g1 f8e7 *\n\n"
-        )
-        return pgn
+    def data_dir(self, tmp_path: Path) -> Path:
+        """Create a data_dir with a .games file containing one 10-move game."""
+        from denoisr.data.game_format import GameBatchWriter
+        from denoisr.types import Action, GameRecord
 
-    def test_returns_trajectory_batch(self, pgn_file: Path) -> None:
+        # 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7, result 1-0
+        actions = (
+            Action(from_square=12, to_square=28),   # e2e4
+            Action(from_square=52, to_square=36),   # e7e5
+            Action(from_square=6, to_square=21),    # g1f3
+            Action(from_square=57, to_square=42),   # b8c6
+            Action(from_square=5, to_square=33),    # f1b5
+            Action(from_square=48, to_square=40),   # a7a6
+            Action(from_square=33, to_square=24),   # b5a4
+            Action(from_square=62, to_square=45),   # g8f6
+            Action(from_square=4, to_square=6),     # e1g1 (O-O)
+            Action(from_square=61, to_square=52),   # f8e7
+        )
+        record = GameRecord(actions=actions, result=1.0)
+
+        d = tmp_path / "games"
+        d.mkdir()
+        with GameBatchWriter(d / "test.games") as w:
+            w.write(record)
+        return d
+
+    def test_returns_trajectory_batch(self, data_dir: Path) -> None:
         encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
-            pgn_file, encoder, seq_len=3, max_trajectories=100,
+            data_dir, encoder, seq_len=3, max_trajectories=100,
         )
         assert isinstance(batch, TrajectoryBatch)
         assert batch.boards.shape[1] == 3
@@ -232,11 +247,11 @@ class TestExtractTrajectories:
         assert batch.values.shape[1] == 3
 
     def test_policy_targets_are_one_hot(
-        self, pgn_file: Path,
+        self, data_dir: Path,
     ) -> None:
         encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
-            pgn_file, encoder, seq_len=3, max_trajectories=100,
+            data_dir, encoder, seq_len=3, max_trajectories=100,
         )
         for i in range(batch.policies.shape[0]):
             for t in range(batch.policies.shape[1]):
@@ -244,20 +259,20 @@ class TestExtractTrajectories:
                     pytest.approx(1.0)
                 )
 
-    def test_values_are_valid_wdl(self, pgn_file: Path) -> None:
+    def test_values_are_valid_wdl(self, data_dir: Path) -> None:
         encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
-            pgn_file, encoder, seq_len=3, max_trajectories=100,
+            data_dir, encoder, seq_len=3, max_trajectories=100,
         )
         for i in range(batch.values.shape[0]):
             assert batch.values[i].sum().item() == (
                 pytest.approx(1.0)
             )
 
-    def test_rewards_match_result(self, pgn_file: Path) -> None:
+    def test_rewards_match_result(self, data_dir: Path) -> None:
         encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
-            pgn_file, encoder, seq_len=3, max_trajectories=100,
+            data_dir, encoder, seq_len=3, max_trajectories=100,
         )
         # Game result is 1-0, so all rewards are +1 or -1
         for r in batch.rewards.flatten():
