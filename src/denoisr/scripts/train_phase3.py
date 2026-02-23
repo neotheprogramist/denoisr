@@ -10,6 +10,8 @@ trajectories with the latest model weights.
 import argparse
 import logging
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import torch
@@ -32,6 +34,7 @@ from denoisr.scripts.config import (
     detect_device,
     full_training_config_from_args,
     load_checkpoint,
+    resolve_dataloader_workers,
     save_checkpoint,
 )
 from denoisr.training.phase_orchestrator import PhaseConfig, PhaseOrchestrator
@@ -44,8 +47,15 @@ from denoisr.training.self_play import (
 )
 from denoisr.training.loss import ChessLossComputer
 from denoisr.training.supervised_trainer import SupervisedTrainer
+from denoisr.types import GameRecord, TrainingExample
 
 log = logging.getLogger(__name__)
+
+
+def _resolve_phase3_workers(requested: int, default_workers: int) -> int:
+    if requested > 0:
+        return max(1, requested)
+    return max(1, min(8, default_workers))
 
 
 def main() -> None:
@@ -61,6 +71,18 @@ def main() -> None:
     parser.add_argument("--alpha-generations", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--train-batch-size", type=int, default=256)
+    parser.add_argument(
+        "--self-play-workers",
+        type=int,
+        default=0,
+        help="Parallel self-play workers (0 = auto: min(8, --workers/auto))",
+    )
+    parser.add_argument(
+        "--reanalyse-workers",
+        type=int,
+        default=0,
+        help="Parallel reanalyse workers (0 = auto: min(8, --workers/auto))",
+    )
     parser.add_argument("--output", type=str, default="outputs/phase3.pt")
     parser.add_argument("--save-every", type=int, default=10)
     add_model_args(parser)
@@ -72,7 +94,19 @@ def main() -> None:
 
     device = detect_device()
     tcfg = full_training_config_from_args(args)
+    default_workers = resolve_dataloader_workers(tcfg.workers)
+    self_play_workers = _resolve_phase3_workers(
+        args.self_play_workers, default_workers
+    )
+    reanalyse_workers = _resolve_phase3_workers(
+        args.reanalyse_workers, default_workers
+    )
     log.info("device=%s", device)
+    log.info(
+        "phase3 parallel config: self_play_workers=%d reanalyse_workers=%d",
+        self_play_workers,
+        reanalyse_workers,
+    )
 
     # --- Load Phase 2 ---
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
@@ -154,6 +188,41 @@ def main() -> None:
         board_encoder=board_encoder,
         num_simulations=tcfg.reanalyse_simulations,
     )
+    _thread_local = threading.local()
+
+    def _get_thread_actor() -> SelfPlayActor:
+        thread_actor = getattr(_thread_local, "actor", None)
+        if thread_actor is None:
+            thread_actor = SelfPlayActor(
+                policy_value_fn=policy_value_fn,
+                world_model_fn=world_model_fn,
+                encode_fn=encode_fn,
+                game=ChessGame(),
+                board_encoder=build_board_encoder(cfg),
+                config=sp_config,
+            )
+            _thread_local.actor = thread_actor
+        return thread_actor
+
+    def _get_thread_reanalyser() -> ReanalyseActor:
+        thread_reanalyser = getattr(_thread_local, "reanalyser", None)
+        if thread_reanalyser is None:
+            thread_reanalyser = ReanalyseActor(
+                policy_value_fn=policy_value_fn,
+                world_model_fn=world_model_fn,
+                encode_fn=encode_fn,
+                game=ChessGame(),
+                board_encoder=build_board_encoder(cfg),
+                num_simulations=tcfg.reanalyse_simulations,
+            )
+            _thread_local.reanalyser = thread_reanalyser
+        return thread_reanalyser
+
+    def _play_game_parallel(generation: int) -> GameRecord:
+        return _get_thread_actor().play_game(generation=generation)
+
+    def _reanalyse_parallel(record: GameRecord) -> list[TrainingExample]:
+        return _get_thread_reanalyser().reanalyse(record)
 
     buffer = PriorityReplayBuffer(capacity=args.buffer_capacity)
     orchestrator = PhaseOrchestrator(
@@ -199,24 +268,47 @@ def main() -> None:
         # 1. Self-play
         results = {"wins": 0, "draws": 0, "losses": 0}
         sp_pbar = tqdm(
-            range(args.games_per_gen),
+            total=args.games_per_gen,
             desc=f"Gen {gen+1} self-play",
             leave=False,
             unit="game",
             smoothing=0.1,
         )
-        for _ in sp_pbar:
-            record = actor.play_game(generation=gen)
-            buffer.add(record, priority=1.0)
-            if record.result == 1.0:
-                results["wins"] += 1
-            elif record.result == -1.0:
-                results["losses"] += 1
-            else:
-                results["draws"] += 1
-            sp_pbar.set_postfix(
-                W=results["wins"], D=results["draws"], L=results["losses"]
-            )
+        if self_play_workers <= 1:
+            for _ in range(args.games_per_gen):
+                record = actor.play_game(generation=gen)
+                buffer.add(record, priority=1.0)
+                if record.result == 1.0:
+                    results["wins"] += 1
+                elif record.result == -1.0:
+                    results["losses"] += 1
+                else:
+                    results["draws"] += 1
+                sp_pbar.update(1)
+                sp_pbar.set_postfix(
+                    W=results["wins"], D=results["draws"], L=results["losses"]
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=self_play_workers) as executor:
+                futures = [
+                    executor.submit(_play_game_parallel, gen)
+                    for _ in range(args.games_per_gen)
+                ]
+                for future in as_completed(futures):
+                    record = future.result()
+                    buffer.add(record, priority=1.0)
+                    if record.result == 1.0:
+                        results["wins"] += 1
+                    elif record.result == -1.0:
+                        results["losses"] += 1
+                    else:
+                        results["draws"] += 1
+                    sp_pbar.update(1)
+                    sp_pbar.set_postfix(
+                        W=results["wins"],
+                        D=results["draws"],
+                        L=results["losses"],
+                    )
         sp_pbar.close()
 
         # 2. Reanalyse old games
@@ -225,17 +317,31 @@ def main() -> None:
         if len(buffer) >= args.reanalyse_per_gen:
             old_records = buffer.sample(args.reanalyse_per_gen)
             ra_pbar = tqdm(
-                old_records,
+                total=len(old_records),
                 desc=f"Gen {gen+1} reanalyse",
                 leave=False,
                 unit="game",
                 smoothing=0.1,
             )
-            for old_record in ra_pbar:
-                examples = reanalyser.reanalyse(old_record)
-                reanalyse_count += len(examples)
-                reanalysed_examples.extend(examples)
-                ra_pbar.set_postfix(examples=reanalyse_count)
+            if reanalyse_workers <= 1:
+                for old_record in old_records:
+                    examples = reanalyser.reanalyse(old_record)
+                    reanalyse_count += len(examples)
+                    reanalysed_examples.extend(examples)
+                    ra_pbar.update(1)
+                    ra_pbar.set_postfix(examples=reanalyse_count)
+            else:
+                with ThreadPoolExecutor(max_workers=reanalyse_workers) as executor:
+                    futures = [
+                        executor.submit(_reanalyse_parallel, old_record)
+                        for old_record in old_records
+                    ]
+                    for future in as_completed(futures):
+                        examples = future.result()
+                        reanalyse_count += len(examples)
+                        reanalysed_examples.extend(examples)
+                        ra_pbar.update(1)
+                        ra_pbar.set_postfix(examples=reanalyse_count)
             ra_pbar.close()
 
         # 3. Train on replay buffer batch
