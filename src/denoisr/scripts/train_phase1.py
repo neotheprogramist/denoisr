@@ -10,12 +10,15 @@ import argparse
 import logging
 import random
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from torch.amp import autocast  # type: ignore[attr-defined]
-from torch.utils.data import DataLoader
+from torch import Tensor
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from denoisr.scripts.config import (
@@ -33,7 +36,6 @@ from denoisr.scripts.config import (
     save_checkpoint,
     training_config_from_args,
 )
-from denoisr.data.holdout_splitter import StratifiedHoldoutSplitter
 from denoisr.training.dataset import ChessDataset
 from denoisr.training.ema import ModelEMA
 from denoisr.training.grok_tracker import GrokTracker
@@ -49,6 +51,66 @@ from denoisr.types.training import PolicyTarget, ValueTarget
 
 log = logging.getLogger(__name__)
 _CHUNK_FORMAT = "chunked_v1"
+_HOLDOUT_SPLIT_SEED = 42
+_GROK_HOLDOUT_SPLITS = ("random", "game_level", "opening_family", "piece_count")
+
+
+@dataclass(frozen=True)
+class _TensorDataShard:
+    path: Path | None
+    count: int
+    train_indices: Tensor
+    holdout_indices: Tensor
+
+
+@dataclass(frozen=True)
+class _TensorDataPlan:
+    shards: list[_TensorDataShard]
+    total_examples: int
+    train_examples: int
+    holdout_examples: int
+    single_data: dict[str, Any] | None
+    holdout_split_indices: dict[str, list[Tensor]]
+    holdout_split_counts: dict[str, int]
+
+
+class _IndexedTensorDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
+    """Dataset view over selected indices without copying full tensors."""
+
+    def __init__(
+        self,
+        boards: Tensor,
+        policies: Tensor,
+        values: Tensor,
+        indices: Tensor,
+        num_planes: int,
+        augment: bool = True,
+    ) -> None:
+        self._base = ChessDataset(
+            boards=boards,
+            policies=policies,
+            values=values,
+            num_planes=num_planes,
+            augment=augment,
+        )
+        self._indices = indices.to(dtype=torch.long, device="cpu")
+
+    def __len__(self) -> int:
+        return int(self._indices.numel())
+
+    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor, Tensor]:
+        base_idx = int(self._indices[idx].item())
+        return self._base[base_idx]
+
+
+def _load_pt_dict(path: Path, *, mmap: bool = False) -> dict[str, Any]:
+    load_kwargs: dict[str, Any] = {"weights_only": True}
+    if mmap:
+        load_kwargs["mmap"] = True
+    raw = torch.load(path, **load_kwargs)
+    if not isinstance(raw, dict):
+        raise ValueError(f"Unexpected training data format at {path}")
+    return raw
 
 
 def _unstack_tensor_dict(data: dict[str, Any]) -> list[TrainingExample]:
@@ -91,7 +153,7 @@ def _unstack_tensor_dict(data: dict[str, Any]) -> list[TrainingExample]:
 
 def _load_examples_from_data(path: Path) -> list[TrainingExample]:
     """Load examples from either legacy single-file or chunked manifest format."""
-    raw = torch.load(path, weights_only=True)
+    raw = _load_pt_dict(path, mmap=True)
     if isinstance(raw, dict) and raw.get("format") == _CHUNK_FORMAT:
         chunks = raw.get("chunks", [])
         if not isinstance(chunks, list):
@@ -104,9 +166,7 @@ def _load_examples_from_data(path: Path) -> list[TrainingExample]:
             if not isinstance(rel_path, str) or rel_path == "":
                 raise ValueError(f"Chunk metadata at index {idx} missing path")
             chunk_path = path.parent / rel_path
-            chunk_raw = torch.load(chunk_path, weights_only=True)
-            if not isinstance(chunk_raw, dict):
-                raise ValueError(f"Chunk file {chunk_path} is not a tensor dict")
+            chunk_raw = _load_pt_dict(chunk_path, mmap=True)
             all_examples.extend(_unstack_tensor_dict(chunk_raw))
         expected_total = raw.get("total_examples")
         if isinstance(expected_total, int) and expected_total != len(all_examples):
@@ -117,9 +177,336 @@ def _load_examples_from_data(path: Path) -> list[TrainingExample]:
             )
         return all_examples
 
-    if not isinstance(raw, dict):
-        raise ValueError(f"Unexpected training data format at {path}")
     return _unstack_tensor_dict(raw)
+
+
+def _split_indices(
+    count: int,
+    holdout_frac: float,
+    generator: torch.Generator,
+) -> tuple[Tensor, Tensor]:
+    if count <= 0:
+        return (
+            torch.empty(0, dtype=torch.long),
+            torch.empty(0, dtype=torch.long),
+        )
+    perm = torch.randperm(count, generator=generator)
+    holdout_n = max(1, int(count * holdout_frac))
+    if count > 1:
+        holdout_n = min(holdout_n, count - 1)
+    else:
+        holdout_n = 1
+    holdout_indices = perm[:holdout_n].contiguous()
+    train_indices = perm[holdout_n:].contiguous()
+    return train_indices, holdout_indices
+
+
+def _load_shard_payload(
+    plan: _TensorDataPlan,
+    shard: _TensorDataShard,
+) -> dict[str, Any]:
+    if shard.path is None:
+        if plan.single_data is None:
+            raise ValueError("Single-file tensor data missing in plan")
+        return plan.single_data
+    return _load_pt_dict(shard.path, mmap=True)
+
+
+def _load_shard_tensors(
+    plan: _TensorDataPlan,
+    shard: _TensorDataShard,
+) -> tuple[Tensor, Tensor, Tensor]:
+    raw = _load_shard_payload(plan, shard)
+    boards = raw.get("boards")
+    policies = raw.get("policies")
+    values = raw.get("values")
+    if not isinstance(boards, torch.Tensor):
+        raise ValueError("Tensor data missing 'boards'")
+    if not isinstance(policies, torch.Tensor):
+        raise ValueError("Tensor data missing 'policies'")
+    if not isinstance(values, torch.Tensor):
+        raise ValueError("Tensor data missing 'values'")
+    return boards, policies, values
+
+
+def _build_tensor_data_plan(
+    path: Path,
+    holdout_frac: float,
+    *,
+    grok_tracking: bool = False,
+    endgame_threshold: int = 6,
+) -> _TensorDataPlan:
+    raw = _load_pt_dict(path, mmap=True)
+    g = torch.Generator()
+    g.manual_seed(_HOLDOUT_SPLIT_SEED)
+
+    shards: list[_TensorDataShard] = []
+    single_data: dict[str, Any] | None = None
+
+    if raw.get("format") == _CHUNK_FORMAT:
+        chunks = raw.get("chunks", [])
+        if not isinstance(chunks, list):
+            raise ValueError("Chunked manifest has invalid 'chunks' field")
+        for idx, chunk_meta in enumerate(chunks):
+            if not isinstance(chunk_meta, dict):
+                raise ValueError(f"Chunk metadata at index {idx} is invalid")
+            rel_path = chunk_meta.get("path")
+            count = chunk_meta.get("count")
+            if not isinstance(rel_path, str) or rel_path == "":
+                raise ValueError(f"Chunk metadata at index {idx} missing path")
+            if not isinstance(count, int) or count < 0:
+                raise ValueError(
+                    f"Chunk metadata at index {idx} has invalid count"
+                )
+            train_idx, holdout_idx = _split_indices(count, holdout_frac, g)
+            shards.append(
+                _TensorDataShard(
+                    path=path.parent / rel_path,
+                    count=count,
+                    train_indices=train_idx,
+                    holdout_indices=holdout_idx,
+                )
+            )
+    else:
+        boards = raw.get("boards")
+        policies = raw.get("policies")
+        values = raw.get("values")
+        if not isinstance(boards, torch.Tensor):
+            raise ValueError("Training data missing tensor 'boards'")
+        if not isinstance(policies, torch.Tensor):
+            raise ValueError("Training data missing tensor 'policies'")
+        if not isinstance(values, torch.Tensor):
+            raise ValueError("Training data missing tensor 'values'")
+        count = int(boards.shape[0])
+        train_idx, holdout_idx = _split_indices(count, holdout_frac, g)
+        single_data = raw
+        shards.append(
+            _TensorDataShard(
+                path=None,
+                count=count,
+                train_indices=train_idx,
+                holdout_indices=holdout_idx,
+            )
+        )
+
+    holdout_split_indices: dict[str, list[Tensor]] = {
+        "random": [sh.holdout_indices for sh in shards]
+    }
+    holdout_split_counts: dict[str, int] = {
+        "random": sum(int(sh.holdout_indices.numel()) for sh in shards)
+    }
+
+    if grok_tracking:
+        total_examples = sum(sh.count for sh in shards)
+        game_ids = np.full(total_examples, -1, dtype=np.int64)
+        piece_counts = np.full(total_examples, -1, dtype=np.int32)
+        eco_families = np.zeros(total_examples, dtype=np.uint8)
+        shard_bounds: list[tuple[int, int]] = []
+
+        temp_plan = _TensorDataPlan(
+            shards=shards,
+            total_examples=0,
+            train_examples=0,
+            holdout_examples=0,
+            single_data=single_data,
+            holdout_split_indices={},
+            holdout_split_counts={},
+        )
+
+        offset = 0
+        for shard in shards:
+            start = offset
+            end = start + shard.count
+            shard_bounds.append((start, end))
+            raw_shard = _load_shard_payload(temp_plan, shard)
+
+            game_ids_tensor = raw_shard.get("game_ids")
+            if isinstance(game_ids_tensor, torch.Tensor):
+                if int(game_ids_tensor.shape[0]) != shard.count:
+                    raise ValueError(
+                        "Tensor data has mismatched 'game_ids' shape"
+                    )
+                game_ids[start:end] = game_ids_tensor.to(
+                    dtype=torch.int64, device="cpu"
+                ).numpy()
+
+            piece_counts_tensor = raw_shard.get("piece_counts")
+            if isinstance(piece_counts_tensor, torch.Tensor):
+                if int(piece_counts_tensor.shape[0]) != shard.count:
+                    raise ValueError(
+                        "Tensor data has mismatched 'piece_counts' shape"
+                    )
+                piece_counts[start:end] = piece_counts_tensor.to(
+                    dtype=torch.int32, device="cpu"
+                ).numpy()
+
+            eco_codes = raw_shard.get("eco_codes")
+            if isinstance(eco_codes, list):
+                if len(eco_codes) != shard.count:
+                    raise ValueError("Tensor data has mismatched 'eco_codes' size")
+                for local_idx, eco in enumerate(eco_codes):
+                    if isinstance(eco, str) and eco:
+                        eco_families[start + local_idx] = ord(eco[0].upper())
+            offset = end
+
+        rng = random.Random(_HOLDOUT_SPLIT_SEED)
+        excluded = np.zeros(total_examples, dtype=bool)
+        split_masks: dict[str, np.ndarray] = {}
+
+        piece_mask = (piece_counts >= 0) & (piece_counts <= endgame_threshold)
+        split_masks["piece_count"] = piece_mask.copy()
+        excluded |= piece_mask
+
+        unique_game_ids = [int(gid) for gid in np.unique(game_ids) if gid >= 0]
+        game_level_mask = np.zeros(total_examples, dtype=bool)
+        if len(unique_game_ids) >= 2:
+            holdout_game_count = max(1, int(len(unique_game_ids) * holdout_frac))
+            holdout_game_count = min(holdout_game_count, len(unique_game_ids) - 1)
+            holdout_game_ids = set(rng.sample(sorted(unique_game_ids), holdout_game_count))
+            game_level_mask = np.isin(game_ids, np.array(list(holdout_game_ids), dtype=np.int64))
+            game_level_mask &= ~excluded
+        split_masks["game_level"] = game_level_mask
+        excluded |= game_level_mask
+
+        unique_families = [int(code) for code in np.unique(eco_families) if code > 0]
+        opening_family_mask = np.zeros(total_examples, dtype=bool)
+        if len(unique_families) >= 2:
+            holdout_family_count = max(1, int(len(unique_families) * holdout_frac))
+            holdout_family_count = min(holdout_family_count, len(unique_families) - 1)
+            holdout_families = set(rng.sample(sorted(unique_families), holdout_family_count))
+            opening_family_mask = np.isin(
+                eco_families,
+                np.array(list(holdout_families), dtype=np.uint8),
+            )
+            opening_family_mask &= ~excluded
+        split_masks["opening_family"] = opening_family_mask
+        excluded |= opening_family_mask
+
+        holdout_n = max(1, int(total_examples * holdout_frac))
+        remaining_indices = np.flatnonzero(~excluded)
+        random_holdout_n = min(holdout_n, int(remaining_indices.size))
+        random_mask = np.zeros(total_examples, dtype=bool)
+        if random_holdout_n > 0:
+            random_holdout_indices = rng.sample(
+                remaining_indices.tolist(),
+                random_holdout_n,
+            )
+            random_mask[np.asarray(random_holdout_indices, dtype=np.int64)] = True
+        split_masks["random"] = random_mask
+        excluded |= random_mask
+
+        train_mask = ~excluded
+
+        def _mask_to_shard_indices(mask: np.ndarray) -> list[Tensor]:
+            result: list[Tensor] = []
+            for start, end in shard_bounds:
+                local_indices = np.flatnonzero(mask[start:end]).astype(np.int64)
+                if local_indices.size == 0:
+                    result.append(torch.empty(0, dtype=torch.long))
+                else:
+                    result.append(torch.from_numpy(local_indices.copy()))
+            return result
+
+        split_indices = {
+            name: _mask_to_shard_indices(mask)
+            for name, mask in split_masks.items()
+        }
+        train_indices = _mask_to_shard_indices(train_mask)
+        holdout_split_indices = {
+            name: split_indices[name]
+            for name in _GROK_HOLDOUT_SPLITS
+        }
+        holdout_split_counts = {
+            name: int(split_masks[name].sum())
+            for name in _GROK_HOLDOUT_SPLITS
+        }
+        shards = [
+            _TensorDataShard(
+                path=sh.path,
+                count=sh.count,
+                train_indices=train_indices[i],
+                holdout_indices=split_indices["random"][i],
+            )
+            for i, sh in enumerate(shards)
+        ]
+
+    total_examples = sum(sh.count for sh in shards)
+    train_examples = sum(int(sh.train_indices.numel()) for sh in shards)
+    holdout_examples = holdout_split_counts.get("random", 0)
+    return _TensorDataPlan(
+        shards=shards,
+        total_examples=total_examples,
+        train_examples=train_examples,
+        holdout_examples=holdout_examples,
+        single_data=single_data,
+        holdout_split_indices=holdout_split_indices,
+        holdout_split_counts=holdout_split_counts,
+    )
+
+
+def _measure_accuracy_from_indices(
+    trainer: SupervisedTrainer,
+    data_plan: _TensorDataPlan,
+    indices_by_shard: list[Tensor],
+    device: torch.device,
+    batch_size: int = 256,
+) -> tuple[float, float]:
+    trainer.encoder.eval()
+    trainer.backbone.eval()
+    trainer.policy_head.eval()
+
+    autocast_device = device.type if device.type in ("cuda", "cpu") else "cpu"
+    autocast_enabled = device.type == "cuda"
+
+    correct_1 = 0
+    correct_5 = 0
+    total = 0
+
+    with torch.no_grad(), autocast(autocast_device, enabled=autocast_enabled):
+        for shard_idx, shard in enumerate(data_plan.shards):
+            split_idx = indices_by_shard[shard_idx]
+            if split_idx.numel() == 0:
+                continue
+            boards, policies, _values = _load_shard_tensors(data_plan, shard)
+            n = int(split_idx.numel())
+            total += n
+            for i in range(0, n, batch_size):
+                batch_idx = split_idx[i : i + batch_size]
+                boards_batch = boards[batch_idx].to(device, non_blocking=True)
+                target_batch = policies[batch_idx].to(device, non_blocking=True)
+
+                latent = trainer.encoder(boards_batch)
+                features = trainer.backbone(latent)
+                logits = trainer.policy_head(features)
+
+                pred_flat = logits.reshape(len(batch_idx), -1)
+                target_flat = target_batch.reshape(len(batch_idx), -1)
+                legal_mask = target_flat > 0
+                masked_logits = pred_flat.masked_fill(~legal_mask, float("-inf"))
+                target_idx = target_flat.argmax(dim=-1)
+
+                top5 = masked_logits.topk(5, dim=-1).indices
+                correct_1 += (top5[:, 0] == target_idx).sum().item()
+                correct_5 += (
+                    (top5 == target_idx.unsqueeze(1)).any(dim=1).sum().item()
+                )
+
+    return correct_1 / max(total, 1), correct_5 / max(total, 1)
+
+
+def _measure_accuracy_from_plan(
+    trainer: SupervisedTrainer,
+    data_plan: _TensorDataPlan,
+    device: torch.device,
+    batch_size: int = 256,
+) -> tuple[float, float]:
+    return _measure_accuracy_from_indices(
+        trainer=trainer,
+        data_plan=data_plan,
+        indices_by_shard=[sh.holdout_indices for sh in data_plan.shards],
+        device=device,
+        batch_size=batch_size,
+    )
 
 
 def measure_accuracy(
@@ -219,38 +606,27 @@ def main() -> None:
     policy_head = maybe_compile(policy_head, device)
     value_head = maybe_compile(value_head, device)
 
-    # --- Load pre-generated data ---
-    all_examples = _load_examples_from_data(Path(args.data))
-    log.info("examples=%d  source=%s", len(all_examples), args.data)
-    random.shuffle(all_examples)
-
-    holdout_sets: dict[str, list[TrainingExample]] = {}
-    if tcfg.grok_tracking:
-        splitter = StratifiedHoldoutSplitter(
-            holdout_frac=args.holdout_frac,
-            endgame_threshold=6,
+    # --- Load pre-generated data (mmap + shard-index split to bound RAM) ---
+    data_plan = _build_tensor_data_plan(
+        Path(args.data),
+        args.holdout_frac,
+        grok_tracking=tcfg.grok_tracking,
+        endgame_threshold=6,
+    )
+    if data_plan.total_examples <= 0:
+        raise ValueError(f"No examples available in training data: {args.data}")
+    if data_plan.train_examples <= 0:
+        raise ValueError(
+            "No train examples available after holdout split; "
+            "reduce --holdout-frac or regenerate data with more examples."
         )
-        splits = splitter.split(all_examples)
-        train = splits.train
-        holdout_sets = {
-            "random": splits.random,
-            "game_level": splits.game_level,
-            "opening_family": splits.opening_family,
-            "piece_count": splits.piece_count,
-        }
-        holdout_sets = {k: v for k, v in holdout_sets.items() if v}
-        holdout = splits.random  # Primary holdout for phase gate
-        log.info(
-            "train=%d  holdout splits: %s",
-            len(train),
-            ", ".join(f"{k}={len(v)}" for k, v in holdout_sets.items()),
-        )
-    else:
-        holdout_n = max(1, int(len(all_examples) * args.holdout_frac))
-        holdout = all_examples[:holdout_n]
-        train = all_examples[holdout_n:]
-        holdout_sets = {"random": holdout}
-        log.info("train=%d  holdout=%d", len(train), holdout_n)
+    log.info("examples=%d  source=%s", data_plan.total_examples, args.data)
+    split_counts_msg = ", ".join(
+        f"{name}={data_plan.holdout_split_counts.get(name, 0)}"
+        for name in _GROK_HOLDOUT_SPLITS
+        if name in data_plan.holdout_split_counts
+    )
+    log.info("train=%d  holdout splits: %s", data_plan.train_examples, split_counts_msg)
 
     loss_fn = ChessLossComputer(
         policy_weight=tcfg.policy_weight,
@@ -320,32 +696,10 @@ def main() -> None:
                 on_state_transition=logger.log_grok_state_transition,
             )
             log.info("grok tracking enabled  erank_freq=%d  spectral_freq=%d", tcfg.grok_erank_freq, tcfg.grok_spectral_freq)
-        # --- Build DataLoader from stacked tensors ---
+        # --- Build shard stream config ---
         bs = args.batch_size
-        train_boards = torch.stack([ex.board.data for ex in train])
-        train_policies = torch.stack([ex.policy.data for ex in train])
-        train_values = torch.tensor(
-            [[ex.value.win, ex.value.draw, ex.value.loss] for ex in train],
-            dtype=torch.float32,
-        )
-
-        train_dataset = ChessDataset(
-            train_boards,
-            train_policies,
-            train_values,
-            num_planes=cfg.num_planes,
-            augment=True,
-        )
-        train_loader: DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
-            DataLoader(
-                train_dataset,
-                batch_size=bs,
-                shuffle=True,
-                num_workers=resolve_workers(tcfg.workers),
-                pin_memory=(device.type == "cuda"),
-                persistent_workers=True,
-            )
-        )
+        worker_count = resolve_workers(tcfg.workers)
+        pin_memory = device.type == "cuda"
 
         # --- Train ---
         best_acc = 0.0
@@ -369,7 +723,7 @@ def main() -> None:
                 "policy_weight": tcfg.policy_weight,
                 "value_weight": tcfg.value_weight,
                 "use_harmony_dream": tcfg.use_harmony_dream,
-                "workers": resolve_workers(tcfg.workers),
+                "workers": worker_count,
             },
             {"best_top1": 0.0},
         )
@@ -389,62 +743,92 @@ def main() -> None:
             data_time = 0.0
             compute_time = 0.0
 
-            pbar = tqdm(
-                train_loader,
-                desc=f"Epoch {epoch+1}/{args.epochs}",
-                leave=False,
-                smoothing=0.3,
-                disable=not use_tqdm,
-            )
-            data_start = time.monotonic()
-            for boards_batch, policies_batch, values_batch in pbar:
-                data_time += time.monotonic() - data_start
-
-                compute_start = time.monotonic()
-                loss, breakdown = trainer.train_step_tensors(
-                    boards_batch, policies_batch, values_batch
+            shard_order = torch.randperm(len(data_plan.shards)).tolist()
+            for shard_pos, shard_idx in enumerate(shard_order, start=1):
+                shard = data_plan.shards[shard_idx]
+                if shard.train_indices.numel() == 0:
+                    continue
+                boards, policies, values = _load_shard_tensors(data_plan, shard)
+                train_dataset = _IndexedTensorDataset(
+                    boards=boards,
+                    policies=policies,
+                    values=values,
+                    indices=shard.train_indices,
+                    num_planes=cfg.num_planes,
+                    augment=True,
                 )
-                if model_ema is not None:
-                    model_ema.update()
-                compute_time += time.monotonic() - compute_start
-
-                logger.log_train_step(global_step, loss, breakdown)
-                if "batch_top1" in breakdown:
-                    logger._writer.add_scalar("accuracy/batch_top1", breakdown["batch_top1"], global_step)
-                if grok_tracker is not None:
-                    grok_metrics = grok_tracker.step(
-                        global_step, breakdown, breakdown.get("grad_norm", 0.0)
+                train_loader: DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
+                    DataLoader(
+                        train_dataset,
+                        batch_size=bs,
+                        shuffle=True,
+                        num_workers=worker_count,
+                        pin_memory=pin_memory,
+                        persistent_workers=False,
                     )
-                    logger.log_grok_metrics(global_step, grok_metrics)
-                step_losses.append(loss)
-                policy_loss_sum += float(breakdown.get("policy", 0.0))
-                value_loss_sum += float(breakdown.get("value", 0.0))
-                if breakdown.get("overflow", False):
-                    overflow_count += 1
-                else:
-                    step_grad_norms.append(breakdown.get("grad_norm", 0.0))
-                if global_step % 100 == 0:
-                    logger.log_gpu(global_step)
-                    monitor.sample()
-                global_step += 1
-                epoch_loss += loss
-                num_batches += 1
-                pbar.set_postfix(
-                    loss=f"{loss:.4f}",
-                    policy=f"{breakdown['policy']:.4f}",
-                    value=f"{breakdown['value']:.4f}",
+                )
+                pbar = tqdm(
+                    train_loader,
+                    desc=(
+                        f"Epoch {epoch+1}/{args.epochs} "
+                        f"[shard {shard_pos}/{len(shard_order)}]"
+                    ),
+                    leave=False,
+                    smoothing=0.3,
+                    disable=not use_tqdm,
                 )
                 data_start = time.monotonic()
-            pbar.close()
+                for boards_batch, policies_batch, values_batch in pbar:
+                    data_time += time.monotonic() - data_start
+
+                    compute_start = time.monotonic()
+                    loss, breakdown = trainer.train_step_tensors(
+                        boards_batch, policies_batch, values_batch
+                    )
+                    if model_ema is not None:
+                        model_ema.update()
+                    compute_time += time.monotonic() - compute_start
+
+                    logger.log_train_step(global_step, loss, breakdown)
+                    if "batch_top1" in breakdown:
+                        logger._writer.add_scalar("accuracy/batch_top1", breakdown["batch_top1"], global_step)
+                    if grok_tracker is not None:
+                        grok_metrics = grok_tracker.step(
+                            global_step, breakdown, breakdown.get("grad_norm", 0.0)
+                        )
+                        logger.log_grok_metrics(global_step, grok_metrics)
+                    step_losses.append(loss)
+                    policy_loss_sum += float(breakdown.get("policy", 0.0))
+                    value_loss_sum += float(breakdown.get("value", 0.0))
+                    if breakdown.get("overflow", False):
+                        overflow_count += 1
+                    else:
+                        step_grad_norms.append(breakdown.get("grad_norm", 0.0))
+                    if global_step % 100 == 0:
+                        logger.log_gpu(global_step)
+                        monitor.sample()
+                    global_step += 1
+                    epoch_loss += loss
+                    num_batches += 1
+                    pbar.set_postfix(
+                        loss=f"{loss:.4f}",
+                        policy=f"{breakdown['policy']:.4f}",
+                        value=f"{breakdown['value']:.4f}",
+                    )
+                    data_start = time.monotonic()
+                pbar.close()
+                del train_loader, train_dataset, boards, policies, values
             trainer.scheduler_step()
 
             epoch_duration = time.monotonic() - epoch_start
-            samples_per_sec = len(train) / epoch_duration
+            samples_per_sec = data_plan.train_examples / max(epoch_duration, 1e-9)
             avg_loss = epoch_loss / max(num_batches, 1)
-            top1, top5 = measure_accuracy(trainer, holdout, device)
+            top1, top5 = _measure_accuracy_from_plan(trainer, data_plan, device)
             if model_ema is not None:
                 with model_ema.apply():
-                    ema_top1, _ = measure_accuracy(trainer, holdout, device)
+                    ema_top1, _ = _measure_accuracy_from_plan(
+                        trainer, data_plan, device
+                    )
                 log.info(
                     "EMA top1=%.2f%% (regular=%.2f%%)",
                     ema_top1 * 100, top1 * 100,
@@ -496,12 +880,20 @@ def main() -> None:
             # --- Grokking detection: evaluate all holdout splits ---
             if grok_tracker is not None:
                 holdout_results: dict[str, tuple[float, float]] = {}
-                for split_name, split_examples in holdout_sets.items():
-                    if split_examples:
-                        split_top1, _ = measure_accuracy(
-                            trainer, split_examples, device
+                for split_name in _GROK_HOLDOUT_SPLITS:
+                    split_count = data_plan.holdout_split_counts.get(split_name, 0)
+                    if split_count <= 0:
+                        continue
+                    if split_name == "random":
+                        split_top1 = top1
+                    else:
+                        split_top1, _ = _measure_accuracy_from_indices(
+                            trainer=trainer,
+                            data_plan=data_plan,
+                            indices_by_shard=data_plan.holdout_split_indices[split_name],
+                            device=device,
                         )
-                        holdout_results[split_name] = (split_top1, avg_loss)
+                    holdout_results[split_name] = (split_top1, avg_loss)
                 grok_epoch_metrics = grok_tracker.epoch(
                     epoch, avg_loss, holdout_results
                 )
