@@ -473,7 +473,7 @@ def main() -> None:
         "--workers",
         type=int,
         default=0,
-        help="Worker processes (0 = auto: cpu_count*2+1)",
+        help="Worker processes (0 = auto: 64)",
     )
     parser.add_argument(
         "--output", type=str, default="outputs/training_data.pt"

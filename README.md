@@ -199,7 +199,7 @@ Done: 1000000 examples generated.
 | `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                                         |
 | `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)                       |
 | `--max-examples`       | `1000000`                  | Training examples to generate                                    |
-| `--workers`            | `cpu_count*2+1`            | Worker processes (each runs its own Stockfish)                   |
+| `--workers`            | `64`                       | Worker processes (each runs its own Stockfish)                   |
 | `--policy-temperature` | `80`                       | Softmax temperature for policy targets                           |
 | `--label-smoothing`    | `0.02`                     | Label smoothing epsilon for policy targets                       |
 | `--tactical-fraction`  | `0.25`                     | Target fraction of tactical positions (hanging pieces, endgames) |
@@ -676,7 +676,7 @@ uv run denoisr-benchmark \
     --sprt-elo1 50
 ```
 
-Games run in parallel across `cpu_count*2+1` workers (each owning a persistent engine + Stockfish subprocess pair). A bundled 50-position opening book ensures game variety. Stockfish is auto-detected from PATH.
+Games run in parallel across `64` workers (each owning a persistent engine + Stockfish subprocess pair). A bundled 50-position opening book ensures game variety. Stockfish is auto-detected from PATH.
 
 ### Trained model vs random baseline with Elo estimation
 
@@ -774,7 +774,7 @@ outputs/pgn/
 | `--games`                | `100`                    | Number of games to play                    |
 | `--time-control`         | `10+0.1`                 | Base+increment seconds                     |
 | `--openings`             | bundled 50-position book | Path to EPD opening book                   |
-| `--concurrency`          | `cpu_count*2+1`          | Parallel game workers                      |
+| `--concurrency`          | `64`                    | Parallel game workers                      |
 | `--sprt-elo0`            | (none)                   | SPRT null hypothesis Elo difference        |
 | `--sprt-elo1`            | (none)                   | SPRT alternative hypothesis Elo difference |
 | `--pgn-out`              | (none)                   | Directory to save PGN files                |

@@ -235,6 +235,7 @@ def step_train_phase1(
         "--batch-size", str(cfg.phase1.batch_size),
         "--warmup-epochs", str(cfg.phase1.warmup_epochs),
         "--weight-decay", str(cfg.phase1.weight_decay),
+        "--tqdm",
         "--output", str(output_ckpt),
     ]
     if cfg.output.run_name:
@@ -284,6 +285,7 @@ def step_train_phase2(cfg: PipelineConfig, state: PipelineState) -> None:
         "--batch-size", str(cfg.phase2.batch_size),
         "--epochs", str(cfg.phase2.epochs),
         "--lr", str(cfg.phase2.lr),
+        "--tqdm",
         "--output", str(output_ckpt),
     ]
     if cfg.output.run_name:
@@ -327,6 +329,7 @@ def step_train_phase3(cfg: PipelineConfig, state: PipelineState) -> None:
         "--games-per-gen", str(cfg.phase3.games_per_gen),
         "--mcts-sims", str(cfg.phase3.mcts_sims),
         "--save-every", "1",
+        "--tqdm",
         "--output", str(output_ckpt),
     ]
 

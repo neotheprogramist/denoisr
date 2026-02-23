@@ -31,8 +31,8 @@ from denoisr.scripts.config import (
     detect_device,
     load_checkpoint,
     maybe_compile,
+    resolve_dataloader_workers,
     resolve_gradient_checkpointing,
-    resolve_workers,
     save_checkpoint,
     training_config_from_args,
 )
@@ -450,6 +450,8 @@ def _measure_accuracy_from_indices(
     indices_by_shard: list[Tensor],
     device: torch.device,
     batch_size: int = 256,
+    use_tqdm: bool = False,
+    progress_desc: str | None = None,
 ) -> tuple[float, float]:
     trainer.encoder.eval()
     trainer.backbone.eval()
@@ -461,6 +463,15 @@ def _measure_accuracy_from_indices(
     correct_1 = 0
     correct_5 = 0
     total = 0
+    total_eval = sum(int(idx.numel()) for idx in indices_by_shard)
+    eval_bar = tqdm(
+        total=total_eval,
+        desc=progress_desc or "Evaluating holdout",
+        unit="pos",
+        leave=False,
+        disable=(not use_tqdm) or (total_eval <= 0),
+        smoothing=0.3,
+    )
 
     with torch.no_grad(), autocast(autocast_device, enabled=autocast_enabled):
         for shard_idx, shard in enumerate(data_plan.shards):
@@ -490,6 +501,8 @@ def _measure_accuracy_from_indices(
                 correct_5 += (
                     (top5 == target_idx.unsqueeze(1)).any(dim=1).sum().item()
                 )
+                eval_bar.update(int(batch_idx.numel()))
+    eval_bar.close()
 
     return correct_1 / max(total, 1), correct_5 / max(total, 1)
 
@@ -499,6 +512,8 @@ def _measure_accuracy_from_plan(
     data_plan: _TensorDataPlan,
     device: torch.device,
     batch_size: int = 256,
+    use_tqdm: bool = False,
+    progress_desc: str | None = None,
 ) -> tuple[float, float]:
     return _measure_accuracy_from_indices(
         trainer=trainer,
@@ -506,6 +521,8 @@ def _measure_accuracy_from_plan(
         indices_by_shard=[sh.holdout_indices for sh in data_plan.shards],
         device=device,
         batch_size=batch_size,
+        use_tqdm=use_tqdm,
+        progress_desc=progress_desc,
     )
 
 
@@ -698,8 +715,14 @@ def main() -> None:
             log.info("grok tracking enabled  erank_freq=%d  spectral_freq=%d", tcfg.grok_erank_freq, tcfg.grok_spectral_freq)
         # --- Build shard stream config ---
         bs = args.batch_size
-        worker_count = resolve_workers(tcfg.workers)
+        worker_count = resolve_dataloader_workers(tcfg.workers)
         pin_memory = device.type == "cuda"
+        log.info(
+            "phase1 dataloader config: workers=%d  batch_size=%d  shards=%d",
+            worker_count,
+            bs,
+            len(data_plan.shards),
+        )
 
         # --- Train ---
         best_acc = 0.0
@@ -729,6 +752,7 @@ def main() -> None:
         )
 
         global_step = 0
+        consecutive_overflow_epochs = 0
 
         for epoch in range(args.epochs):
             epoch_loss = 0.0
@@ -823,11 +847,21 @@ def main() -> None:
             epoch_duration = time.monotonic() - epoch_start
             samples_per_sec = data_plan.train_examples / max(epoch_duration, 1e-9)
             avg_loss = epoch_loss / max(num_batches, 1)
-            top1, top5 = _measure_accuracy_from_plan(trainer, data_plan, device)
+            top1, top5 = _measure_accuracy_from_plan(
+                trainer,
+                data_plan,
+                device,
+                use_tqdm=use_tqdm,
+                progress_desc=f"Eval random E{epoch+1}",
+            )
             if model_ema is not None:
                 with model_ema.apply():
                     ema_top1, _ = _measure_accuracy_from_plan(
-                        trainer, data_plan, device
+                        trainer,
+                        data_plan,
+                        device,
+                        use_tqdm=use_tqdm,
+                        progress_desc=f"Eval random EMA E{epoch+1}",
                     )
                 log.info(
                     "EMA top1=%.2f%% (regular=%.2f%%)",
@@ -837,6 +871,34 @@ def main() -> None:
             head_lr = trainer.optimizer.param_groups[2]["lr"]
             avg_policy_loss = policy_loss_sum / max(num_batches, 1)
             avg_value_loss = value_loss_sum / max(num_batches, 1)
+            overflow_frac = overflow_count / max(num_batches, 1)
+
+            if overflow_frac > 0.25:
+                log.warning(
+                    (
+                        "High overflow rate in epoch %d: %.1f%% of batches "
+                        "(ovf=%d/%d). Training may stall; consider lowering "
+                        "lr or disabling/tuning Grokfast."
+                    ),
+                    epoch + 1,
+                    overflow_frac * 100.0,
+                    overflow_count,
+                    num_batches,
+                )
+            if overflow_count >= num_batches and num_batches > 0:
+                consecutive_overflow_epochs += 1
+            else:
+                consecutive_overflow_epochs = 0
+            stop_for_overflow = False
+            if consecutive_overflow_epochs >= 2:
+                log.error(
+                    (
+                        "All batches overflowed for %d consecutive epochs. "
+                        "Stopping early to avoid wasted compute."
+                    ),
+                    consecutive_overflow_epochs,
+                )
+                stop_for_overflow = True
 
             resource_metrics = monitor.summarize()
             resources: dict[str, str] | None = None
@@ -892,6 +954,8 @@ def main() -> None:
                             data_plan=data_plan,
                             indices_by_shard=data_plan.holdout_split_indices[split_name],
                             device=device,
+                            use_tqdm=use_tqdm,
+                            progress_desc=f"Eval {split_name} E{epoch+1}",
                         )
                     holdout_results[split_name] = (split_top1, avg_loss)
                 grok_epoch_metrics = grok_tracker.epoch(
@@ -929,6 +993,8 @@ def main() -> None:
                     "PHASE 1 GATE PASSED: top-1 accuracy %s > %s — ready for Phase 2",
                     f"{top1:.1%}", f"{tcfg.phase1_gate:.0%}",
                 )
+                break
+            if stop_for_overflow:
                 break
 
     if grok_tracker is not None:

@@ -26,6 +26,7 @@ from denoisr.nn.value_head import ChessValueHead
 from denoisr.nn.world_model import ChessWorldModel
 
 log = logging.getLogger(__name__)
+DEFAULT_AUTO_WORKERS = 64
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +194,8 @@ class TrainingConfig:
 
     # -- Data loading -------------------------------------------------------
 
-    # DataLoader worker processes for parallel data loading (0 = auto:
-    # cpu_count * 2 + 1). Set to 1 for debugging (single-process).
+    # DataLoader worker processes for parallel data loading (0 = auto: 64).
+    # Set to 1 for debugging (single-process).
     workers: int = 0
 
     # -- Phase gates --------------------------------------------------------
@@ -278,11 +279,37 @@ class TrainingConfig:
     ema_decay: float = 0.999
 
 
+def _detect_available_cpus() -> int:
+    """Best-effort count of logical CPUs available to this process."""
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            return max(1, len(os.sched_getaffinity(0)))
+        except Exception:  # noqa: BLE001
+            pass
+    return max(1, os.cpu_count() or 1)
+
+
 def resolve_workers(workers: int) -> int:
-    """Resolve worker count: 0 means auto (cpu_count * 2 + 1)."""
+    """Resolve process workers: 0 means auto (hardcoded default 64)."""
     if workers > 0:
         return workers
-    return max(1, (os.cpu_count() or 1) * 2 + 1)
+    return DEFAULT_AUTO_WORKERS
+
+
+def resolve_dataloader_workers(workers: int) -> int:
+    """Resolve DataLoader workers with hardcoded auto default and safety clamp."""
+    max_workers = _detect_available_cpus()
+    if workers <= 0:
+        return min(DEFAULT_AUTO_WORKERS, max_workers)
+    if workers > max_workers:
+        log.warning(
+            "Requested DataLoader workers=%d exceeds available CPUs=%d; clamping to %d",
+            workers,
+            max_workers,
+            max_workers,
+        )
+        return max_workers
+    return workers
 
 
 def detect_device() -> torch.device:
@@ -479,7 +506,7 @@ def add_training_args(parser: ArgumentParser) -> None:
     )
     g.add_argument(
         "--workers", type=int, default=0,
-        help="DataLoader worker processes (0 = auto: cpu_count*2+1)",
+        help="DataLoader worker processes (0 = auto: 64)",
     )
     g.add_argument(
         "--tqdm", action="store_true", default=False,

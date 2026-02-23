@@ -9,7 +9,6 @@ from __future__ import annotations
 import atexit
 import logging
 import multiprocessing
-import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,7 +137,7 @@ def _play_one_game(
 
 
 def _default_concurrency() -> int:
-    return (os.cpu_count() or 1) * 2 + 1
+    return 64
 
 
 @dataclass(frozen=True)

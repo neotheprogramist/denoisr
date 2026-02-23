@@ -234,7 +234,7 @@ def main() -> None:
         "--concurrency",
         type=int,
         default=_default_concurrency(),
-        help=f"Parallel games (default: cpu_count*2+1 = {_default_concurrency()})",
+        help=f"Parallel games (default: {_default_concurrency()})",
     )
     parser.add_argument("--sprt-elo0", type=float, default=None)
     parser.add_argument("--sprt-elo1", type=float, default=None)

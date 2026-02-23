@@ -35,8 +35,8 @@ from denoisr.scripts.config import (
     detect_device,
     load_checkpoint,
     maybe_compile,
+    resolve_dataloader_workers,
     resolve_gradient_checkpointing,
-    resolve_workers,
     save_checkpoint,
     training_config_from_args,
 )
@@ -292,11 +292,17 @@ def main() -> None:
         trajectory_data.values[:n_train],
         trajectory_data.rewards[:n_train],
     )
+    worker_count = resolve_dataloader_workers(tcfg.workers)
     loader = DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=resolve_workers(tcfg.workers),
+        num_workers=worker_count,
         pin_memory=(device.type == "cuda"),
         persistent_workers=True,
+    )
+    log.info(
+        "phase2 dataloader config: workers=%d  batch_size=%d",
+        worker_count,
+        args.batch_size,
     )
 
     monitor = ResourceMonitor()

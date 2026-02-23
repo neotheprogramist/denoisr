@@ -23,7 +23,7 @@ max_examples = 2_000_000
 
 # Data generation worker count.
 # Set explicitly to use all available CPU workers on this machine.
-workers = 129
+workers = 64
 
 # Directory for temporary memmap files during generation.
 scratch_dir = "outputs/scratch"

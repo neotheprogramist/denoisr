@@ -1,6 +1,8 @@
 """Pipeline runner: orchestrates step execution with resume support."""
 
 import logging
+import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -58,47 +60,101 @@ class PipelineRunner:
         self.state.updated_at = datetime.now(timezone.utc).isoformat()
         self.state.save(self.state_path)
 
+    def _run_timed_step(self, step_label: str, fn: Callable[[], None]) -> None:
+        """Run one step and log elapsed wall time."""
+        started = time.monotonic()
+        log.info("%s", step_label)
+        fn()
+        elapsed = time.monotonic() - started
+        log.info("%s complete (%.1fs)", step_label, elapsed)
+
     def run(self) -> None:
         """Execute the pipeline steps in sequence, skipping completed work."""
         self._save_state()
 
-        if self._should_run("fetch") and self.state.phase in ("init", ""):
-            log.info("=== Step 1: Fetch data ===")
-            step_fetch_data(self.cfg, self.state)
+        if not self._should_run("fetch"):
+            log.info("=== Step 1: Fetch data === skipped (--only)")
+        elif self.state.phase not in ("init", ""):
+            log.info("=== Step 1: Fetch data === skipped (phase=%s)", self.state.phase)
+        else:
+            self._run_timed_step(
+                "=== Step 1: Fetch data ===",
+                lambda: step_fetch_data(self.cfg, self.state),
+            )
             self._save_state()
 
-        if self._should_run("init") and self.state.phase in (
+        if not self._should_run("init"):
+            log.info("=== Step 2: Initialize model === skipped (--only)")
+        elif self.state.phase not in (
             "fetched",
             "init",
             "",
         ):
-            log.info("=== Step 2: Initialize model ===")
-            step_init_model(self.cfg, self.state)
+            log.info(
+                "=== Step 2: Initialize model === skipped (phase=%s)",
+                self.state.phase,
+            )
+        else:
+            self._run_timed_step(
+                "=== Step 2: Initialize model ===",
+                lambda: step_init_model(self.cfg, self.state),
+            )
             self._save_state()
 
-        if self._should_run("phase1") and self.state.phase not in (
+        if not self._should_run("phase1"):
+            log.info("=== Step 3: Generate training data === skipped (--only)")
+            log.info("=== Step 4: Phase 1 training === skipped (--only)")
+        elif self.state.phase in (
             "phase1_complete",
             "phase2_complete",
             "phase3_complete",
         ):
-            log.info("=== Step 3: Generate training data ===")
-            step_generate_data(self.cfg, self.state)
+            log.info(
+                "=== Step 3: Generate training data === skipped (phase=%s)",
+                self.state.phase,
+            )
+            log.info(
+                "=== Step 4: Phase 1 training === skipped (phase=%s)",
+                self.state.phase,
+            )
+        else:
+            self._run_timed_step(
+                "=== Step 3: Generate training data ===",
+                lambda: step_generate_data(self.cfg, self.state),
+            )
             self._save_state()
-            log.info("=== Step 4: Phase 1 training ===")
-            step_train_phase1(self.cfg, self.state)
+            self._run_timed_step(
+                "=== Step 4: Phase 1 training ===",
+                lambda: step_train_phase1(self.cfg, self.state),
+            )
             self._save_state()
 
-        if self._should_run("phase2") and self.state.phase not in (
+        if not self._should_run("phase2"):
+            log.info("=== Step 5: Phase 2: Diffusion bootstrapping === skipped (--only)")
+        elif self.state.phase in (
             "phase2_complete",
             "phase3_complete",
         ):
-            log.info("=== Step 5: Phase 2: Diffusion bootstrapping ===")
-            step_train_phase2(self.cfg, self.state)
+            log.info(
+                "=== Step 5: Phase 2: Diffusion bootstrapping === skipped (phase=%s)",
+                self.state.phase,
+            )
+        else:
+            self._run_timed_step(
+                "=== Step 5: Phase 2: Diffusion bootstrapping ===",
+                lambda: step_train_phase2(self.cfg, self.state),
+            )
             self._save_state()
 
-        if self._should_run("phase3") and self.state.phase != "phase3_complete":
-            log.info("=== Step 6: Phase 3: RL self-play ===")
-            step_train_phase3(self.cfg, self.state)
+        if not self._should_run("phase3"):
+            log.info("=== Step 6: Phase 3: RL self-play === skipped (--only)")
+        elif self.state.phase == "phase3_complete":
+            log.info("=== Step 6: Phase 3: RL self-play === skipped (already complete)")
+        else:
+            self._run_timed_step(
+                "=== Step 6: Phase 3: RL self-play ===",
+                lambda: step_train_phase3(self.cfg, self.state),
+            )
             self._save_state()
 
         log.info(
