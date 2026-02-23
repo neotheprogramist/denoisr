@@ -108,7 +108,7 @@ warmup_epochs = 5
 [phase2]
 epochs = 200
 lr = 3e-4
-batch_size = 128
+batch_size = 1024
 seq_len = 10
 max_trajectories = 50_000
 
@@ -272,7 +272,7 @@ Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 pe
 | `--pgn`              | (required)          | PGN file for trajectory extraction                          |
 | `--seq-len`          | `10`                | Board states per trajectory (9 future states for diffusion) |
 | `--max-trajectories` | `50000`             | Trajectories to extract                                     |
-| `--batch-size`       | `128`               | Batch size                                                  |
+| `--batch-size`       | `1024`              | Batch size                                                  |
 | `--epochs`           | `200`               | Training epochs                                             |
 | `--lr`               | `3e-4`              | Learning rate                                               |
 | `--output`           | `outputs/phase2.pt` | Checkpoint path                                             |

@@ -167,7 +167,7 @@ def main() -> None:
     )
     parser.add_argument("--seq-len", type=int, default=10)
     parser.add_argument("--max-trajectories", type=int, default=50_000)
-    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--output", type=str, default="outputs/phase2.pt")

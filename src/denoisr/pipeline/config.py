@@ -41,7 +41,7 @@ class Phase1Config:
 class Phase2Config:
     epochs: int = 200
     lr: float = 3e-4
-    batch_size: int = 128
+    batch_size: int = 1024
     seq_len: int = 10
     max_trajectories: int = 50_000
 
