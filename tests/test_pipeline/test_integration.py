@@ -86,17 +86,16 @@ def test_pipeline_init_model_and_resume(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2. Full placeholder run
+# 2. Full pipeline run with training steps mocked
 # ---------------------------------------------------------------------------
 
 
-def test_pipeline_full_placeholder_run(tmp_path: Path) -> None:
-    """Run the full pipeline with external steps mocked; verify phase3_complete."""
+def test_pipeline_full_run_with_mocked_training(tmp_path: Path) -> None:
+    """Run the full pipeline with data/training externalities mocked."""
     cfg = _make_cfg(tmp_path)
 
-    # Mock only external-facing steps: fetch, generate_data.
-    # step_init_model is real (creates a tiny model), and the phase1/2/3
-    # training placeholders are real (they just update state).
+    # Mock external-facing steps.
+    # step_init_model is real (creates a tiny model).
     def _fake_fetch(c: PipelineConfig, s: PipelineState) -> None:
         s.phase = "fetched"
 
@@ -106,9 +105,30 @@ def test_pipeline_full_placeholder_run(tmp_path: Path) -> None:
         out.write_bytes(b"fake")
         s.last_data = str(out)
 
+    def _fake_p1(c: PipelineConfig, s: PipelineState) -> None:
+        out = Path(c.output.dir) / "phase1.pt"
+        out.write_bytes(b"phase1")
+        s.last_checkpoint = str(out)
+        s.phase = "phase1_complete"
+
+    def _fake_p2(c: PipelineConfig, s: PipelineState) -> None:
+        out = Path(c.output.dir) / "phase2.pt"
+        out.write_bytes(b"phase2")
+        s.last_checkpoint = str(out)
+        s.phase = "phase2_complete"
+
+    def _fake_p3(c: PipelineConfig, s: PipelineState) -> None:
+        out = Path(c.output.dir) / "phase3.pt"
+        out.write_bytes(b"phase3")
+        s.last_checkpoint = str(out)
+        s.phase = "phase3_complete"
+
     with (
         patch(f"{_RUNNER}.step_fetch_data", side_effect=_fake_fetch),
         patch(f"{_RUNNER}.step_generate_data", side_effect=_fake_generate),
+        patch(f"{_RUNNER}.step_train_phase1", side_effect=_fake_p1),
+        patch(f"{_RUNNER}.step_train_phase2", side_effect=_fake_p2),
+        patch(f"{_RUNNER}.step_train_phase3", side_effect=_fake_p3),
     ):
         runner = PipelineRunner(cfg)
         runner.run()
@@ -215,12 +235,20 @@ def test_pipeline_only_phase1(tmp_path: Path) -> None:
         out.write_bytes(b"fake")
         s.last_data = str(out)
 
+    def _fake_p1(c: PipelineConfig, s: PipelineState) -> None:
+        out = Path(c.output.dir) / "phase1.pt"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"phase1")
+        s.last_checkpoint = str(out)
+        s.phase = "phase1_complete"
+
     with (
         patch(f"{_RUNNER}.step_fetch_data") as m_fetch,
         patch(f"{_RUNNER}.step_init_model") as m_init,
         patch(
             f"{_RUNNER}.step_generate_data", side_effect=_fake_generate
         ) as m_gen,
+        patch(f"{_RUNNER}.step_train_phase1", side_effect=_fake_p1) as m_p1,
         patch(f"{_RUNNER}.step_train_phase2") as m_p2,
         patch(f"{_RUNNER}.step_train_phase3") as m_p3,
     ):
@@ -237,4 +265,5 @@ def test_pipeline_only_phase1(tmp_path: Path) -> None:
 
     # Generate + phase1 training should be called
     m_gen.assert_called_once()
+    m_p1.assert_called_once()
     assert runner.state.phase == "phase1_complete"

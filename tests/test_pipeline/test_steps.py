@@ -192,13 +192,31 @@ def test_generate_data_skips_when_exists(tmp_path: Path) -> None:
 
 
 def test_train_phase1_updates_state(tmp_path: Path) -> None:
-    """Placeholder phase1 training updates state phase."""
+    """Phase 1 step launches training and updates pipeline state."""
     cfg = _make_cfg(tmp_path)
-    state = PipelineState(phase="model_initialized")
+    output_dir = Path(cfg.output.dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    init_ckpt = output_dir / "init_model.pt"
+    init_ckpt.write_bytes(b"init")
+    data_path = output_dir / "training_data.pt"
+    data_path.write_bytes(b"data")
+    state = PipelineState(
+        phase="model_initialized",
+        last_checkpoint=str(init_ckpt),
+        last_data=str(data_path),
+    )
 
-    step_train_phase1(cfg, state)
+    def _fake_run(cmd: list[str], check: bool) -> None:
+        assert check
+        assert "denoisr.scripts.train_phase1" in cmd
+        (output_dir / "phase1.pt").write_bytes(b"phase1")
+
+    with patch("subprocess.run", side_effect=_fake_run) as mock_run:
+        step_train_phase1(cfg, state)
+        mock_run.assert_called_once()
 
     assert state.phase == "phase1_complete"
+    assert state.last_checkpoint == str(output_dir / "phase1.pt")
     assert state.updated_at != ""
 
 
@@ -206,13 +224,31 @@ def test_train_phase1_updates_state(tmp_path: Path) -> None:
 
 
 def test_train_phase2_updates_state(tmp_path: Path) -> None:
-    """Placeholder phase2 training updates state phase."""
+    """Phase 2 step launches training and updates pipeline state."""
     cfg = _make_cfg(tmp_path)
-    state = PipelineState(phase="phase1_complete")
+    output_dir = Path(cfg.output.dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    phase1_ckpt = output_dir / "phase1.pt"
+    phase1_ckpt.write_bytes(b"phase1")
+    pgn_path = Path(cfg.data.pgn_path)
+    pgn_path.parent.mkdir(parents=True, exist_ok=True)
+    pgn_path.write_text("fake pgn")
+    state = PipelineState(
+        phase="phase1_complete",
+        last_checkpoint=str(phase1_ckpt),
+    )
 
-    step_train_phase2(cfg, state)
+    def _fake_run(cmd: list[str], check: bool) -> None:
+        assert check
+        assert "denoisr.scripts.train_phase2" in cmd
+        (output_dir / "phase2.pt").write_bytes(b"phase2")
+
+    with patch("subprocess.run", side_effect=_fake_run) as mock_run:
+        step_train_phase2(cfg, state)
+        mock_run.assert_called_once()
 
     assert state.phase == "phase2_complete"
+    assert state.last_checkpoint == str(output_dir / "phase2.pt")
     assert state.updated_at != ""
 
 
@@ -220,13 +256,28 @@ def test_train_phase2_updates_state(tmp_path: Path) -> None:
 
 
 def test_train_phase3_updates_state(tmp_path: Path) -> None:
-    """Placeholder phase3 training updates state phase."""
+    """Phase 3 step launches training and updates pipeline state."""
     cfg = _make_cfg(tmp_path)
-    state = PipelineState(phase="phase2_complete")
+    output_dir = Path(cfg.output.dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    phase2_ckpt = output_dir / "phase2.pt"
+    phase2_ckpt.write_bytes(b"phase2")
+    state = PipelineState(
+        phase="phase2_complete",
+        last_checkpoint=str(phase2_ckpt),
+    )
 
-    step_train_phase3(cfg, state)
+    def _fake_run(cmd: list[str], check: bool) -> None:
+        assert check
+        assert "denoisr.scripts.train_phase3" in cmd
+        (output_dir / "phase3.pt").write_bytes(b"phase3")
+
+    with patch("subprocess.run", side_effect=_fake_run) as mock_run:
+        step_train_phase3(cfg, state)
+        mock_run.assert_called_once()
 
     assert state.phase == "phase3_complete"
+    assert state.last_checkpoint == str(output_dir / "phase3.pt")
     assert state.updated_at != ""
 
 
@@ -250,15 +301,38 @@ def test_state_persists_after_init_model(tmp_path: Path) -> None:
 
 
 def test_state_persists_full_pipeline_phases(tmp_path: Path) -> None:
-    """State survives save/load after cycling through all placeholder phases."""
+    """State survives save/load after cycling through all training phases."""
     cfg = _make_cfg(tmp_path)
     state = PipelineState()
 
     # Simulate the full phase progression
     step_init_model(cfg, state)
-    step_train_phase1(cfg, state)
-    step_train_phase2(cfg, state)
-    step_train_phase3(cfg, state)
+    output_dir = Path(cfg.output.dir)
+    data_path = output_dir / "training_data.pt"
+    data_path.write_bytes(b"data")
+    state.last_data = str(data_path)
+    pgn_path = Path(cfg.data.pgn_path)
+    pgn_path.parent.mkdir(parents=True, exist_ok=True)
+    pgn_path.write_text("fake pgn")
+
+    def _fake_run(cmd: list[str], check: bool) -> None:
+        assert check
+        cmd_str = " ".join(cmd)
+        if "denoisr.scripts.train_phase1" in cmd_str:
+            (output_dir / "phase1.pt").write_bytes(b"phase1")
+            return
+        if "denoisr.scripts.train_phase2" in cmd_str:
+            (output_dir / "phase2.pt").write_bytes(b"phase2")
+            return
+        if "denoisr.scripts.train_phase3" in cmd_str:
+            (output_dir / "phase3.pt").write_bytes(b"phase3")
+            return
+        raise AssertionError(f"unexpected command: {cmd_str}")
+
+    with patch("subprocess.run", side_effect=_fake_run):
+        step_train_phase1(cfg, state)
+        step_train_phase2(cfg, state)
+        step_train_phase3(cfg, state)
 
     # Save and reload
     state_path = tmp_path / "state.json"

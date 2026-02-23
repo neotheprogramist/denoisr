@@ -10,7 +10,9 @@ and mutate *state* in place to record progress.
 """
 
 import logging
+import subprocess
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +20,13 @@ from denoisr.pipeline.config import PipelineConfig
 from denoisr.pipeline.state import PipelineState
 
 log = logging.getLogger(__name__)
+
+
+def _run_python_module(module: str, args: list[str]) -> None:
+    """Run a project Python module in a subprocess."""
+    cmd = [sys.executable, "-m", module, *args]
+    log.info("Running: %s", " ".join(cmd))
+    subprocess.run(cmd, check=True)
 
 
 # ---------------------------------------------------------------------------
@@ -37,8 +46,6 @@ def step_fetch_data(cfg: PipelineConfig, state: PipelineState) -> None:
         state.phase = "fetched"
         state.updated_at = datetime.now(timezone.utc).isoformat()
         return
-
-    import subprocess
 
     log.info("Downloading PGN from %s to %s", cfg.data.pgn_url, pgn_path)
     pgn_path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,7 +198,7 @@ def step_generate_data(
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Train Phase 1 (PLACEHOLDER)
+# Step 4: Train Phase 1
 # ---------------------------------------------------------------------------
 
 
@@ -199,66 +206,135 @@ def step_train_phase1(
     cfg: PipelineConfig,
     state: PipelineState,
 ) -> None:
-    """Train Phase 1 (supervised policy + value).
+    """Train Phase 1 (supervised policy + value) and persist checkpoint."""
+    output_dir = Path(cfg.output.dir)
+    output_ckpt = output_dir / "phase1.pt"
+    if output_ckpt.exists():
+        log.info("Phase 1 checkpoint already exists at %s, skipping", output_ckpt)
+        state.last_checkpoint = str(output_ckpt)
+        state.phase = "phase1_complete"
+        state.updated_at = datetime.now(timezone.utc).isoformat()
+        return
 
-    PLACEHOLDER: logs the parameters and updates state without
-    performing actual training.  Will be replaced with the real
-    supervised training loop.
-    """
-    log.info(
-        "PLACEHOLDER: Phase 1 training (lr=%s, batch_size=%d)",
-        cfg.phase1.lr,
-        cfg.phase1.batch_size,
-    )
+    if not state.last_checkpoint:
+        raise ValueError("Phase 1 requires an initialized checkpoint in state.last_checkpoint")
+    init_ckpt = Path(state.last_checkpoint)
+    if not init_ckpt.exists():
+        raise FileNotFoundError(f"Phase 1 input checkpoint not found: {init_ckpt}")
 
+    if not state.last_data:
+        raise ValueError("Phase 1 requires generated data in state.last_data")
+    data_path = Path(state.last_data)
+    if not data_path.exists():
+        raise FileNotFoundError(f"Phase 1 data file not found: {data_path}")
+
+    args = [
+        "--checkpoint", str(init_ckpt),
+        "--data", str(data_path),
+        "--lr", str(cfg.phase1.lr),
+        "--batch-size", str(cfg.phase1.batch_size),
+        "--warmup-epochs", str(cfg.phase1.warmup_epochs),
+        "--weight-decay", str(cfg.phase1.weight_decay),
+        "--output", str(output_ckpt),
+    ]
+    if cfg.output.run_name:
+        args.extend(["--run-name", cfg.output.run_name])
+
+    _run_python_module("denoisr.scripts.train_phase1", args)
+    if not output_ckpt.exists():
+        raise FileNotFoundError(f"Phase 1 did not produce checkpoint: {output_ckpt}")
+
+    state.last_checkpoint = str(output_ckpt)
     state.phase = "phase1_complete"
     state.updated_at = datetime.now(timezone.utc).isoformat()
-
-    log.info("PLACEHOLDER: Phase 1 complete")
+    log.info("Phase 1 complete: %s", output_ckpt)
 
 
 # ---------------------------------------------------------------------------
-# Step 5: Train Phase 2 (PLACEHOLDER)
+# Step 5: Train Phase 2
 # ---------------------------------------------------------------------------
 
 
 def step_train_phase2(cfg: PipelineConfig, state: PipelineState) -> None:
-    """Train Phase 2 (diffusion world model).
+    """Train Phase 2 (world model + diffusion) and persist checkpoint."""
+    output_dir = Path(cfg.output.dir)
+    output_ckpt = output_dir / "phase2.pt"
+    if output_ckpt.exists():
+        log.info("Phase 2 checkpoint already exists at %s, skipping", output_ckpt)
+        state.last_checkpoint = str(output_ckpt)
+        state.phase = "phase2_complete"
+        state.updated_at = datetime.now(timezone.utc).isoformat()
+        return
 
-    PLACEHOLDER: logs the phase parameters and updates state without
-    performing actual training.
-    """
-    log.info(
-        "PLACEHOLDER: Phase 2 training (epochs=%d, lr=%s, batch_size=%d, seq_len=%d)",
-        cfg.phase2.epochs,
-        cfg.phase2.lr,
-        cfg.phase2.batch_size,
-        cfg.phase2.seq_len,
-    )
+    if not state.last_checkpoint:
+        raise ValueError("Phase 2 requires Phase 1 checkpoint in state.last_checkpoint")
+    phase1_ckpt = Path(state.last_checkpoint)
+    if not phase1_ckpt.exists():
+        raise FileNotFoundError(f"Phase 2 input checkpoint not found: {phase1_ckpt}")
 
+    pgn_path = Path(cfg.data.pgn_path)
+    if not pgn_path.exists():
+        raise FileNotFoundError(f"Phase 2 PGN file not found: {pgn_path}")
+
+    args = [
+        "--checkpoint", str(phase1_ckpt),
+        "--pgn", str(pgn_path),
+        "--seq-len", str(cfg.phase2.seq_len),
+        "--max-trajectories", str(cfg.phase2.max_trajectories),
+        "--batch-size", str(cfg.phase2.batch_size),
+        "--epochs", str(cfg.phase2.epochs),
+        "--lr", str(cfg.phase2.lr),
+        "--output", str(output_ckpt),
+    ]
+    if cfg.output.run_name:
+        args.extend(["--run-name", cfg.output.run_name])
+
+    _run_python_module("denoisr.scripts.train_phase2", args)
+    if not output_ckpt.exists():
+        raise FileNotFoundError(f"Phase 2 did not produce checkpoint: {output_ckpt}")
+
+    state.last_checkpoint = str(output_ckpt)
     state.phase = "phase2_complete"
     state.updated_at = datetime.now(timezone.utc).isoformat()
-    log.info("PLACEHOLDER: Phase 2 complete")
+    log.info("Phase 2 complete: %s", output_ckpt)
 
 
 # ---------------------------------------------------------------------------
-# Step 6: Train Phase 3 (PLACEHOLDER)
+# Step 6: Train Phase 3
 # ---------------------------------------------------------------------------
 
 
 def step_train_phase3(cfg: PipelineConfig, state: PipelineState) -> None:
-    """Train Phase 3 (self-play reinforcement learning with MCTS).
+    """Train Phase 3 (self-play RL) and persist checkpoint."""
+    output_dir = Path(cfg.output.dir)
+    output_ckpt = output_dir / "phase3.pt"
+    if output_ckpt.exists():
+        log.info("Phase 3 checkpoint already exists at %s, skipping", output_ckpt)
+        state.last_checkpoint = str(output_ckpt)
+        state.phase = "phase3_complete"
+        state.updated_at = datetime.now(timezone.utc).isoformat()
+        return
 
-    PLACEHOLDER: logs the phase parameters and updates state without
-    performing actual training.
-    """
-    log.info(
-        "PLACEHOLDER: Phase 3 training (generations=%d, games/gen=%d, mcts_sims=%d)",
-        cfg.phase3.generations,
-        cfg.phase3.games_per_gen,
-        cfg.phase3.mcts_sims,
-    )
+    if not state.last_checkpoint:
+        raise ValueError("Phase 3 requires Phase 2 checkpoint in state.last_checkpoint")
+    phase2_ckpt = Path(state.last_checkpoint)
+    if not phase2_ckpt.exists():
+        raise FileNotFoundError(f"Phase 3 input checkpoint not found: {phase2_ckpt}")
 
+    args = [
+        "--checkpoint", str(phase2_ckpt),
+        "--generations", str(cfg.phase3.generations),
+        "--games-per-gen", str(cfg.phase3.games_per_gen),
+        "--mcts-sims", str(cfg.phase3.mcts_sims),
+        "--save-every", "1",
+        "--output", str(output_ckpt),
+    ]
+
+    _run_python_module("denoisr.scripts.train_phase3", args)
+    if not output_ckpt.exists():
+        raise FileNotFoundError(f"Phase 3 did not produce checkpoint: {output_ckpt}")
+
+    state.last_checkpoint = str(output_ckpt)
     state.phase = "phase3_complete"
     state.updated_at = datetime.now(timezone.utc).isoformat()
-    log.info("PLACEHOLDER: Phase 3 complete")
+    log.info("Phase 3 complete: %s", output_ckpt)
