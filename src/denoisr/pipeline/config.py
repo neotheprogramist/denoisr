@@ -12,21 +12,12 @@ class DataConfig:
         "lichess_db_standard_rated_2025-01.pgn.zst"
     )
     pgn_path: str = "data/lichess.pgn.zst"
-    sorted_dir: str = "data/sorted/"
     stockfish_path: str = ""
     stockfish_depth: int = 10
-    examples_per_tier: int = 2_000_000
+    max_examples: int = 2_000_000
     tactical_fraction: float = 0.25
     workers: int = 0
 
-
-@dataclass(frozen=True)
-class EloCurriculumConfig:
-    tiers: list[int] = field(
-        default_factory=lambda: [800, 1200, 1600, 2000, 2400]
-    )
-    gate_accuracy: float = 0.50
-    max_epochs_per_tier: int = 100
 
 
 @dataclass(frozen=True)
@@ -71,9 +62,6 @@ class OutputConfig:
 @dataclass(frozen=True)
 class PipelineConfig:
     data: DataConfig = field(default_factory=DataConfig)
-    elo_curriculum: EloCurriculumConfig = field(
-        default_factory=EloCurriculumConfig
-    )
     model: ModelSectionConfig = field(default_factory=ModelSectionConfig)
     phase1: Phase1Config = field(default_factory=Phase1Config)
     phase2: Phase2Config = field(default_factory=Phase2Config)
@@ -87,7 +75,6 @@ def load_config(path: Path) -> PipelineConfig:
         raw = tomllib.load(f)
     return PipelineConfig(
         data=DataConfig(**raw.get("data", {})),
-        elo_curriculum=EloCurriculumConfig(**raw.get("elo_curriculum", {})),
         model=ModelSectionConfig(**raw.get("model", {})),
         phase1=Phase1Config(**raw.get("phase1", {})),
         phase2=Phase2Config(**raw.get("phase2", {})),

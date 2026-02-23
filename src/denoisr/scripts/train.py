@@ -30,7 +30,7 @@ def main() -> None:
         default=None,
         help=(
             "Comma-separated list of steps to run "
-            "(fetch,sort,init,phase1,phase2,phase3)"
+            "(fetch,init,phase1,phase2,phase3)"
         ),
     )
     args = parser.parse_args()

@@ -8,10 +8,9 @@ from denoisr.pipeline.config import PipelineConfig
 from denoisr.pipeline.state import PipelineState
 from denoisr.pipeline.steps import (
     step_fetch_data,
-    step_generate_tier_data,
+    step_generate_data,
     step_init_model,
-    step_sort_pgn,
-    step_train_phase1_tier,
+    step_train_phase1,
     step_train_phase2,
     step_train_phase3,
 )
@@ -19,7 +18,7 @@ from denoisr.pipeline.steps import (
 log = logging.getLogger(__name__)
 
 # Canonical step names for --only filtering
-ALL_STEPS = frozenset({"fetch", "sort", "init", "phase1", "phase2", "phase3"})
+ALL_STEPS = frozenset({"fetch", "init", "phase1", "phase2", "phase3"})
 
 
 class PipelineRunner:
@@ -48,11 +47,7 @@ class PipelineRunner:
             )
         else:
             self.state = PipelineState.load(self.state_path)
-            log.info(
-                "Resumed from state: phase=%s, tier=%d",
-                self.state.phase,
-                self.state.elo_tier_index,
-            )
+            log.info("Resumed from state: phase=%s", self.state.phase)
 
     def _should_run(self, step: str) -> bool:
         """Return whether *step* is included in the ``only`` filter."""
@@ -72,48 +67,37 @@ class PipelineRunner:
             step_fetch_data(self.cfg, self.state)
             self._save_state()
 
-        if self._should_run("sort") and self.state.phase in (
-            "fetched",
-            "init",
-            "",
-        ):
-            log.info("=== Step 2: Sort PGN by Elo ===")
-            step_sort_pgn(self.cfg, self.state)
-            self._save_state()
-
         if self._should_run("init") and self.state.phase in (
-            "sorted",
             "fetched",
             "init",
             "",
         ):
-            log.info("=== Step 3: Initialize model ===")
+            log.info("=== Step 2: Initialize model ===")
             step_init_model(self.cfg, self.state)
             self._save_state()
 
-        if self._should_run("phase1"):
-            tiers = self.cfg.elo_curriculum.tiers
-            start_tier = self.state.elo_tier_index
-            for i, min_elo in enumerate(tiers):
-                if i < start_tier:
-                    continue
-                log.info("=== Phase 1, Tier %d: Elo >= %d ===", i, min_elo)
-                step_generate_tier_data(self.cfg, self.state, min_elo, i)
-                self._save_state()
-                step_train_phase1_tier(self.cfg, self.state, i, min_elo)
-                self.state.phase = "elo_curriculum"
-                self._save_state()
+        if self._should_run("phase1") and self.state.phase not in (
+            "phase1_complete",
+            "phase2_complete",
+            "phase3_complete",
+        ):
+            log.info("=== Step 3: Generate training data ===")
+            step_generate_data(self.cfg, self.state)
+            self._save_state()
+            log.info("=== Step 4: Phase 1 training ===")
+            step_train_phase1(self.cfg, self.state)
+            self._save_state()
 
         if self._should_run("phase2") and self.state.phase not in (
             "phase2_complete",
             "phase3_complete",
         ):
-            log.info("=== Phase 2: Diffusion bootstrapping ===")
+            log.info("=== Step 5: Phase 2: Diffusion bootstrapping ===")
             step_train_phase2(self.cfg, self.state)
             self._save_state()
 
         if self._should_run("phase3") and self.state.phase != "phase3_complete":
-            log.info("=== Phase 3: RL self-play ===")
+            log.info("=== Step 6: Phase 3: RL self-play ===")
             step_train_phase3(self.cfg, self.state)
             self._save_state()
 

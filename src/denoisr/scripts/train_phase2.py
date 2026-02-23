@@ -59,13 +59,8 @@ def extract_trajectories(
     encoder: ExtendedBoardEncoder,
     seq_len: int,
     max_trajectories: int,
-    min_elo: int | None = None,
 ) -> TrajectoryBatch:
-    """Extract enriched consecutive board-state trajectories from PGN.
-
-    When min_elo is set, games where min(white_elo, black_elo) < min_elo
-    are skipped, ensuring training trajectories come from stronger games.
-    """
+    """Extract enriched consecutive board-state trajectories from PGN."""
     streamer = SimplePGNStreamer()
 
     all_boards: list[torch.Tensor] = []
@@ -81,21 +76,6 @@ def extract_trajectories(
     )
 
     for record in streamer.stream(pgn_path):
-        # Elo filtering: skip games below threshold
-        if min_elo is not None:
-            w_elo, b_elo = record.white_elo, record.black_elo
-            if w_elo is not None and b_elo is not None:
-                if min(w_elo, b_elo) < min_elo:
-                    continue
-            elif w_elo is not None:
-                if w_elo < min_elo:
-                    continue
-            elif b_elo is not None:
-                if b_elo < min_elo:
-                    continue
-            else:
-                # No Elo data at all — skip when filtering is requested
-                continue
         if len(record.actions) < seq_len:
             continue
 
@@ -190,10 +170,6 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument(
-        "--min-elo", type=int, default=1200,
-        help="Minimum Elo to include games (min of white/black, default: 1200)",
-    )
     parser.add_argument("--output", type=str, default="outputs/phase2.pt")
     parser.add_argument(
         "--run-name", type=str, default=None,
@@ -289,7 +265,6 @@ def main() -> None:
     trajectory_data = extract_trajectories(
         Path(args.pgn), board_encoder,
         args.seq_len, args.max_trajectories,
-        min_elo=args.min_elo,
     )
     N = trajectory_data.boards.shape[0]
     log.info("trajectories=%d  seq_len=%d", N, args.seq_len)

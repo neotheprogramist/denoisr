@@ -7,7 +7,6 @@ import torch
 
 from denoisr.pipeline.config import (
     DataConfig,
-    EloCurriculumConfig,
     ModelSectionConfig,
     OutputConfig,
     Phase1Config,
@@ -18,10 +17,9 @@ from denoisr.pipeline.config import (
 from denoisr.pipeline.state import PipelineState
 from denoisr.pipeline.steps import (
     step_fetch_data,
-    step_generate_tier_data,
+    step_generate_data,
     step_init_model,
-    step_sort_pgn,
-    step_train_phase1_tier,
+    step_train_phase1,
     step_train_phase2,
     step_train_phase3,
 )
@@ -33,12 +31,6 @@ def _make_cfg(tmp_path: Path) -> PipelineConfig:
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
             pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
-            sorted_dir=str(tmp_path / "data" / "sorted"),
-        ),
-        elo_curriculum=EloCurriculumConfig(
-            tiers=[800, 1200, 1600],
-            gate_accuracy=0.50,
-            max_epochs_per_tier=10,
         ),
         model=ModelSectionConfig(
             d_s=64,
@@ -139,103 +131,51 @@ def test_fetch_data_calls_wget_when_missing(tmp_path: Path) -> None:
     assert state.updated_at != ""
 
 
-# -- step_sort_pgn ---------------------------------------------------------
+# -- step_generate_data ----------------------------------------------------
 
 
-def test_sort_pgn_skips_when_sorted_dir_has_files(tmp_path: Path) -> None:
-    """step_sort_pgn skips when the sorted directory already has .pgn.zst files."""
-    cfg = _make_cfg(tmp_path)
-    state = PipelineState()
-
-    # Pre-create sorted dir with a fake bucket file
-    sorted_dir = Path(cfg.data.sorted_dir)
-    sorted_dir.mkdir(parents=True, exist_ok=True)
-    (sorted_dir / "0-800.pgn.zst").write_bytes(b"fake")
-
-    with patch("denoisr.scripts.sort_pgn.main") as mock_sort:
-        step_sort_pgn(cfg, state)
-        mock_sort.assert_not_called()
-
-    assert state.phase == "sorted"
-
-
-def test_sort_pgn_calls_sort_main_when_empty(tmp_path: Path) -> None:
-    """step_sort_pgn calls sort_main() when sorted directory is empty."""
-    cfg = _make_cfg(tmp_path)
-    state = PipelineState()
-
-    with patch("denoisr.scripts.sort_pgn.main") as mock_sort:
-        step_sort_pgn(cfg, state)
-        mock_sort.assert_called_once()
-
-    assert state.phase == "sorted"
-    assert state.updated_at != ""
-
-
-# -- step_generate_tier_data -----------------------------------------------
-
-
-def test_generate_tier_data_calls_generate(tmp_path: Path) -> None:
-    """step_generate_tier_data calls generate_to_file with correct params."""
+def test_generate_data_calls_generate(tmp_path: Path) -> None:
+    """step_generate_data calls generate_to_file with correct params."""
     cfg = _make_cfg(tmp_path)
     state = PipelineState()
 
     with patch("denoisr.scripts.generate_data.generate_to_file", return_value=100) as mock_gen:
-        step_generate_tier_data(cfg, state, min_elo=800, tier_index=0)
+        step_generate_data(cfg, state)
         mock_gen.assert_called_once()
-        call_kwargs = mock_gen.call_args
-        assert call_kwargs.kwargs["min_elo"] == 800
 
     assert state.last_data != ""
     assert state.updated_at != ""
 
 
-def test_generate_tier_data_skips_when_exists(tmp_path: Path) -> None:
-    """step_generate_tier_data skips when output .pt file exists."""
+def test_generate_data_skips_when_exists(tmp_path: Path) -> None:
+    """step_generate_data skips when output .pt file exists."""
     cfg = _make_cfg(tmp_path)
     state = PipelineState()
 
     output_dir = Path(cfg.output.dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    data_path = output_dir / "tier_0_elo800.pt"
+    data_path = output_dir / "training_data.pt"
     data_path.write_text("fake")
 
     with patch("denoisr.scripts.generate_data.generate_to_file") as mock_gen:
-        step_generate_tier_data(cfg, state, min_elo=800, tier_index=0)
+        step_generate_data(cfg, state)
         mock_gen.assert_not_called()
 
     assert state.last_data == str(data_path)
 
 
-# -- step_train_phase1_tier ------------------------------------------------
+# -- step_train_phase1 -----------------------------------------------------
 
 
-def test_train_phase1_tier_updates_state(tmp_path: Path) -> None:
-    """Placeholder phase1 training updates tier accuracy and advances index."""
-    cfg = _make_cfg(tmp_path)
-    state = PipelineState(phase="model_initialized", elo_tier_index=0)
-
-    step_train_phase1_tier(cfg, state, tier_index=0, min_elo=800)
-
-    assert state.elo_tier_index == 1
-    assert "800" in state.tier_accuracies
-    assert state.tier_accuracies["800"] == cfg.elo_curriculum.gate_accuracy
-    assert state.phase == "elo_curriculum"
-    assert state.updated_at != ""
-
-
-def test_train_phase1_tier_multiple_tiers(tmp_path: Path) -> None:
-    """Running phase1 across multiple tiers accumulates tier_accuracies."""
+def test_train_phase1_updates_state(tmp_path: Path) -> None:
+    """Placeholder phase1 training updates state phase."""
     cfg = _make_cfg(tmp_path)
     state = PipelineState(phase="model_initialized")
 
-    for i, elo in enumerate(cfg.elo_curriculum.tiers):
-        step_train_phase1_tier(cfg, state, tier_index=i, min_elo=elo)
+    step_train_phase1(cfg, state)
 
-    assert state.elo_tier_index == len(cfg.elo_curriculum.tiers)
-    assert len(state.tier_accuracies) == len(cfg.elo_curriculum.tiers)
-    for elo in cfg.elo_curriculum.tiers:
-        assert str(elo) in state.tier_accuracies
+    assert state.phase == "phase1_complete"
+    assert state.updated_at != ""
 
 
 # -- step_train_phase2 -----------------------------------------------------
@@ -244,7 +184,7 @@ def test_train_phase1_tier_multiple_tiers(tmp_path: Path) -> None:
 def test_train_phase2_updates_state(tmp_path: Path) -> None:
     """Placeholder phase2 training updates state phase."""
     cfg = _make_cfg(tmp_path)
-    state = PipelineState(phase="elo_curriculum")
+    state = PipelineState(phase="phase1_complete")
 
     step_train_phase2(cfg, state)
 
@@ -292,10 +232,7 @@ def test_state_persists_full_pipeline_phases(tmp_path: Path) -> None:
 
     # Simulate the full phase progression
     step_init_model(cfg, state)
-
-    for i, elo in enumerate(cfg.elo_curriculum.tiers):
-        step_train_phase1_tier(cfg, state, tier_index=i, min_elo=elo)
-
+    step_train_phase1(cfg, state)
     step_train_phase2(cfg, state)
     step_train_phase3(cfg, state)
 
@@ -305,6 +242,4 @@ def test_state_persists_full_pipeline_phases(tmp_path: Path) -> None:
     loaded = PipelineState.load(state_path)
 
     assert loaded.phase == "phase3_complete"
-    assert loaded.elo_tier_index == len(cfg.elo_curriculum.tiers)
-    assert len(loaded.tier_accuracies) == len(cfg.elo_curriculum.tiers)
     assert loaded.last_checkpoint != ""

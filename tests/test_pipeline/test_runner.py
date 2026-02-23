@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 from denoisr.pipeline.config import (
     DataConfig,
-    EloCurriculumConfig,
     ModelSectionConfig,
     OutputConfig,
     Phase1Config,
@@ -23,12 +22,6 @@ def _make_cfg(tmp_path: Path) -> PipelineConfig:
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
             pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
-            sorted_dir=str(tmp_path / "data" / "sorted"),
-        ),
-        elo_curriculum=EloCurriculumConfig(
-            tiers=[800, 1200],
-            gate_accuracy=0.50,
-            max_epochs_per_tier=10,
         ),
         model=ModelSectionConfig(
             d_s=64,
@@ -51,10 +44,9 @@ def _patch_all_steps():
     """Return a dict of patchers for all step functions in the runner module."""
     names = [
         "step_fetch_data",
-        "step_sort_pgn",
         "step_init_model",
-        "step_generate_tier_data",
-        "step_train_phase1_tier",
+        "step_generate_data",
+        "step_train_phase1",
         "step_train_phase2",
         "step_train_phase3",
     ]
@@ -92,14 +84,12 @@ def test_runner_restart_ignores_existing_state(tmp_path: Path) -> None:
     state_path = Path(cfg.output.dir) / "pipeline_state.json"
     old_state = PipelineState(
         phase="phase2_complete",
-        elo_tier_index=2,
         started_at="2024-01-01T00:00:00+00:00",
     )
     old_state.save(state_path)
 
     runner = PipelineRunner(cfg, restart=True)
     assert runner.state.phase == "init"
-    assert runner.state.elo_tier_index == 0
 
 
 # -- Only-step filtering ---------------------------------------------------
@@ -119,18 +109,17 @@ def test_runner_only_runs_selected_steps(tmp_path: Path) -> None:
             p.stop()
 
     mocks["step_fetch_data"].assert_not_called()
-    mocks["step_sort_pgn"].assert_not_called()
     mocks["step_init_model"].assert_called_once()
-    mocks["step_generate_tier_data"].assert_not_called()
-    mocks["step_train_phase1_tier"].assert_not_called()
+    mocks["step_generate_data"].assert_not_called()
+    mocks["step_train_phase1"].assert_not_called()
     mocks["step_train_phase2"].assert_not_called()
     mocks["step_train_phase3"].assert_not_called()
 
 
 def test_runner_default_only_includes_all_steps() -> None:
-    """ALL_STEPS contains the six canonical step names."""
+    """ALL_STEPS contains the five canonical step names."""
     assert ALL_STEPS == frozenset(
-        {"fetch", "sort", "init", "phase1", "phase2", "phase3"}
+        {"fetch", "init", "phase1", "phase2", "phase3"}
     )
 
 
@@ -141,39 +130,45 @@ def test_runner_resumes_from_saved_state(tmp_path: Path) -> None:
     """PipelineRunner picks up where it left off when state exists on disk."""
     cfg = _make_cfg(tmp_path)
 
-    # Simulate state left after phase1 tier 0 completed
+    # Simulate state left after phase1 completed
     state_path = Path(cfg.output.dir) / "pipeline_state.json"
     saved = PipelineState(
-        phase="elo_curriculum",
-        elo_tier_index=1,
+        phase="phase1_complete",
         last_checkpoint="outputs/init_model.pt",
         started_at="2024-01-01T00:00:00+00:00",
     )
     saved.save(state_path)
 
     runner = PipelineRunner(cfg)
-    assert runner.state.phase == "elo_curriculum"
-    assert runner.state.elo_tier_index == 1
+    assert runner.state.phase == "phase1_complete"
 
     patchers = _patch_all_steps()
     mocks = {k: p.start() for k, p in patchers.items()}
+
+    def _fake_p2(c, s):
+        s.phase = "phase2_complete"
+
+    def _fake_p3(c, s):
+        s.phase = "phase3_complete"
+
+    mocks["step_train_phase2"].side_effect = _fake_p2
+    mocks["step_train_phase3"].side_effect = _fake_p3
+
     try:
         runner.run()
     finally:
         for p in patchers.values():
             p.stop()
 
-    # fetch/sort/init should be skipped because phase is "elo_curriculum"
+    # fetch/init/phase1 should be skipped because phase is "phase1_complete"
     mocks["step_fetch_data"].assert_not_called()
-    mocks["step_sort_pgn"].assert_not_called()
     mocks["step_init_model"].assert_not_called()
+    mocks["step_generate_data"].assert_not_called()
+    mocks["step_train_phase1"].assert_not_called()
 
-    # Only tier 1 (index=1) should run; tier 0 (index=0) should be skipped
-    assert mocks["step_generate_tier_data"].call_count == 1
-    assert mocks["step_train_phase1_tier"].call_count == 1
-    call_args = mocks["step_train_phase1_tier"].call_args
-    assert call_args[0][2] == 1  # tier_index
-    assert call_args[0][3] == 1200  # min_elo
+    # Phase 2 and 3 should run
+    mocks["step_train_phase2"].assert_called_once()
+    mocks["step_train_phase3"].assert_called_once()
 
 
 # -- Full pipeline run (all steps mocked) ----------------------------------
@@ -191,17 +186,14 @@ def test_runner_full_pipeline(tmp_path: Path) -> None:
     def _fake_fetch(c, s):
         s.phase = "fetched"
 
-    def _fake_sort(c, s):
-        s.phase = "sorted"
-
     def _fake_init(c, s):
         s.phase = "model_initialized"
 
-    def _fake_gen(c, s, min_elo, tier_idx):
+    def _fake_gen(c, s):
         pass
 
-    def _fake_p1(c, s, tier_idx, min_elo):
-        s.elo_tier_index = tier_idx + 1
+    def _fake_p1(c, s):
+        s.phase = "phase1_complete"
 
     def _fake_p2(c, s):
         s.phase = "phase2_complete"
@@ -210,10 +202,9 @@ def test_runner_full_pipeline(tmp_path: Path) -> None:
         s.phase = "phase3_complete"
 
     mocks["step_fetch_data"].side_effect = _fake_fetch
-    mocks["step_sort_pgn"].side_effect = _fake_sort
     mocks["step_init_model"].side_effect = _fake_init
-    mocks["step_generate_tier_data"].side_effect = _fake_gen
-    mocks["step_train_phase1_tier"].side_effect = _fake_p1
+    mocks["step_generate_data"].side_effect = _fake_gen
+    mocks["step_train_phase1"].side_effect = _fake_p1
     mocks["step_train_phase2"].side_effect = _fake_p2
     mocks["step_train_phase3"].side_effect = _fake_p3
 
@@ -224,11 +215,9 @@ def test_runner_full_pipeline(tmp_path: Path) -> None:
             p.stop()
 
     mocks["step_fetch_data"].assert_called_once()
-    mocks["step_sort_pgn"].assert_called_once()
     mocks["step_init_model"].assert_called_once()
-    # 2 tiers: [800, 1200]
-    assert mocks["step_generate_tier_data"].call_count == 2
-    assert mocks["step_train_phase1_tier"].call_count == 2
+    mocks["step_generate_data"].assert_called_once()
+    mocks["step_train_phase1"].assert_called_once()
     mocks["step_train_phase2"].assert_called_once()
     mocks["step_train_phase3"].assert_called_once()
     assert runner.state.phase == "phase3_complete"
@@ -244,7 +233,6 @@ def test_runner_skips_phase2_when_already_complete(tmp_path: Path) -> None:
     state_path = Path(cfg.output.dir) / "pipeline_state.json"
     saved = PipelineState(
         phase="phase2_complete",
-        elo_tier_index=2,
         started_at="2024-01-01T00:00:00+00:00",
     )
     saved.save(state_path)

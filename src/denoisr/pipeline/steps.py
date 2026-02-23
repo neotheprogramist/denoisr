@@ -52,72 +52,7 @@ def step_fetch_data(cfg: PipelineConfig, state: PipelineState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 2: Sort PGN into Elo buckets
-# ---------------------------------------------------------------------------
-
-
-def step_sort_pgn(cfg: PipelineConfig, state: PipelineState) -> None:
-    """Sort the raw PGN into Elo-stratified bucket files.
-
-    Delegates to ``denoisr.scripts.sort_pgn.main()`` via ``sys.argv``
-    injection.  Skips when the sorted directory already contains
-    ``.pgn.zst`` files.
-    """
-    import sys
-
-    sorted_dir = Path(cfg.data.sorted_dir)
-    existing = list(sorted_dir.glob("*.pgn.zst")) if sorted_dir.exists() else []
-    if existing:
-        log.info(
-            "Sorted directory %s already has %d files, skipping sort",
-            sorted_dir,
-            len(existing),
-        )
-        state.phase = "sorted"
-        state.updated_at = datetime.now(timezone.utc).isoformat()
-        return
-
-    from denoisr.scripts.sort_pgn import main as sort_main
-
-    # Build Elo range string from curriculum tiers.
-    tiers = cfg.elo_curriculum.tiers
-    ranges_parts: list[str] = []
-    for i, elo in enumerate(tiers):
-        if i == 0:
-            ranges_parts.append(f"0-{elo}")
-        else:
-            ranges_parts.append(f"{tiers[i - 1]}-{elo}")
-    ranges_parts.append(f"{tiers[-1]}+")
-    ranges_str = ",".join(ranges_parts)
-
-    log.info(
-        "Sorting PGN %s into %s with ranges %s",
-        cfg.data.pgn_path,
-        sorted_dir,
-        ranges_str,
-    )
-    original_argv = sys.argv
-    sys.argv = [
-        "sort_pgn",
-        "--input",
-        cfg.data.pgn_path,
-        "--output",
-        str(sorted_dir),
-        "--ranges",
-        ranges_str,
-    ]
-    try:
-        sort_main()
-    finally:
-        sys.argv = original_argv
-
-    state.phase = "sorted"
-    state.updated_at = datetime.now(timezone.utc).isoformat()
-    log.info("PGN sorting complete")
-
-
-# ---------------------------------------------------------------------------
-# Step 3: Initialize random model checkpoint
+# Step 2: Initialize random model checkpoint
 # ---------------------------------------------------------------------------
 
 
@@ -193,36 +128,29 @@ def step_init_model(cfg: PipelineConfig, state: PipelineState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Generate training data for one Elo tier
+# Step 3: Generate training data
 # ---------------------------------------------------------------------------
 
 
-def step_generate_tier_data(
+def step_generate_data(
     cfg: PipelineConfig,
     state: PipelineState,
-    min_elo: int,
-    tier_index: int,
 ) -> None:
-    """Generate Stockfish-evaluated training data for a single Elo tier.
+    """Generate Stockfish-evaluated training data from the raw PGN.
 
-    Calls ``generate_to_file()`` with the sorted Elo directory when
-    available, falling back to the raw PGN with Elo filtering.
-
+    Calls ``generate_to_file()`` with random sampling from the PGN.
     Skips when the output ``.pt`` file already exists.
     """
     from denoisr.scripts.generate_data import generate_to_file
 
     output_dir = Path(cfg.output.dir)
-    data_path = output_dir / f"tier_{tier_index}_elo{min_elo}.pt"
+    data_path = output_dir / "training_data.pt"
 
     if data_path.exists():
-        log.info("Tier %d data already exists at %s, skipping", tier_index, data_path)
+        log.info("Training data already exists at %s, skipping", data_path)
         state.last_data = str(data_path)
         state.updated_at = datetime.now(timezone.utc).isoformat()
         return
-
-    sorted_dir = Path(cfg.data.sorted_dir)
-    elo_dir = sorted_dir if sorted_dir.exists() and list(sorted_dir.glob("*.pgn.zst")) else None
 
     stockfish_path = cfg.data.stockfish_path or shutil.which("stockfish") or ""
 
@@ -231,10 +159,8 @@ def step_generate_tier_data(
     workers = resolve_workers(cfg.data.workers)
 
     log.info(
-        "Generating tier %d data (min_elo=%d, max_examples=%d, workers=%d)",
-        tier_index,
-        min_elo,
-        cfg.data.examples_per_tier,
+        "Generating training data (max_examples=%d, workers=%d)",
+        cfg.data.max_examples,
         workers,
     )
 
@@ -243,64 +169,47 @@ def step_generate_tier_data(
         output_path=data_path,
         stockfish_path=stockfish_path,
         stockfish_depth=cfg.data.stockfish_depth,
-        max_examples=cfg.data.examples_per_tier,
+        max_examples=cfg.data.max_examples,
         num_workers=workers,
-        min_elo=min_elo,
-        elo_dir=elo_dir,
         tactical_fraction=cfg.data.tactical_fraction,
     )
 
     state.last_data = str(data_path)
     state.updated_at = datetime.now(timezone.utc).isoformat()
-    log.info("Generated %d examples for tier %d at %s", count, tier_index, data_path)
+    log.info("Generated %d examples at %s", count, data_path)
 
 
 
 
 # ---------------------------------------------------------------------------
-# Step 5: Train Phase 1 for one Elo tier (PLACEHOLDER)
+# Step 4: Train Phase 1 (PLACEHOLDER)
 # ---------------------------------------------------------------------------
 
 
-def step_train_phase1_tier(
+def step_train_phase1(
     cfg: PipelineConfig,
     state: PipelineState,
-    tier_index: int,
-    min_elo: int,
 ) -> None:
-    """Train Phase 1 (supervised policy + value) for one Elo tier.
+    """Train Phase 1 (supervised policy + value).
 
-    PLACEHOLDER: logs the tier parameters and updates state without
+    PLACEHOLDER: logs the parameters and updates state without
     performing actual training.  Will be replaced with the real
     supervised training loop.
     """
     log.info(
-        "PLACEHOLDER: Phase 1 training for tier %d (min_elo=%d, "
-        "lr=%s, batch_size=%d, max_epochs=%d, gate=%.2f)",
-        tier_index,
-        min_elo,
+        "PLACEHOLDER: Phase 1 training (lr=%s, batch_size=%d)",
         cfg.phase1.lr,
         cfg.phase1.batch_size,
-        cfg.elo_curriculum.max_epochs_per_tier,
-        cfg.elo_curriculum.gate_accuracy,
     )
 
-    # Simulate passing the gate for the placeholder.
-    state.tier_accuracies[str(min_elo)] = cfg.elo_curriculum.gate_accuracy
-    state.elo_tier_index = tier_index + 1
-    state.phase = "elo_curriculum"
+    state.phase = "phase1_complete"
     state.updated_at = datetime.now(timezone.utc).isoformat()
 
-    log.info(
-        "PLACEHOLDER: Tier %d complete, recorded accuracy %.2f, advancing to tier %d",
-        tier_index,
-        cfg.elo_curriculum.gate_accuracy,
-        state.elo_tier_index,
-    )
+    log.info("PLACEHOLDER: Phase 1 complete")
 
 
 # ---------------------------------------------------------------------------
-# Step 6: Train Phase 2 (PLACEHOLDER)
+# Step 5: Train Phase 2 (PLACEHOLDER)
 # ---------------------------------------------------------------------------
 
 
@@ -324,7 +233,7 @@ def step_train_phase2(cfg: PipelineConfig, state: PipelineState) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 7: Train Phase 3 (PLACEHOLDER)
+# Step 6: Train Phase 3 (PLACEHOLDER)
 # ---------------------------------------------------------------------------
 
 

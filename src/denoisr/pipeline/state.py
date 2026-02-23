@@ -1,5 +1,5 @@
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -7,15 +7,13 @@ from pathlib import Path
 class PipelineState:
     """Persisted pipeline state that enables resume after interruption.
 
-    Intentionally mutable: the runner updates ``phase``, ``elo_tier_index``,
-    and other fields as the pipeline progresses.
+    Intentionally mutable: the runner updates ``phase`` and other fields
+    as the pipeline progresses.
     """
 
     phase: str = "init"
-    elo_tier_index: int = 0
     last_checkpoint: str = ""
     last_data: str = ""
-    tier_accuracies: dict[str, float] = field(default_factory=dict)
     started_at: str = ""
     updated_at: str = ""
 
