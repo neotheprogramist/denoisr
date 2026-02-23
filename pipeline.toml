@@ -12,7 +12,10 @@
 # Standard Lichess rated games (all Elos, .pgn.zst format).
 # Browse available months at https://database.lichess.org/
 pgn_url = "https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst"
-data_dir = "data/"
+pgn_path = "data/lichess.pgn.zst"
+
+# Elo-sorted bucket files produced by the sort step
+sorted_dir = "data/sorted/"
 
 # Stockfish binary (empty = auto-detect from PATH)
 stockfish_path = ""
@@ -89,7 +92,7 @@ batch_size = 128
 # Trajectory sequence length (consecutive board states per training example)
 seq_len = 10
 
-# Maximum game trajectories to extract from .games files
+# Maximum game trajectories to extract from PGN
 max_trajectories = 50_000
 
 # ---------------------------------------------------------------------------

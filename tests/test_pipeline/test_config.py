@@ -29,13 +29,6 @@ def test_elo_tiers_custom(tmp_path: Path) -> None:
     assert cfg.elo_curriculum.tiers == [1000, 1500, 2000]
 
 
-def test_data_dir_field_exists(tmp_path: Path) -> None:
-    cfg_path = tmp_path / "pipeline.toml"
-    cfg_path.write_text('[data]\ndata_dir = "my_data/"')
-    cfg = load_config(cfg_path)
-    assert cfg.data.data_dir == "my_data/"
-
-
 def test_full_config(tmp_path: Path) -> None:
     """All sections specified."""
     cfg_path = tmp_path / "pipeline.toml"

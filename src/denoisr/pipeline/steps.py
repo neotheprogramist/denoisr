@@ -28,11 +28,10 @@ log = logging.getLogger(__name__)
 def step_fetch_data(cfg: PipelineConfig, state: PipelineState) -> None:
     """Download the PGN file if it does not already exist on disk.
 
-    Uses ``wget`` to fetch ``cfg.data.pgn_url`` into
-    ``<data_dir>/raw.pgn.zst``.  Skips the download when the target file
-    is already present.
+    Uses ``wget`` to fetch ``cfg.data.pgn_url`` into ``cfg.data.pgn_path``.
+    Skips the download when the target file is already present.
     """
-    pgn_path = Path(cfg.data.data_dir) / "raw.pgn.zst"
+    pgn_path = Path(cfg.data.pgn_path)
     if pgn_path.exists():
         log.info("PGN already exists at %s, skipping download", pgn_path)
         state.phase = "fetched"
@@ -58,49 +57,59 @@ def step_fetch_data(cfg: PipelineConfig, state: PipelineState) -> None:
 
 
 def step_sort_pgn(cfg: PipelineConfig, state: PipelineState) -> None:
-    """Sort the raw PGN into Elo-stratified ``.games`` bucket files.
+    """Sort the raw PGN into Elo-stratified bucket files.
 
-    Calls ``sort_pgn_to_games()`` directly.  Skips when the data
-    directory already contains ``.games`` files.
+    Delegates to ``denoisr.scripts.sort_pgn.main()`` via ``sys.argv``
+    injection.  Skips when the sorted directory already contains
+    ``.pgn.zst`` files.
     """
-    data_dir = Path(cfg.data.data_dir)
-    existing = list(data_dir.glob("*.games")) if data_dir.exists() else []
+    import sys
+
+    sorted_dir = Path(cfg.data.sorted_dir)
+    existing = list(sorted_dir.glob("*.pgn.zst")) if sorted_dir.exists() else []
     if existing:
         log.info(
-            "Data directory %s already has %d .games files, skipping sort",
-            data_dir,
+            "Sorted directory %s already has %d files, skipping sort",
+            sorted_dir,
             len(existing),
         )
         state.phase = "sorted"
         state.updated_at = datetime.now(timezone.utc).isoformat()
         return
 
-    from denoisr.scripts.sort_pgn import sort_pgn_to_games
+    from denoisr.scripts.sort_pgn import main as sort_main
 
-    # Build Elo ranges from curriculum tiers.
+    # Build Elo range string from curriculum tiers.
     tiers = cfg.elo_curriculum.tiers
-    ranges: list[tuple[int, int | None]] = []
+    ranges_parts: list[str] = []
     for i, elo in enumerate(tiers):
         if i == 0:
-            ranges.append((0, elo))
+            ranges_parts.append(f"0-{elo}")
         else:
-            ranges.append((tiers[i - 1], elo))
-    ranges.append((tiers[-1], None))
-
-    pgn_path = Path(cfg.data.data_dir) / "raw.pgn.zst"
+            ranges_parts.append(f"{tiers[i - 1]}-{elo}")
+    ranges_parts.append(f"{tiers[-1]}+")
+    ranges_str = ",".join(ranges_parts)
 
     log.info(
-        "Sorting PGN %s into %s with %d ranges",
-        pgn_path,
-        data_dir,
-        len(ranges),
+        "Sorting PGN %s into %s with ranges %s",
+        cfg.data.pgn_path,
+        sorted_dir,
+        ranges_str,
     )
-    sort_pgn_to_games(
-        pgn_path,
-        data_dir,
-        ranges,
-        max_buffer_bytes=cfg.data.write_buffer_max_bytes,
-    )
+    original_argv = sys.argv
+    sys.argv = [
+        "sort_pgn",
+        "--input",
+        cfg.data.pgn_path,
+        "--output",
+        str(sorted_dir),
+        "--ranges",
+        ranges_str,
+    ]
+    try:
+        sort_main()
+    finally:
+        sys.argv = original_argv
 
     state.phase = "sorted"
     state.updated_at = datetime.now(timezone.utc).isoformat()
@@ -196,8 +205,8 @@ def step_generate_tier_data(
 ) -> None:
     """Generate Stockfish-evaluated training data for a single Elo tier.
 
-    Calls ``generate_to_file()`` with the ``data_dir`` containing
-    ``.games`` bucket files.
+    Calls ``generate_to_file()`` with the sorted Elo directory when
+    available, falling back to the raw PGN with Elo filtering.
 
     Skips when the output ``.pt`` file already exists.
     """
@@ -211,6 +220,9 @@ def step_generate_tier_data(
         state.last_data = str(data_path)
         state.updated_at = datetime.now(timezone.utc).isoformat()
         return
+
+    sorted_dir = Path(cfg.data.sorted_dir)
+    elo_dir = sorted_dir if sorted_dir.exists() and list(sorted_dir.glob("*.pgn.zst")) else None
 
     stockfish_path = cfg.data.stockfish_path or shutil.which("stockfish") or ""
 
@@ -227,13 +239,14 @@ def step_generate_tier_data(
     )
 
     count = generate_to_file(
-        data_dir=Path(cfg.data.data_dir),
+        pgn_path=Path(cfg.data.pgn_path),
         output_path=data_path,
         stockfish_path=stockfish_path,
         stockfish_depth=cfg.data.stockfish_depth,
         max_examples=cfg.data.examples_per_tier,
         num_workers=workers,
         min_elo=min_elo,
+        elo_dir=elo_dir,
         tactical_fraction=cfg.data.tactical_fraction,
     )
 

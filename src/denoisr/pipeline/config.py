@@ -11,13 +11,13 @@ class DataConfig:
         "https://database.lichess.org/standard/"
         "lichess_db_standard_rated_2025-01.pgn.zst"
     )
-    data_dir: str = "data/"
+    pgn_path: str = "data/lichess.pgn.zst"
+    sorted_dir: str = "data/sorted/"
     stockfish_path: str = ""
     stockfish_depth: int = 10
     examples_per_tier: int = 2_000_000
     tactical_fraction: float = 0.25
     workers: int = 0
-    write_buffer_max_bytes: int = 16 * 1024**3
 
 
 @dataclass(frozen=True)

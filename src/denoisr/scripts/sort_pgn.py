@@ -1,14 +1,17 @@
-"""Sort PGN games into Elo-stratified binary .games files.
+"""Sort PGN games into Elo-stratified buckets.
 
-Reads a .pgn or .pgn.zst file and writes separate .games files
+Reads a .pgn or .pgn.zst file and writes separate .pgn.zst files
 per Elo range under the output directory.
 """
 
 import argparse
+import io
 import logging
 from pathlib import Path
 
-from denoisr.data.game_format import GameBatchWriter
+import chess.pgn
+import zstandard as zstd
+
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 
 log = logging.getLogger(__name__)
@@ -39,65 +42,10 @@ def _min_elo(white_elo: int | None, black_elo: int | None) -> int | None:
     return white_elo or black_elo
 
 
-def sort_pgn_to_games(
-    pgn_path: Path,
-    output_dir: Path,
-    ranges: list[tuple[int, int | None]],
-    max_buffer_bytes: int = 16 * 1024**3,
-) -> dict[str, int]:
-    """Sort PGN games into binary .games files by Elo range.
-
-    Returns a dict mapping bucket names to game counts.
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    writers: dict[str, GameBatchWriter] = {}
-    for lo, hi in ranges:
-        name = _bucket_name(lo, hi)
-        path = output_dir / f"{name}.games"
-        writer = GameBatchWriter(path, max_buffer_bytes=max_buffer_bytes)
-        writer.__enter__()
-        writers[name] = writer
-
-    skipped = 0
-    streamer = SimplePGNStreamer()
-    try:
-        for record in streamer.stream(pgn_path):
-            elo = _min_elo(record.white_elo, record.black_elo)
-            if elo is None:
-                skipped += 1
-                continue
-
-            bucket: str | None = None
-            for lo, hi in ranges:
-                if hi is None:
-                    if elo >= lo:
-                        bucket = _bucket_name(lo, hi)
-                        break
-                elif lo <= elo < hi:
-                    bucket = _bucket_name(lo, hi)
-                    break
-
-            if bucket is None:
-                skipped += 1
-                continue
-
-            writers[bucket].write(record)
-    finally:
-        for writer in writers.values():
-            writer.close()
-
-    counts = {name: writer.count for name, writer in writers.items()}
-    log.info("Sorted games by Elo (skipped %d without Elo):", skipped)
-    for name, count in counts.items():
-        log.info("  %s: %d games", name, count)
-    return counts
-
-
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
-        description="Sort PGN games by Elo into binary .games files"
+        description="Sort PGN games by Elo into separate files"
     )
     parser.add_argument("--input", required=True, help="Path to .pgn or .pgn.zst")
     parser.add_argument("--output", required=True, help="Output directory")
@@ -109,7 +57,82 @@ def main() -> None:
     args = parser.parse_args()
 
     ranges = _parse_ranges(args.ranges)
-    sort_pgn_to_games(Path(args.input), Path(args.output), ranges)
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Open output compressors
+    writers: dict[str, tuple[io.BufferedWriter, zstd.ZstdCompressor]] = {}
+    file_handles: list[io.BufferedWriter] = []
+    for lo, hi in ranges:
+        name = _bucket_name(lo, hi)
+        path = output_dir / f"{name}.pgn.zst"
+        fh = open(path, "wb")  # noqa: SIM115
+        file_handles.append(fh)
+        compressor = zstd.ZstdCompressor(level=3)
+        writers[name] = (fh, compressor)
+
+    # Track stats
+    counts: dict[str, int] = {_bucket_name(lo, hi): 0 for lo, hi in ranges}
+    move_counts: dict[str, int] = {_bucket_name(lo, hi): 0 for lo, hi in ranges}
+    skipped = 0
+
+    streamer = SimplePGNStreamer()
+    try:
+        for record in streamer.stream(Path(args.input)):
+            elo = _min_elo(record.white_elo, record.black_elo)
+            if elo is None:
+                skipped += 1
+                continue
+
+            # Find matching bucket
+            bucket_name: str | None = None
+            for lo, hi in ranges:
+                if hi is None:
+                    if elo >= lo:
+                        bucket_name = _bucket_name(lo, hi)
+                        break
+                elif lo <= elo < hi:
+                    bucket_name = _bucket_name(lo, hi)
+                    break
+
+            if bucket_name is None:
+                skipped += 1
+                continue
+
+            # Write game as PGN text to compressed stream
+            game = chess.pgn.Game()
+            game.headers["Result"] = {1.0: "1-0", -1.0: "0-1", 0.0: "1/2-1/2"}.get(
+                record.result, "*"
+            )
+            if record.eco_code:
+                game.headers["ECO"] = record.eco_code
+            if record.white_elo is not None:
+                game.headers["WhiteElo"] = str(record.white_elo)
+            if record.black_elo is not None:
+                game.headers["BlackElo"] = str(record.black_elo)
+
+            # Replay moves
+            node: chess.pgn.GameNode = game
+            board = chess.Board()
+            for action in record.actions:
+                move = chess.Move(action.from_square, action.to_square, action.promotion)
+                node = node.add_variation(move)
+                board.push(move)
+
+            pgn_text = str(game) + "\n\n"
+            fh, compressor = writers[bucket_name]
+            fh.write(compressor.compress(pgn_text.encode("utf-8")))
+            counts[bucket_name] += 1
+            move_counts[bucket_name] += len(record.actions)
+
+    finally:
+        for fh in file_handles:
+            fh.close()
+
+    # Report
+    log.info("Sorted games by Elo (skipped %d without Elo):", skipped)
+    for name in counts:
+        log.info("  %s: %d games, %d moves", name, counts[name], move_counts[name])
 
 
 if __name__ == "__main__":

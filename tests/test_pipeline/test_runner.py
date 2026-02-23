@@ -22,7 +22,8 @@ def _make_cfg(tmp_path: Path) -> PipelineConfig:
     return PipelineConfig(
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
-            data_dir=str(tmp_path / "data"),
+            pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
+            sorted_dir=str(tmp_path / "data" / "sorted"),
         ),
         elo_curriculum=EloCurriculumConfig(
             tiers=[800, 1200],

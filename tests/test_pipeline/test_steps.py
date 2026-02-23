@@ -32,7 +32,8 @@ def _make_cfg(tmp_path: Path) -> PipelineConfig:
     return PipelineConfig(
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
-            data_dir=str(tmp_path / "data"),
+            pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
+            sorted_dir=str(tmp_path / "data" / "sorted"),
         ),
         elo_curriculum=EloCurriculumConfig(
             tiers=[800, 1200, 1600],
@@ -110,8 +111,8 @@ def test_fetch_data_skips_when_file_exists(tmp_path: Path) -> None:
     cfg = _make_cfg(tmp_path)
     state = PipelineState()
 
-    # Pre-create the PGN file at data_dir / "raw.pgn.zst"
-    pgn_path = Path(cfg.data.data_dir) / "raw.pgn.zst"
+    # Pre-create the PGN file
+    pgn_path = Path(cfg.data.pgn_path)
     pgn_path.parent.mkdir(parents=True, exist_ok=True)
     pgn_path.write_text("fake pgn data")
 
@@ -141,29 +142,29 @@ def test_fetch_data_calls_wget_when_missing(tmp_path: Path) -> None:
 # -- step_sort_pgn ---------------------------------------------------------
 
 
-def test_sort_pgn_skips_when_games_files_exist(tmp_path: Path) -> None:
-    """step_sort_pgn skips when the data directory already has .games files."""
+def test_sort_pgn_skips_when_sorted_dir_has_files(tmp_path: Path) -> None:
+    """step_sort_pgn skips when the sorted directory already has .pgn.zst files."""
     cfg = _make_cfg(tmp_path)
     state = PipelineState()
 
-    # Pre-create data dir with a fake .games bucket file
-    data_dir = Path(cfg.data.data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "0-800.games").write_bytes(b"fake")
+    # Pre-create sorted dir with a fake bucket file
+    sorted_dir = Path(cfg.data.sorted_dir)
+    sorted_dir.mkdir(parents=True, exist_ok=True)
+    (sorted_dir / "0-800.pgn.zst").write_bytes(b"fake")
 
-    with patch("denoisr.scripts.sort_pgn.sort_pgn_to_games") as mock_sort:
+    with patch("denoisr.scripts.sort_pgn.main") as mock_sort:
         step_sort_pgn(cfg, state)
         mock_sort.assert_not_called()
 
     assert state.phase == "sorted"
 
 
-def test_sort_pgn_calls_sort_when_no_games_files(tmp_path: Path) -> None:
-    """step_sort_pgn calls sort_pgn_to_games() when no .games files exist."""
+def test_sort_pgn_calls_sort_main_when_empty(tmp_path: Path) -> None:
+    """step_sort_pgn calls sort_main() when sorted directory is empty."""
     cfg = _make_cfg(tmp_path)
     state = PipelineState()
 
-    with patch("denoisr.scripts.sort_pgn.sort_pgn_to_games") as mock_sort:
+    with patch("denoisr.scripts.sort_pgn.main") as mock_sort:
         step_sort_pgn(cfg, state)
         mock_sort.assert_called_once()
 
@@ -184,7 +185,6 @@ def test_generate_tier_data_calls_generate(tmp_path: Path) -> None:
         mock_gen.assert_called_once()
         call_kwargs = mock_gen.call_args
         assert call_kwargs.kwargs["min_elo"] == 800
-        assert call_kwargs.kwargs["data_dir"] == Path(cfg.data.data_dir)
 
     assert state.last_data != ""
     assert state.updated_at != ""

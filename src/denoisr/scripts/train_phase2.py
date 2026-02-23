@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
-from denoisr.data.game_format import read_game_records
+from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.scripts.config import (
     add_model_args,
     add_training_args,
@@ -55,17 +55,19 @@ log = logging.getLogger(__name__)
 
 
 def extract_trajectories(
-    data_dir: Path,
+    pgn_path: Path,
     encoder: ExtendedBoardEncoder,
     seq_len: int,
     max_trajectories: int,
     min_elo: int | None = None,
 ) -> TrajectoryBatch:
-    """Extract enriched consecutive board-state trajectories from .games files.
+    """Extract enriched consecutive board-state trajectories from PGN.
 
     When min_elo is set, games where min(white_elo, black_elo) < min_elo
     are skipped, ensuring training trajectories come from stronger games.
     """
+    streamer = SimplePGNStreamer()
+
     all_boards: list[torch.Tensor] = []
     all_actions_from: list[torch.Tensor] = []
     all_actions_to: list[torch.Tensor] = []
@@ -78,89 +80,82 @@ def extract_trajectories(
         unit="traj", smoothing=0.3,
     )
 
-    game_files = sorted(data_dir.glob("*.games"))
-    if not game_files:
-        raise ValueError(f"No .games files found in {data_dir}")
-
-    for gf in game_files:
-        for record in read_game_records(gf):
-            # Elo filtering: skip games below threshold
-            if min_elo is not None:
-                w_elo, b_elo = record.white_elo, record.black_elo
-                if w_elo is not None and b_elo is not None:
-                    if min(w_elo, b_elo) < min_elo:
-                        continue
-                elif w_elo is not None:
-                    if w_elo < min_elo:
-                        continue
-                elif b_elo is not None:
-                    if b_elo < min_elo:
-                        continue
-                else:
-                    # No Elo data at all — skip when filtering is requested
+    for record in streamer.stream(pgn_path):
+        # Elo filtering: skip games below threshold
+        if min_elo is not None:
+            w_elo, b_elo = record.white_elo, record.black_elo
+            if w_elo is not None and b_elo is not None:
+                if min(w_elo, b_elo) < min_elo:
                     continue
-            if len(record.actions) < seq_len:
-                continue
-
-            # WDL from game result
-            if record.result == 1.0:
-                wdl = torch.tensor([1.0, 0.0, 0.0])
-            elif record.result == -1.0:
-                wdl = torch.tensor([0.0, 0.0, 1.0])
+            elif w_elo is not None:
+                if w_elo < min_elo:
+                    continue
+            elif b_elo is not None:
+                if b_elo < min_elo:
+                    continue
             else:
-                wdl = torch.tensor([0.0, 1.0, 0.0])
+                # No Elo data at all — skip when filtering is requested
+                continue
+        if len(record.actions) < seq_len:
+            continue
 
-            # +1 White wins, -1 Black wins, 0 draw
-            result_signal = record.result  # already 1.0/-1.0/0.0
+        # WDL from game result
+        if record.result == 1.0:
+            wdl = torch.tensor([1.0, 0.0, 0.0])
+        elif record.result == -1.0:
+            wdl = torch.tensor([0.0, 0.0, 1.0])
+        else:
+            wdl = torch.tensor([0.0, 1.0, 0.0])
 
-            board = chess.Board()
-            boards: list[torch.Tensor] = [encoder.encode(board).data]
-            from_sqs: list[int] = []
-            to_sqs: list[int] = []
-            # Track whose turn it is before each move
-            move_turns: list[bool] = []  # True = WHITE moved
+        # +1 White wins, -1 Black wins, 0 draw
+        result_signal = record.result  # already 1.0/-1.0/0.0
 
-            for action in record.actions:
-                move_turns.append(board.turn == chess.WHITE)
-                from_sqs.append(action.from_square)
-                to_sqs.append(action.to_square)
-                move = chess.Move(
-                    action.from_square, action.to_square,
-                    action.promotion,
-                )
-                board.push(move)
-                boards.append(encoder.encode(board).data)
+        board = chess.Board()
+        boards: list[torch.Tensor] = [encoder.encode(board).data]
+        from_sqs: list[int] = []
+        to_sqs: list[int] = []
+        # Track whose turn it is before each move
+        move_turns: list[bool] = []  # True = WHITE moved
 
-            for start in range(0, len(boards) - seq_len, seq_len):
-                chunk_boards = boards[start : start + seq_len]
-                chunk_from = from_sqs[start : start + seq_len - 1]
-                chunk_to = to_sqs[start : start + seq_len - 1]
+        for action in record.actions:
+            move_turns.append(board.turn == chess.WHITE)
+            from_sqs.append(action.from_square)
+            to_sqs.append(action.to_square)
+            move = chess.Move(
+                action.from_square, action.to_square,
+                action.promotion,
+            )
+            board.push(move)
+            boards.append(encoder.encode(board).data)
 
-                policies = torch.zeros(seq_len - 1, 64, 64)
-                for j in range(seq_len - 1):
-                    policies[j, chunk_from[j], chunk_to[j]] = 1.0
+        for start in range(0, len(boards) - seq_len, seq_len):
+            chunk_boards = boards[start : start + seq_len]
+            chunk_from = from_sqs[start : start + seq_len - 1]
+            chunk_to = to_sqs[start : start + seq_len - 1]
 
-                rewards = torch.zeros(seq_len - 1)
-                for j in range(seq_len - 1):
-                    # Use actual board turn instead of position index parity
-                    was_white = move_turns[start + j]
-                    side_sign = 1.0 if was_white else -1.0
-                    rewards[j] = result_signal * side_sign
+            policies = torch.zeros(seq_len - 1, 64, 64)
+            for j in range(seq_len - 1):
+                policies[j, chunk_from[j], chunk_to[j]] = 1.0
 
-                all_boards.append(torch.stack(chunk_boards))
-                all_actions_from.append(
-                    torch.tensor(chunk_from, dtype=torch.long),
-                )
-                all_actions_to.append(
-                    torch.tensor(chunk_to, dtype=torch.long),
-                )
-                all_policies.append(policies)
-                all_values.append(wdl)
-                all_rewards.append(rewards)
+            rewards = torch.zeros(seq_len - 1)
+            for j in range(seq_len - 1):
+                # Use actual board turn instead of position index parity
+                was_white = move_turns[start + j]
+                side_sign = 1.0 if was_white else -1.0
+                rewards[j] = result_signal * side_sign
 
-                pbar.update(1)
-                if len(all_boards) >= max_trajectories:
-                    break
+            all_boards.append(torch.stack(chunk_boards))
+            all_actions_from.append(
+                torch.tensor(chunk_from, dtype=torch.long),
+            )
+            all_actions_to.append(
+                torch.tensor(chunk_to, dtype=torch.long),
+            )
+            all_policies.append(policies)
+            all_values.append(wdl)
+            all_rewards.append(rewards)
+
+            pbar.update(1)
             if len(all_boards) >= max_trajectories:
                 break
         if len(all_boards) >= max_trajectories:
@@ -168,9 +163,7 @@ def extract_trajectories(
 
     pbar.close()
     if not all_boards:
-        raise ValueError(
-            f"No valid trajectories extracted from .games files in {data_dir}"
-        )
+        raise ValueError("No valid trajectories extracted from PGN")
 
     return TrajectoryBatch(
         boards=torch.stack(all_boards),
@@ -190,7 +183,7 @@ def main() -> None:
         "--checkpoint", required=True, help="Phase 1 checkpoint path"
     )
     parser.add_argument(
-        "--data-dir", required=True, help="Directory with .games files for trajectory extraction"
+        "--pgn", required=True, help="PGN file for trajectory extraction"
     )
     parser.add_argument("--seq-len", type=int, default=10)
     parser.add_argument("--max-trajectories", type=int, default=50_000)
@@ -294,7 +287,7 @@ def main() -> None:
     # --- Extract enriched trajectories ---
     board_encoder = build_board_encoder(cfg)
     trajectory_data = extract_trajectories(
-        Path(args.data_dir), board_encoder,
+        Path(args.pgn), board_encoder,
         args.seq_len, args.max_trajectories,
         min_elo=args.min_elo,
     )
