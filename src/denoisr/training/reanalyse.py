@@ -37,7 +37,12 @@ class ReanalyseActor:
         self._mcts = MCTS(
             policy_value_fn=policy_value_fn,
             world_model_fn=world_model_fn,
-            config=MCTSConfig(num_simulations=num_simulations),
+            # Reanalyse should be deterministic/improvement-focused:
+            # disable root Dirichlet noise.
+            config=MCTSConfig(
+                num_simulations=num_simulations,
+                dirichlet_epsilon=0.0,
+            ),
         )
 
     def reanalyse(self, record: GameRecord) -> list[TrainingExample]:
@@ -49,7 +54,10 @@ class ReanalyseActor:
             latent = self._encode(board_tensor.data.unsqueeze(0)).squeeze(0)
             legal_mask = self._game.get_valid_moves(board).data
 
-            visit_dist = self._mcts.search(latent, legal_mask)
+            to_play = 1 if board.turn == chess.WHITE else -1
+            visit_dist = self._mcts.search(
+                latent, legal_mask, root_to_play=to_play
+            )
             policy = PolicyTarget(visit_dist)
 
             if record.result == 1.0:

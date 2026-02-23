@@ -21,12 +21,18 @@ stockfish_depth = 10
 # Maximum training examples to generate
 max_examples = 2_000_000
 
-# Fraction of examples from tactical positions (captures, hanging pieces,
-# endgames). Higher values teach the model to handle critical moments.
-tactical_fraction = 0.25
+# Data generation worker count.
+# Set explicitly to use all available CPU workers on this machine.
+workers = 129
 
-# Data generation worker count (0 = auto: cpu_count * 2 + 1)
-workers = 0
+# Directory for temporary memmap files during generation.
+scratch_dir = "outputs/scratch"
+
+# Save generated dataset in chunk shards with this many examples per shard.
+# 0 = legacy single-file `training_data.pt`.
+# ~720k examples is about 32 GiB of chunk buffers with current tensor schema
+# (roughly 25% of a 128 GiB machine).
+chunk_examples = 720000
 
 # ---------------------------------------------------------------------------
 # Model architecture

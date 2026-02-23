@@ -101,3 +101,28 @@ class TestMCTS:
         legal_mask[12, 28] = True
         visit_dist = mcts.search(state, legal_mask)
         assert (visit_dist >= 0).all()
+
+    def test_search_accepts_logit_policy(self) -> None:
+        class _LogitPV:
+            def predict(
+                self, state: torch.Tensor
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+                logits = torch.full((64, 64), -5.0)
+                logits[12, 28] = 5.0
+                logits[12, 20] = 1.0
+                value = torch.tensor([0.6, 0.2, 0.2])
+                return logits, value
+
+        wm = _MockWorldModel(SMALL_D_S)
+        mcts = MCTS(
+            policy_value_fn=_LogitPV().predict,
+            world_model_fn=wm.predict_next,
+            config=MCTSConfig(num_simulations=50, c_puct=1.4),
+        )
+        state = torch.randn(64, SMALL_D_S)
+        legal_mask = torch.zeros(64, 64, dtype=torch.bool)
+        legal_mask[12, 28] = True
+        legal_mask[12, 20] = True
+        dist = mcts.search(state, legal_mask)
+        assert dist.sum().item() == pytest.approx(1.0, abs=1e-5)
+        assert dist[12, 28].item() > dist[12, 20].item()

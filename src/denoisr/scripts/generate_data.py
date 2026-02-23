@@ -75,12 +75,9 @@ def _init_worker(
 # Return numpy arrays instead of torch tensors to avoid FD-based IPC
 # (torch uses sendmsg/recvmsg ancillary data to share tensor storage,
 # which exhausts file descriptors at high worker counts).
-_MoveSeq = list[tuple[int, int, int | None]]
-
-
 @dataclass(frozen=True)
 class _PositionMeta:
-    moves: _MoveSeq
+    fen: str
     game_id: int
     eco_code: str | None
     piece_count: int
@@ -99,12 +96,7 @@ _EvalResultWithMeta = tuple[
 def _evaluate_position(meta: _PositionMeta) -> _EvalResultWithMeta:
     if _oracle is None or _encoder is None:
         raise RuntimeError("Worker not initialized")
-    board = chess.Board()
-    for from_sq, to_sq, promo in meta.moves:
-        move = chess.Move(from_sq, to_sq, promo)
-        if move not in board.legal_moves:
-            raise ValueError(f"Illegal move {move.uci()} at ply {len(board.move_stack)}")
-        board.push(move)
+    board = chess.Board(meta.fen)
     board_tensor = _encoder.encode(board)
     policy, value, _ = _oracle.evaluate(board)
     return (
@@ -152,10 +144,8 @@ def _stream_positions(
     game_id = 0
 
     for record in streamer.stream(pgn_path):
-        moves_so_far: _MoveSeq = []
         board = chess.Board()
         for action in record.actions:
-            moves_so_far.append((action.from_square, action.to_square, action.promotion))
             board.push(chess.Move(action.from_square, action.to_square, action.promotion))
             if count >= max_positions:
                 break
@@ -164,7 +154,7 @@ def _stream_positions(
                 continue
             piece_count = bin(board.occupied).count("1")
             yield _PositionMeta(
-                moves=list(moves_so_far),
+                fen=board.fen(en_passant="fen"),
                 game_id=game_id,
                 eco_code=record.eco_code,
                 piece_count=piece_count,
@@ -174,6 +164,139 @@ def _stream_positions(
         game_id += 1
         if count >= max_positions:
             break
+
+
+_GIB = 1024 * 1024 * 1024
+_CHUNK_FORMAT = "chunked_v1"
+
+def _estimate_dataset_gib(num_examples: int, num_planes: int) -> float:
+    bytes_per_example = ((num_planes * 8 * 8) + (64 * 64) + 3) * 4
+    return (num_examples * bytes_per_example) / _GIB
+
+
+def _write_chunk_file(
+    *,
+    chunk_dir: Path,
+    chunk_idx: int,
+    count: int,
+    boards_buf: npt.NDArray[np.float32],
+    policies_buf: npt.NDArray[np.float32],
+    values_buf: npt.NDArray[np.float32],
+    game_ids_buf: npt.NDArray[np.int64],
+    piece_counts_buf: npt.NDArray[np.int32],
+    eco_codes_buf: list[str | None],
+) -> Path:
+    """Write one chunk file and return its path."""
+    chunk_path = chunk_dir / f"chunk_{chunk_idx:06d}.pt"
+    payload: dict[str, Any] = {
+        "boards": torch.from_numpy(boards_buf[:count].copy()),
+        "policies": torch.from_numpy(policies_buf[:count].copy()),
+        "values": torch.from_numpy(values_buf[:count].copy()),
+        "game_ids": torch.from_numpy(game_ids_buf[:count].copy()),
+        "piece_counts": torch.from_numpy(piece_counts_buf[:count].copy()),
+    }
+    eco_codes = eco_codes_buf[:count]
+    if any(eco is not None for eco in eco_codes):
+        payload["eco_codes"] = eco_codes.copy()
+    torch.save(payload, chunk_path)
+    return chunk_path
+
+
+def _generate_to_file_chunked(
+    *,
+    pgn_path: Path,
+    output_path: Path,
+    stockfish_path: str,
+    stockfish_depth: int,
+    max_examples: int,
+    num_workers: int,
+    policy_temperature: float,
+    label_smoothing: float,
+    chunksize: int,
+    chunk_examples: int,
+) -> int:
+    """Generate data directly to on-disk chunk files + manifest."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    chunk_dir = output_path.parent / f"{output_path.stem}_chunks"
+    if chunk_dir.exists():
+        shutil.rmtree(chunk_dir)
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    num_planes = ExtendedBoardEncoder().num_planes
+    boards_buf = np.empty((chunk_examples, num_planes, 8, 8), dtype=np.float32)
+    policies_buf = np.empty((chunk_examples, 64, 64), dtype=np.float32)
+    values_buf = np.empty((chunk_examples, 3), dtype=np.float32)
+    game_ids_buf = np.empty(chunk_examples, dtype=np.int64)
+    piece_counts_buf = np.empty(chunk_examples, dtype=np.int32)
+    eco_codes_buf: list[str | None] = [None] * chunk_examples
+
+    chunk_records: list[dict[str, Any]] = []
+    total_written = 0
+    chunk_idx = 0
+    fill = 0
+
+    def flush_chunk() -> None:
+        nonlocal fill, chunk_idx, total_written, eco_codes_buf
+        if fill == 0:
+            return
+        chunk_path = _write_chunk_file(
+            chunk_dir=chunk_dir,
+            chunk_idx=chunk_idx,
+            count=fill,
+            boards_buf=boards_buf,
+            policies_buf=policies_buf,
+            values_buf=values_buf,
+            game_ids_buf=game_ids_buf,
+            piece_counts_buf=piece_counts_buf,
+            eco_codes_buf=eco_codes_buf,
+        )
+        rel_path = str(chunk_path.relative_to(output_path.parent))
+        chunk_records.append({"path": rel_path, "count": fill})
+        total_written += fill
+        log.info("Wrote chunk %d (%d examples): %s", chunk_idx, fill, chunk_path)
+        chunk_idx += 1
+        fill = 0
+        eco_codes_buf = [None] * chunk_examples
+
+    with multiprocessing.Pool(
+        num_workers,
+        initializer=_init_worker,
+        initargs=(stockfish_path, stockfish_depth, policy_temperature, label_smoothing),
+    ) as pool:
+        positions = _stream_positions(pgn_path, max_positions=max_examples, sample_rate=1.0)
+        results = pool.imap_unordered(_evaluate_position, positions, chunksize=chunksize)
+        for board_np, policy_np, (win, draw, loss), gid, eco, pc in tqdm(
+            results,
+            total=max_examples,
+            desc="Evaluating positions",
+            unit="pos",
+            smoothing=0.1,
+        ):
+            boards_buf[fill] = board_np
+            policies_buf[fill] = policy_np
+            values_buf[fill] = (win, draw, loss)
+            game_ids_buf[fill] = gid
+            piece_counts_buf[fill] = pc
+            eco_codes_buf[fill] = eco
+            fill += 1
+            if fill >= chunk_examples:
+                flush_chunk()
+        flush_chunk()
+
+    manifest = {
+        "format": _CHUNK_FORMAT,
+        "num_planes": num_planes,
+        "total_examples": total_written,
+        "chunks": chunk_records,
+    }
+    torch.save(manifest, output_path)
+    log.info(
+        "Saved chunked manifest with %d examples across %d chunks to %s",
+        total_written,
+        len(chunk_records),
+        output_path,
+    )
+    return total_written
 
 
 def generate_to_file(
@@ -186,8 +309,9 @@ def generate_to_file(
     policy_temperature: float = 80.0,
     label_smoothing: float = 0.02,
     chunksize: int = 64,
-    tactical_fraction: float = 0.0,
     seed: int | None = None,
+    scratch_dir: Path | None = None,
+    chunk_examples: int = 0,
 ) -> int:
     """Stream positions through Stockfish workers into disk-backed memmap arrays.
 
@@ -198,12 +322,47 @@ def generate_to_file(
     if seed is not None:
         random.seed(seed)
 
+    if max_examples < 1:
+        raise ValueError("max_examples must be >= 1")
+    if num_workers < 1:
+        raise ValueError("num_workers must be >= 1")
+    if chunk_examples < 0:
+        raise ValueError("chunk_examples must be >= 0")
+
+    if chunk_examples > 0:
+        log.info(
+            "Chunked generation enabled (chunk_examples=%d, workers=%d)",
+            chunk_examples,
+            num_workers,
+        )
+        return _generate_to_file_chunked(
+            pgn_path=pgn_path,
+            output_path=output_path,
+            stockfish_path=stockfish_path,
+            stockfish_depth=stockfish_depth,
+            max_examples=max_examples,
+            num_workers=num_workers,
+            policy_temperature=policy_temperature,
+            label_smoothing=label_smoothing,
+            chunksize=chunksize,
+            chunk_examples=chunk_examples,
+        )
+
     # Pass 1: count positions to pre-allocate exact array sizes
     log.info("Pass 1: counting positions...")
     total = _count_positions(pgn_path, max_examples)
-    log.info("Found %d positions, starting evaluation with %d workers", total, num_workers)
+    if total <= 0:
+        total = 0
+
+    log.info(
+        "Found %d positions, starting evaluation with %d workers",
+        total,
+        num_workers,
+    )
 
     num_planes = ExtendedBoardEncoder().num_planes
+    estimated_dataset_gib = _estimate_dataset_gib(total, num_planes)
+    log.info("Estimated tensor payload size: %.2f GiB", estimated_dataset_gib)
 
     if total == 0:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,7 +374,9 @@ def generate_to_file(
         return 0
 
     # Create temp directory for memmap files
-    tmp_dir = tempfile.mkdtemp(prefix="denoisr_memmap_")
+    scratch_root = scratch_dir or output_path.parent
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix="denoisr_memmap_", dir=str(scratch_root))
     try:
         # Allocate memmap arrays on disk
         boards_mm = np.memmap(
@@ -295,8 +456,6 @@ def generate_to_file(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-
-
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
@@ -326,8 +485,22 @@ def main() -> None:
     parser.add_argument("--chunksize", type=int, default=64,
         help="imap_unordered chunksize for worker batching (default: 64)")
     parser.add_argument(
-        "--tactical-fraction", type=float, default=0.25,
-        help="Target fraction of tactical positions in dataset (default: 0.25)",
+        "--chunk-examples",
+        type=int,
+        default=0,
+        help=(
+            "Save data in shard files with this many examples per chunk "
+            "(0 = single-file output)"
+        ),
+    )
+    parser.add_argument(
+        "--scratch-dir",
+        type=str,
+        default="outputs/scratch",
+        help=(
+            "Directory for temporary memmap files "
+            "(default: outputs/scratch)"
+        ),
     )
     parser.add_argument(
         "--seed", type=int, default=None,
@@ -352,8 +525,9 @@ def main() -> None:
         policy_temperature=args.policy_temperature,
         label_smoothing=args.label_smoothing,
         chunksize=args.chunksize,
-        tactical_fraction=args.tactical_fraction,
         seed=args.seed,
+        scratch_dir=Path(args.scratch_dir),
+        chunk_examples=args.chunk_examples,
     )
     log.info("Done: %d examples generated.", count)
 

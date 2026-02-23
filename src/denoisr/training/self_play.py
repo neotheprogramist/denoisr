@@ -36,6 +36,8 @@ class SelfPlayConfig:
     max_moves: int = 300
     temperature: float = 1.0
     c_puct: float = 1.4
+    dirichlet_alpha: float = 0.3
+    dirichlet_epsilon: float = 0.25
     temp_schedule: TemperatureSchedule | None = None
 
 
@@ -61,6 +63,8 @@ class SelfPlayActor:
             config=MCTSConfig(
                 num_simulations=config.num_simulations,
                 c_puct=config.c_puct,
+                dirichlet_alpha=config.dirichlet_alpha,
+                dirichlet_epsilon=config.dirichlet_epsilon,
                 temperature=config.temperature,
             ),
         )
@@ -81,6 +85,8 @@ class SelfPlayActor:
                 self._mcts._config = MCTSConfig(
                     num_simulations=self._config.num_simulations,
                     c_puct=self._config.c_puct,
+                    dirichlet_alpha=self._config.dirichlet_alpha,
+                    dirichlet_epsilon=self._config.dirichlet_epsilon,
                     temperature=temp,
                 )
 
@@ -88,7 +94,10 @@ class SelfPlayActor:
             latent = self._encode(board_tensor.unsqueeze(0)).squeeze(0)
             legal_mask = self._game.get_valid_moves(board).data
 
-            visit_dist = self._mcts.search(latent, legal_mask)
+            to_play = 1 if board.turn == chess.WHITE else -1
+            visit_dist = self._mcts.search(
+                latent, legal_mask, root_to_play=to_play
+            )
 
             flat_dist = visit_dist.reshape(-1)
             if flat_dist.sum() == 0:

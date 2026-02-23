@@ -16,14 +16,30 @@ class MCTSConfig:
 
 
 class _Node:
-    __slots__ = ("prior", "visit_count", "value_sum", "children", "state")
+    __slots__ = (
+        "prior",
+        "visit_count",
+        "value_sum",
+        "children",
+        "state",
+        "to_play",
+        "reward_from_parent",
+    )
 
-    def __init__(self, prior: float, state: Tensor | None = None) -> None:
+    def __init__(
+        self,
+        prior: float,
+        state: Tensor | None = None,
+        to_play: int = 1,
+        reward_from_parent: float = 0.0,
+    ) -> None:
         self.prior = prior
         self.visit_count = 0
         self.value_sum = 0.0
         self.children: dict[tuple[int, int], "_Node"] = {}
         self.state = state
+        self.to_play = to_play
+        self.reward_from_parent = reward_from_parent
 
     @property
     def q_value(self) -> float:
@@ -63,14 +79,22 @@ class MCTS:
         self._wm = world_model_fn
         self._config = config
 
-    def search(self, root_state: Tensor, legal_mask: Tensor) -> Tensor:
-        root = _Node(prior=0.0, state=root_state)
+    def search(
+        self,
+        root_state: Tensor,
+        legal_mask: Tensor,
+        root_to_play: int = 1,
+    ) -> Tensor:
+        root = _Node(prior=0.0, state=root_state, to_play=root_to_play)
 
-        policy, _ = self._pv(root_state)
-        policy = policy * legal_mask.float()
-        total = policy.sum()
-        if total > 0:
-            policy = policy / total
+        policy_logits, _ = self._pv(root_state)
+        # Treat policy head output as logits; normalize only over legal moves.
+        masked_logits = policy_logits.masked_fill(~legal_mask, float("-inf"))
+        has_legal = legal_mask.any()
+        if has_legal:
+            policy = torch.softmax(masked_logits.reshape(-1), dim=0).reshape(64, 64)
+        else:
+            policy = torch.zeros_like(policy_logits)
 
         legal_indices = legal_mask.nonzero(as_tuple=False)
         if len(legal_indices) > 0 and self._config.dirichlet_epsilon > 0:
@@ -85,7 +109,10 @@ class MCTS:
                 policy[f, t] = (1 - eps) * orig + eps * noise[idx].item()
 
         for f, t in legal_indices.tolist():
-            root.children[(f, t)] = _Node(prior=policy[f, t].item())
+            root.children[(f, t)] = _Node(
+                prior=policy[f, t].item(),
+                to_play=-root.to_play,
+            )
 
         for _ in range(self._config.num_simulations):
             self._simulate(root)
@@ -108,7 +135,7 @@ class MCTS:
     def _simulate(self, root: _Node) -> float:
         node = root
         path: list[_Node] = [node]
-        action_taken: tuple[int, int] | None = None
+        actions: list[tuple[int, int]] = []
 
         while node.children and node.visit_count > 0:
             best_action = max(
@@ -117,34 +144,45 @@ class MCTS:
                     node.visit_count, self._config.c_puct
                 ),
             )
-            action_taken = best_action
+            actions.append(best_action)
             node = node.children[best_action]
             path.append(node)
 
-        if node.state is None and action_taken is not None:
+        if node.state is None and actions:
             parent = path[-2]
-            f, t = action_taken
+            f, t = actions[-1]
             assert parent.state is not None
             state, reward = self._wm(parent.state, f, t)
             node.state = state
-        else:
-            reward = 0.0
+            node.reward_from_parent = reward
 
         if node.state is not None:
-            policy, value = self._pv(node.state)
-            leaf_value = (value[0] - value[2]).item() + reward
+            policy_logits, value = self._pv(node.state)
+            policy = torch.softmax(policy_logits.reshape(-1), dim=0).reshape(64, 64)
+            # Convert white-centric value into side-to-move perspective.
+            leaf_value = node.to_play * (value[0] - value[2]).item()
 
             if not node.children:
                 for fi in range(64):
                     for ti in range(64):
                         p = policy[fi, ti].item()
                         if p > 1e-8:
-                            node.children[(fi, ti)] = _Node(prior=p)
+                            node.children[(fi, ti)] = _Node(
+                                prior=p,
+                                to_play=-node.to_play,
+                            )
         else:
             leaf_value = 0.0
 
-        for n in path:
-            n.visit_count += 1
-            n.value_sum += leaf_value
+        # Backup with alternating turns and edge rewards:
+        # V_parent = r(parent->child) - V_child
+        value_to_backup = leaf_value
+        for i in range(len(path) - 1, -1, -1):
+            cur = path[i]
+            cur.visit_count += 1
+            cur.value_sum += value_to_backup
+            if i > 0:
+                reward = path[i].reward_from_parent
+                value_to_backup = reward - value_to_backup
 
-        return leaf_value
+        return value_to_backup

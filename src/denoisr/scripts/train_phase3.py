@@ -9,6 +9,7 @@ trajectories with the latest model weights.
 
 import argparse
 import logging
+import random
 from pathlib import Path
 
 import torch
@@ -41,6 +42,8 @@ from denoisr.training.self_play import (
     SelfPlayConfig,
     TemperatureSchedule,
 )
+from denoisr.training.loss import ChessLossComputer
+from denoisr.training.supervised_trainer import SupervisedTrainer
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +59,8 @@ def main() -> None:
     parser.add_argument("--mcts-sims", type=int, default=800)
     parser.add_argument("--buffer-capacity", type=int, default=100_000)
     parser.add_argument("--alpha-generations", type=int, default=50)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--train-batch-size", type=int, default=256)
     parser.add_argument("--output", type=str, default="outputs/phase3.pt")
     parser.add_argument("--save-every", type=int, default=10)
     add_model_args(parser)
@@ -127,6 +132,8 @@ def main() -> None:
         max_moves=tcfg.max_moves,
         temperature=tcfg.temperature_base,
         c_puct=tcfg.c_puct,
+        dirichlet_alpha=tcfg.dirichlet_alpha,
+        dirichlet_epsilon=tcfg.dirichlet_epsilon,
         temp_schedule=temp_schedule,
     )
 
@@ -155,6 +162,29 @@ def main() -> None:
             phase2_gate=tcfg.phase2_gate,
             alpha_generations=args.alpha_generations,
         )
+    )
+    loss_fn = ChessLossComputer(
+        policy_weight=tcfg.policy_weight,
+        value_weight=tcfg.value_weight,
+        illegal_penalty_weight=tcfg.illegal_penalty_weight,
+        use_harmony_dream=tcfg.use_harmony_dream,
+        harmony_ema_decay=tcfg.harmony_ema_decay,
+    )
+    trainer = SupervisedTrainer(
+        encoder=encoder,
+        backbone=backbone,
+        policy_head=policy_head,
+        value_head=value_head,
+        loss_fn=loss_fn,
+        lr=args.lr,
+        device=device,
+        total_epochs=max(1, args.generations),
+        warmup_epochs=tcfg.warmup_epochs,
+        max_grad_norm=tcfg.max_grad_norm,
+        weight_decay=tcfg.weight_decay,
+        encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
+        min_lr=tcfg.min_lr,
+        use_warm_restarts=tcfg.use_warm_restarts,
     )
     # Advance to phase 3 (gates already passed)
     orchestrator.check_gate({"top1_accuracy": 1.0})
@@ -191,6 +221,7 @@ def main() -> None:
 
         # 2. Reanalyse old games
         reanalyse_count = 0
+        reanalysed_examples = []
         if len(buffer) >= args.reanalyse_per_gen:
             old_records = buffer.sample(args.reanalyse_per_gen)
             ra_pbar = tqdm(
@@ -203,22 +234,34 @@ def main() -> None:
             for old_record in ra_pbar:
                 examples = reanalyser.reanalyse(old_record)
                 reanalyse_count += len(examples)
+                reanalysed_examples.extend(examples)
                 ra_pbar.set_postfix(examples=reanalyse_count)
-                # TODO: train on reanalysed examples
             ra_pbar.close()
 
         # 3. Train on replay buffer batch
-        # TODO: convert game records to training examples and run trainer
+        train_batches = 0
+        avg_train_loss = 0.0
+        if reanalysed_examples:
+            random.shuffle(reanalysed_examples)
+            train_loss_sum = 0.0
+            for i in range(0, len(reanalysed_examples), args.train_batch_size):
+                batch = reanalysed_examples[i : i + args.train_batch_size]
+                loss, _ = trainer.train_step(batch)
+                train_loss_sum += loss
+                train_batches += 1
+            trainer.scheduler_step()
+            avg_train_loss = train_loss_sum / max(train_batches, 1)
 
         gen_pbar.set_postfix(
             buf=len(buffer),
             alpha=f"{alpha:.2f}",
+            train=f"{avg_train_loss:.3f}" if train_batches > 0 else "n/a",
             W=results["wins"],
             D=results["draws"],
             L=results["losses"],
         )
         log.info(
-            "gen %d/%d buffer=%d alpha=%.2f temp=%.3f W/D/L=%d/%d/%d reanalysed=%d",
+            "gen %d/%d buffer=%d alpha=%.2f temp=%.3f W/D/L=%d/%d/%d reanalysed=%d train_batches=%d train_loss=%.4f",
             gen + 1,
             args.generations,
             len(buffer),
@@ -228,6 +271,8 @@ def main() -> None:
             results["draws"],
             results["losses"],
             reanalyse_count,
+            train_batches,
+            avg_train_loss,
         )
 
         # 4. Checkpoint
@@ -242,6 +287,7 @@ def main() -> None:
                 world_model=world_model.state_dict(),
                 diffusion=diffusion.state_dict(),
                 consistency=consistency.state_dict(),
+                optimizer=trainer.optimizer.state_dict(),
                 generation=gen + 1,
             )
 

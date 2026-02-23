@@ -24,6 +24,7 @@ class TrajectoryBatch:
     policies: Tensor  # [N, T-1, 64, 64] one-hot from played move
     values: Tensor  # [N, 3] WDL from game result
     rewards: Tensor  # [N, T-1] per-move reward signal
+    legal_masks: Tensor | None = None  # [N, T-1, 64, 64] legal move mask
 
     def __post_init__(self) -> None:
         B, T = self.boards.shape[:2]
@@ -50,6 +51,17 @@ class TrajectoryBatch:
                 f"values batch dim {self.values.shape[0]} != boards batch "
                 f"dim {B}"
             )
+        if self.legal_masks is not None:
+            lm = self.legal_masks
+            if lm.shape[0] != B:
+                raise ValueError(
+                    f"legal_masks batch dim {lm.shape[0]} != boards batch dim {B}"
+                )
+            if lm.shape[1] != Tm1:
+                raise ValueError(
+                    f"legal_masks time dim {lm.shape[1]} != expected {Tm1} "
+                    f"(boards T={T})"
+                )
 
 
 class Phase2Trainer:
@@ -146,6 +158,11 @@ class Phase2Trainer:
             pred_value, _pred_ply = self.value_head(feat_sv)
 
             target_policy = batch.policies.reshape(B * Tm1, 64, 64)
+            target_legal_mask = (
+                batch.legal_masks.reshape(B * Tm1, 64, 64)
+                if batch.legal_masks is not None
+                else None
+            )
             target_value = (
                 batch.values.unsqueeze(1).expand(B, Tm1, 3).reshape(B * Tm1, 3)
             )
@@ -193,6 +210,7 @@ class Phase2Trainer:
                 pred_value,
                 target_policy,
                 target_value,
+                policy_legal_mask=target_legal_mask,
                 consistency_loss=consistency_loss,
                 diffusion_loss=diffusion_loss,
                 reward_loss=reward_loss,
@@ -235,6 +253,7 @@ def evaluate_phase2_gate(
     target_to: Tensor,
     device: torch.device,
     num_diff_steps: int = 10,
+    legal_mask: Tensor | None = None,
 ) -> tuple[float, float, float]:
     """Compare single-step vs diffusion-conditioned accuracy.
 
@@ -252,6 +271,16 @@ def evaluate_phase2_gate(
         features = backbone(latent)
         logits = policy_head(features)
         flat_logits = logits.reshape(logits.shape[0], -1)
+        if legal_mask is not None:
+            flat_legal = legal_mask.reshape(logits.shape[0], -1).to(
+                device=device, dtype=torch.bool
+            )
+            has_legal = flat_legal.any(dim=-1, keepdim=True)
+            flat_logits = flat_logits.masked_fill(~flat_legal, float("-inf"))
+            # Guard all-zero legal rows.
+            flat_logits = flat_logits.masked_fill(
+                ~has_legal.expand_as(flat_logits), 0.0
+            )
         pred_flat = flat_logits.argmax(dim=-1)
         pred_from = pred_flat // 64
         pred_to = pred_flat % 64
@@ -266,6 +295,15 @@ def evaluate_phase2_gate(
         features_diff = backbone(fused)
         logits_diff = policy_head(features_diff)
         flat_diff = logits_diff.reshape(logits_diff.shape[0], -1)
+        if legal_mask is not None:
+            flat_legal = legal_mask.reshape(logits_diff.shape[0], -1).to(
+                device=device, dtype=torch.bool
+            )
+            has_legal = flat_legal.any(dim=-1, keepdim=True)
+            flat_diff = flat_diff.masked_fill(~flat_legal, float("-inf"))
+            flat_diff = flat_diff.masked_fill(
+                ~has_legal.expand_as(flat_diff), 0.0
+            )
         pred_flat_diff = flat_diff.argmax(dim=-1)
         pred_from_diff = pred_flat_diff // 64
         pred_to_diff = pred_flat_diff % 64

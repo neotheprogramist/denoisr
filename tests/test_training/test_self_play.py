@@ -60,6 +60,28 @@ class TestSelfPlayActor:
             assert 0 <= action.from_square < 64
             assert 0 <= action.to_square < 64
 
+    def test_dirichlet_params_propagate_to_mcts(self) -> None:
+        model = _DummyModel(SMALL_D_S)
+        actor = SelfPlayActor(
+            policy_value_fn=model.predict,
+            world_model_fn=model.predict_next,
+            encode_fn=model.encode,
+            game=ChessGame(),
+            board_encoder=ExtendedBoardEncoder(),
+            config=SelfPlayConfig(
+                num_simulations=5,
+                max_moves=1,
+                temperature=1.0,
+                c_puct=1.4,
+                dirichlet_alpha=0.7,
+                dirichlet_epsilon=0.15,
+                temp_schedule=TemperatureSchedule(base=1.0, explore_moves=1),
+            ),
+        )
+        actor.play_game(generation=0)
+        assert actor._mcts._config.dirichlet_alpha == pytest.approx(0.7)
+        assert actor._mcts._config.dirichlet_epsilon == pytest.approx(0.15)
+
 
 class TestTemperatureSchedule:
     def test_explore_phase_returns_base(self) -> None:

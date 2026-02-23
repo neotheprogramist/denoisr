@@ -56,13 +56,22 @@ class ChessLossComputer:
         pred_value: Tensor,
         target_policy: Tensor,
         target_value: Tensor,
+        policy_legal_mask: Tensor | None = None,
         **auxiliary_losses: Tensor,
     ) -> tuple[Tensor, dict[str, float]]:
         B = pred_policy.shape[0]
         pred_flat = pred_policy.reshape(B, -1)
         target_flat = target_policy.reshape(B, -1)
-        # Mask illegal moves: set logits to -inf where target is zero
-        legal_mask = target_flat > 0
+        # Mask illegal moves using explicit legal mask when provided.
+        # Fallback to target>0 keeps backward compatibility for legacy callers.
+        if policy_legal_mask is not None:
+            legal_mask = policy_legal_mask.reshape(B, -1).to(
+                device=pred_flat.device, dtype=torch.bool
+            )
+            # Ensure any nonzero target support is always treated as legal.
+            legal_mask = legal_mask | (target_flat > 0)
+        else:
+            legal_mask = target_flat > 0
         has_legal = legal_mask.any(dim=-1, keepdim=True)
         masked_logits = pred_flat.masked_fill(~legal_mask, float("-inf"))
         # Guard all-zero rows: replace all-inf rows with zeros to avoid NaN

@@ -136,12 +136,36 @@ def test_fetch_data_calls_wget_when_missing(tmp_path: Path) -> None:
 
 def test_generate_data_calls_generate(tmp_path: Path) -> None:
     """step_generate_data calls generate_to_file with correct params."""
-    cfg = _make_cfg(tmp_path)
+    cfg = PipelineConfig(
+        data=DataConfig(
+            pgn_url="https://example.com/test.pgn.zst",
+            pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
+            max_examples=123,
+            workers=4,
+            scratch_dir=str(tmp_path / "scratch"),
+            chunk_examples=2048,
+        ),
+        model=ModelSectionConfig(
+            d_s=64,
+            num_heads=4,
+            num_layers=2,
+            ffn_dim=128,
+            num_timesteps=10,
+        ),
+        phase1=Phase1Config(lr=3e-4, batch_size=32),
+        phase2=Phase2Config(epochs=5, lr=3e-4, batch_size=16, seq_len=4),
+        phase3=Phase3Config(generations=10, games_per_gen=5, mcts_sims=50),
+        output=OutputConfig(dir=str(tmp_path / "outputs")),
+    )
     state = PipelineState()
 
     with patch("denoisr.scripts.generate_data.generate_to_file", return_value=100) as mock_gen:
         step_generate_data(cfg, state)
         mock_gen.assert_called_once()
+        kwargs = mock_gen.call_args.kwargs
+        assert kwargs["max_examples"] == 123
+        assert kwargs["scratch_dir"] == Path(tmp_path / "scratch")
+        assert kwargs["chunk_examples"] == 2048
 
     assert state.last_data != ""
     assert state.updated_at != ""

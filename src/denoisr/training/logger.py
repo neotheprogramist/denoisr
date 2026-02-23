@@ -85,6 +85,7 @@ class TrainingLogger:
         epoch: int,
         total_epochs: int,
         losses: dict[str, float],
+        step_losses: list[float] | None = None,
         lr: float,
         grad_norms: list[float],
         samples_per_sec: float,
@@ -168,7 +169,7 @@ class TrainingLogger:
         self._tb_accuracy(epoch, accuracy)
         self._tb_lr(epoch, lr)
         self._tb_timing(epoch, duration_s, samples_per_sec)
-        self._tb_dynamics(epoch, losses, grad_norms)
+        self._tb_dynamics(epoch, losses, grad_norms, step_losses)
         self._tb_resources(epoch, resources)
         self._tb_pipeline(epoch, data_pct, duration_s)
 
@@ -212,6 +213,7 @@ class TrainingLogger:
         epoch: int,
         losses: dict[str, float],
         grad_norms: list[float],
+        step_losses: list[float] | None,
     ) -> None:
         if not grad_norms:
             return
@@ -223,7 +225,11 @@ class TrainingLogger:
         self._writer.add_scalar("dynamics/grad_norm_avg", gn_avg, epoch)
         self._writer.add_scalar("dynamics/grad_norm_peak", gn_peak, epoch)
 
-        loss_vals = list(losses.values())
+        loss_vals = (
+            [v for v in step_losses if math.isfinite(v)]
+            if step_losses is not None
+            else list(losses.values())
+        )
         loss_sd = stdev(loss_vals) if len(loss_vals) > 1 else 0.0
         self._writer.add_scalar("dynamics/loss_stddev", loss_sd, epoch)
 

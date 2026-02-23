@@ -67,6 +67,7 @@ def extract_trajectories(
     all_actions_from: list[torch.Tensor] = []
     all_actions_to: list[torch.Tensor] = []
     all_policies: list[torch.Tensor] = []
+    all_legal_masks: list[torch.Tensor] = []
     all_values: list[torch.Tensor] = []
     all_rewards: list[torch.Tensor] = []
 
@@ -76,7 +77,7 @@ def extract_trajectories(
     )
 
     for record in streamer.stream(pgn_path):
-        if len(record.actions) < seq_len:
+        if len(record.actions) < (seq_len - 1):
             continue
 
         # WDL from game result
@@ -94,10 +95,16 @@ def extract_trajectories(
         boards: list[torch.Tensor] = [encoder.encode(board).data]
         from_sqs: list[int] = []
         to_sqs: list[int] = []
+        legal_masks: list[torch.Tensor] = []
         # Track whose turn it is before each move
         move_turns: list[bool] = []  # True = WHITE moved
 
         for action in record.actions:
+            legal = torch.zeros(64, 64, dtype=torch.float32)
+            for legal_move in board.legal_moves:
+                legal[legal_move.from_square, legal_move.to_square] = 1.0
+            legal_masks.append(legal)
+
             move_turns.append(board.turn == chess.WHITE)
             from_sqs.append(action.from_square)
             to_sqs.append(action.to_square)
@@ -108,10 +115,11 @@ def extract_trajectories(
             board.push(move)
             boards.append(encoder.encode(board).data)
 
-        for start in range(0, len(boards) - seq_len, seq_len):
+        for start in range(0, len(boards) - seq_len + 1, seq_len):
             chunk_boards = boards[start : start + seq_len]
             chunk_from = from_sqs[start : start + seq_len - 1]
             chunk_to = to_sqs[start : start + seq_len - 1]
+            chunk_legal = legal_masks[start : start + seq_len - 1]
 
             policies = torch.zeros(seq_len - 1, 64, 64)
             for j in range(seq_len - 1):
@@ -132,6 +140,7 @@ def extract_trajectories(
                 torch.tensor(chunk_to, dtype=torch.long),
             )
             all_policies.append(policies)
+            all_legal_masks.append(torch.stack(chunk_legal))
             all_values.append(wdl)
             all_rewards.append(rewards)
 
@@ -150,6 +159,7 @@ def extract_trajectories(
         actions_from=torch.stack(all_actions_from),
         actions_to=torch.stack(all_actions_to),
         policies=torch.stack(all_policies),
+        legal_masks=torch.stack(all_legal_masks),
         values=torch.stack(all_values),
         rewards=torch.stack(all_rewards),
     )
@@ -278,6 +288,7 @@ def main() -> None:
         trajectory_data.actions_from[:n_train],
         trajectory_data.actions_to[:n_train],
         trajectory_data.policies[:n_train],
+        trajectory_data.legal_masks[:n_train],
         trajectory_data.values[:n_train],
         trajectory_data.rewards[:n_train],
     )
@@ -320,7 +331,14 @@ def main() -> None:
             step_losses: list[float] = []
             step_grad_norms: list[float] = []
             overflow_count = 0
-            last_breakdown: dict[str, float] = {}
+            loss_sums = {
+                "policy": 0.0,
+                "value": 0.0,
+                "diffusion": 0.0,
+                "consistency": 0.0,
+                "state": 0.0,
+                "reward": 0.0,
+            }
             data_time = 0.0
             compute_time = 0.0
 
@@ -331,7 +349,7 @@ def main() -> None:
                 disable=not use_tqdm,
             )
             data_start = time.monotonic()
-            for boards, af, at, pols, vals, rews in pbar:
+            for boards, af, at, pols, legal, vals, rews in pbar:
                 data_time += time.monotonic() - data_start
 
                 batch = TrajectoryBatch(
@@ -339,6 +357,7 @@ def main() -> None:
                     actions_from=af.to(device, non_blocking=True),
                     actions_to=at.to(device, non_blocking=True),
                     policies=pols.to(device, non_blocking=True),
+                    legal_masks=legal.to(device, non_blocking=True),
                     values=vals.to(device, non_blocking=True),
                     rewards=rews.to(device, non_blocking=True),
                 )
@@ -350,8 +369,9 @@ def main() -> None:
                 compute_time += time.monotonic() - compute_start
 
                 logger.log_train_step(global_step, loss, breakdown)
-                last_breakdown = breakdown
                 step_losses.append(loss)
+                for key in loss_sums:
+                    loss_sums[key] += float(breakdown.get(key, 0.0))
                 grad_norm = breakdown.get("grad_norm", 0.0)
                 if not math.isfinite(grad_norm):
                     overflow_count += 1
@@ -379,6 +399,9 @@ def main() -> None:
 
             samples_per_sec = num_samples / max(epoch_duration, 1e-9)
             current_lr = trainer.optimizer.param_groups[0]["lr"]
+            avg_breakdown = {
+                k: v / max(num_batches, 1) for k, v in loss_sums.items()
+            }
 
             # Build resource dict in the format log_epoch_line expects
             raw_res = monitor.summarize()
@@ -411,13 +434,14 @@ def main() -> None:
                 total_epochs=args.epochs,
                 losses={
                     "loss": avg_loss,
-                    "pol": last_breakdown.get("policy", 0.0),
-                    "val": last_breakdown.get("value", 0.0),
-                    "diff": last_breakdown.get("diffusion", 0.0),
-                    "cons": last_breakdown.get("consistency", 0.0),
-                    "state": last_breakdown.get("state", 0.0),
-                    "rew": last_breakdown.get("reward", 0.0),
+                    "pol": avg_breakdown["policy"],
+                    "val": avg_breakdown["value"],
+                    "diff": avg_breakdown["diffusion"],
+                    "cons": avg_breakdown["consistency"],
+                    "state": avg_breakdown["state"],
+                    "rew": avg_breakdown["reward"],
                 },
+                step_losses=step_losses,
                 lr=current_lr,
                 grad_norms=step_grad_norms,
                 samples_per_sec=samples_per_sec,
@@ -467,6 +491,9 @@ def main() -> None:
         holdout_boards = trajectory_data.boards[
             n_train:, 0
         ].to(device)
+        holdout_legal = trajectory_data.legal_masks[
+            n_train:, 0
+        ].to(device)
         holdout_from = trajectory_data.actions_from[
             n_train:, 0
         ].to(device)
@@ -484,6 +511,7 @@ def main() -> None:
             target_from=holdout_from,
             target_to=holdout_to,
             device=device,
+            legal_mask=holdout_legal,
         )
         log.info(
             "Phase 2 gate: single=%.1f%%  diffusion=%.1f%%  "
@@ -503,6 +531,7 @@ def main() -> None:
                     target_from=holdout_from,
                     target_to=holdout_to,
                     device=device,
+                    legal_mask=holdout_legal,
                 )
             log.info(
                 "Phase 2 gate (EMA): single=%.1f%%  diffusion=%.1f%%  "

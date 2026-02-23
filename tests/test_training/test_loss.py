@@ -252,3 +252,29 @@ class TestChessLossComputer:
         # Gradient should be nonzero at illegal positions
         assert pred_policy.grad is not None
         assert pred_policy.grad[0, 0, 0].abs().item() > 0
+
+    def test_explicit_legal_mask_keeps_policy_loss_informative(self) -> None:
+        """With one-hot target, policy loss should remain nonzero when
+        legal_mask contains multiple legal moves."""
+        loss_fn = ChessLossComputer()
+        pred_policy = torch.zeros(1, 64, 64)
+        pred_policy[0, 10, 11] = 0.0
+        pred_policy[0, 10, 12] = 0.0
+        pred_value = torch.randn(1, 3)
+
+        target_policy = torch.zeros(1, 64, 64)
+        target_policy[0, 10, 11] = 1.0
+
+        legal_mask = torch.zeros(1, 64, 64, dtype=torch.bool)
+        legal_mask[0, 10, 11] = True
+        legal_mask[0, 10, 12] = True
+
+        target_value = torch.tensor([[1.0, 0.0, 0.0]])
+        _, breakdown = loss_fn.compute(
+            pred_policy,
+            pred_value,
+            target_policy,
+            target_value,
+            policy_legal_mask=legal_mask,
+        )
+        assert breakdown["policy"] > 0.0

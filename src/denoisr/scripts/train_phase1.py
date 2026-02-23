@@ -48,6 +48,7 @@ from denoisr.types.board import BoardTensor
 from denoisr.types.training import PolicyTarget, ValueTarget
 
 log = logging.getLogger(__name__)
+_CHUNK_FORMAT = "chunked_v1"
 
 
 def _unstack_tensor_dict(data: dict[str, Any]) -> list[TrainingExample]:
@@ -86,6 +87,39 @@ def _unstack_tensor_dict(data: dict[str, Any]) -> list[TrainingExample]:
         )
         for i in range(n)
     ]
+
+
+def _load_examples_from_data(path: Path) -> list[TrainingExample]:
+    """Load examples from either legacy single-file or chunked manifest format."""
+    raw = torch.load(path, weights_only=True)
+    if isinstance(raw, dict) and raw.get("format") == _CHUNK_FORMAT:
+        chunks = raw.get("chunks", [])
+        if not isinstance(chunks, list):
+            raise ValueError("Chunked manifest has invalid 'chunks' field")
+        all_examples: list[TrainingExample] = []
+        for idx, chunk_meta in enumerate(chunks):
+            if not isinstance(chunk_meta, dict):
+                raise ValueError(f"Chunk metadata at index {idx} is invalid")
+            rel_path = chunk_meta.get("path")
+            if not isinstance(rel_path, str) or rel_path == "":
+                raise ValueError(f"Chunk metadata at index {idx} missing path")
+            chunk_path = path.parent / rel_path
+            chunk_raw = torch.load(chunk_path, weights_only=True)
+            if not isinstance(chunk_raw, dict):
+                raise ValueError(f"Chunk file {chunk_path} is not a tensor dict")
+            all_examples.extend(_unstack_tensor_dict(chunk_raw))
+        expected_total = raw.get("total_examples")
+        if isinstance(expected_total, int) and expected_total != len(all_examples):
+            log.warning(
+                "Chunked manifest total_examples=%d but loaded=%d",
+                expected_total,
+                len(all_examples),
+            )
+        return all_examples
+
+    if not isinstance(raw, dict):
+        raise ValueError(f"Unexpected training data format at {path}")
+    return _unstack_tensor_dict(raw)
 
 
 def measure_accuracy(
@@ -186,8 +220,7 @@ def main() -> None:
     value_head = maybe_compile(value_head, device)
 
     # --- Load pre-generated data ---
-    raw = torch.load(Path(args.data), weights_only=True)
-    all_examples = _unstack_tensor_dict(raw)
+    all_examples = _load_examples_from_data(Path(args.data))
     log.info("examples=%d  source=%s", len(all_examples), args.data)
     random.shuffle(all_examples)
 
@@ -350,6 +383,8 @@ def main() -> None:
             monitor.reset()
             step_losses: list[float] = []
             step_grad_norms: list[float] = []
+            policy_loss_sum = 0.0
+            value_loss_sum = 0.0
             overflow_count = 0
             data_time = 0.0
             compute_time = 0.0
@@ -382,6 +417,8 @@ def main() -> None:
                     )
                     logger.log_grok_metrics(global_step, grok_metrics)
                 step_losses.append(loss)
+                policy_loss_sum += float(breakdown.get("policy", 0.0))
+                value_loss_sum += float(breakdown.get("value", 0.0))
                 if breakdown.get("overflow", False):
                     overflow_count += 1
                 else:
@@ -414,6 +451,8 @@ def main() -> None:
                 )
             current_lr = trainer.optimizer.param_groups[0]["lr"]
             head_lr = trainer.optimizer.param_groups[2]["lr"]
+            avg_policy_loss = policy_loss_sum / max(num_batches, 1)
+            avg_value_loss = value_loss_sum / max(num_batches, 1)
 
             resource_metrics = monitor.summarize()
             resources: dict[str, str] | None = None
@@ -437,9 +476,10 @@ def main() -> None:
                 total_epochs=args.epochs,
                 losses={
                     "loss": avg_loss,
-                    "pol": breakdown["policy"],
-                    "val": breakdown["value"],
+                    "pol": avg_policy_loss,
+                    "val": avg_value_loss,
                 },
+                step_losses=step_losses,
                 accuracy={"top1": top1 * 100, "top5": top5 * 100},
                 lr=current_lr,
                 grad_norms=step_grad_norms,

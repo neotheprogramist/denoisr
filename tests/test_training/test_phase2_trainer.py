@@ -229,6 +229,8 @@ class TestExtractTrajectories:
         assert batch.actions_from.shape[1] == 2
         assert batch.actions_to.shape[1] == 2
         assert batch.policies.shape[1] == 2
+        assert batch.legal_masks is not None
+        assert batch.legal_masks.shape[1] == 2
         assert batch.values.shape[1] == 3
 
     def test_policy_targets_are_one_hot(
@@ -262,6 +264,21 @@ class TestExtractTrajectories:
         # Game result is 1-0, so all rewards are +1 or -1
         for r in batch.rewards.flatten():
             assert abs(r.item()) == pytest.approx(1.0)
+
+    def test_extract_includes_exact_fit_window(self, tmp_path: Path) -> None:
+        """If len(boards)==seq_len, extractor should still return one trajectory."""
+        pgn = tmp_path / "exact_fit.pgn"
+        pgn.write_text(
+            '[Event "ExactFit"]\n'
+            '[Result "1-0"]\n'
+            "\n"
+            "1. e2e4 e7e5 *\n\n"
+        )
+        encoder = ExtendedBoardEncoder()
+        batch = extract_trajectories(
+            pgn, encoder, seq_len=3, max_trajectories=10,
+        )
+        assert batch.boards.shape[0] == 1
 
 
 class TestPhase2Gate:

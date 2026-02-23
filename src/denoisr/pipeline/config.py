@@ -15,8 +15,9 @@ class DataConfig:
     stockfish_path: str = ""
     stockfish_depth: int = 10
     max_examples: int = 2_000_000
-    tactical_fraction: float = 0.25
     workers: int = 0
+    scratch_dir: str = "outputs/scratch"
+    chunk_examples: int = 0
 
 
 
