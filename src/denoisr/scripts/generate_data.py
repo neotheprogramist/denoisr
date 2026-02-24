@@ -1,6 +1,9 @@
 """Generate training data: PGN + Stockfish -> stacked tensors on disk.
 
 Produces a .pt file with:
+    format: "chunked_v1"
+    chunks: [{path, count}, ...]
+and a sibling chunk directory containing:
     boards:   Tensor[N, C, 8, 8]  (C = num encoder planes, default 122)
     policies: Tensor[N, 64, 64]
     values:   Tensor[N, 3]        (win, draw, loss per example)
@@ -8,19 +11,16 @@ Produces a .pt file with:
 Stockfish evaluation is parallelized across multiple worker processes,
 each owning its own Stockfish subprocess.
 
-The main() entry point uses generate_to_file() which streams results into
-disk-backed numpy memory-mapped arrays, keeping RSS at ~4-8 GB even for
-tens of millions of examples.
+The main() entry point uses generate_to_file() which always writes chunked
+output (single code path).
 """
 
 import atexit
 import logging
 import multiprocessing
-import os
 import random
 import shutil
 import sys
-import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,22 +118,6 @@ def _evaluate_position(meta: _PositionMeta) -> _EvalResultWithMeta:
 # -- Streaming helpers ----------------------------------------------------
 
 
-def _count_positions(
-    pgn_path: Path,
-    max_positions: int,
-) -> int:
-    """Fast PGN-only pass that counts available positions (no Stockfish)."""
-    streamer = SimplePGNStreamer()
-    count = 0
-    for record in streamer.stream(pgn_path):
-        moves_in_game = len(record.actions)
-        remaining = max_positions - count
-        count += min(moves_in_game, remaining)
-        if count >= max_positions:
-            break
-    return count
-
-
 def _stream_positions(
     pgn_path: Path,
     max_positions: int,
@@ -173,13 +157,12 @@ def _stream_positions(
             break
 
 
-_GIB = 1024 * 1024 * 1024
 _CHUNK_FORMAT = "chunked_v1"
 
 
-def _estimate_dataset_gib(num_examples: int, num_planes: int) -> float:
+def _estimate_chunk_buffer_gib(num_examples: int, num_planes: int) -> float:
     bytes_per_example = ((num_planes * 8 * 8) + (64 * 64) + 3) * 4
-    return (num_examples * bytes_per_example) / _GIB
+    return (num_examples * bytes_per_example) / (1024 * 1024 * 1024)
 
 
 def _write_chunk_file(
@@ -320,17 +303,11 @@ def generate_to_file(
     num_workers: int,
     policy_temperature: float = 80.0,
     label_smoothing: float = 0.02,
-    chunksize: int = 64,
+    chunksize: int = 1_024,
     seed: int | None = None,
-    scratch_dir: Path | None = None,
-    chunk_examples: int = 0,
+    chunk_examples: int = 1_000_000,
 ) -> int:
-    """Stream positions through Stockfish workers into disk-backed memmap arrays.
-
-    Returns the number of examples written. RSS stays at ~4-8 GB even for
-    tens of millions of examples because the large arrays (boards, policies,
-    values) live in memory-mapped files that the OS pages in/out on demand.
-    """
+    """Generate chunked training data and write a manifest."""
     if seed is not None:
         random.seed(seed)
 
@@ -338,160 +315,36 @@ def generate_to_file(
         raise ValueError("max_examples must be >= 1")
     if num_workers < 1:
         raise ValueError("num_workers must be >= 1")
+    if chunksize < 1:
+        raise ValueError("chunksize must be >= 1")
     if not stockfish_path.strip():
         raise ValueError(
             "stockfish_path must be a non-empty executable path or command"
         )
-    if chunk_examples < 0:
-        raise ValueError("chunk_examples must be >= 0")
-
-    if chunk_examples > 0:
-        log.info(
-            "Chunked generation enabled (chunk_examples=%d, workers=%d)",
-            chunk_examples,
-            num_workers,
-        )
-        return _generate_to_file_chunked(
-            pgn_path=pgn_path,
-            output_path=output_path,
-            stockfish_path=stockfish_path,
-            stockfish_depth=stockfish_depth,
-            max_examples=max_examples,
-            num_workers=num_workers,
-            policy_temperature=policy_temperature,
-            label_smoothing=label_smoothing,
-            chunksize=chunksize,
-            chunk_examples=chunk_examples,
-        )
-
-    # Pass 1: count positions to pre-allocate exact array sizes
-    log.info("Pass 1: counting positions...")
-    total = _count_positions(pgn_path, max_examples)
-    if total <= 0:
-        total = 0
-
-    log.info(
-        "Found %d positions, starting evaluation with %d workers",
-        total,
-        num_workers,
-    )
+    if chunk_examples < 1:
+        raise ValueError("chunk_examples must be >= 1")
 
     num_planes = ExtendedBoardEncoder().num_planes
-    estimated_dataset_gib = _estimate_dataset_gib(total, num_planes)
-    log.info("Estimated tensor payload size: %.2f GiB", estimated_dataset_gib)
-
-    if total == 0:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "boards": torch.empty(0, num_planes, 8, 8),
-                "policies": torch.empty(0, 64, 64),
-                "values": torch.empty(0, 3),
-            },
-            output_path,
-        )
-        return 0
-
-    # Create temp directory for memmap files
-    scratch_root = scratch_dir or output_path.parent
-    scratch_root.mkdir(parents=True, exist_ok=True)
-    tmp_dir = tempfile.mkdtemp(prefix="denoisr_memmap_", dir=str(scratch_root))
-    try:
-        # Allocate memmap arrays on disk
-        boards_mm = np.memmap(
-            os.path.join(tmp_dir, "boards.dat"),
-            dtype=np.float32,
-            mode="w+",
-            shape=(total, num_planes, 8, 8),
-        )
-        policies_mm = np.memmap(
-            os.path.join(tmp_dir, "policies.dat"),
-            dtype=np.float32,
-            mode="w+",
-            shape=(total, 64, 64),
-        )
-        values_mm = np.memmap(
-            os.path.join(tmp_dir, "values.dat"),
-            dtype=np.float32,
-            mode="w+",
-            shape=(total, 3),
-        )
-
-        # Small metadata arrays stay in RAM (~200 MB at 16M examples)
-        game_ids = np.empty(total, dtype=np.int64)
-        piece_counts = np.empty(total, dtype=np.int32)
-        eco_codes: list[str | None] = [None] * total
-
-        # Pass 2: stream positions through worker pool into memmap
-        idx = 0
-        with multiprocessing.Pool(
-            num_workers,
-            initializer=_init_worker,
-            initargs=(
-                stockfish_path,
-                stockfish_depth,
-                policy_temperature,
-                label_smoothing,
-            ),
-        ) as pool:
-            # Compute sample_rate for random sub-sampling across the PGN.
-            # If we found more positions than needed, randomly skip some
-            # so we get a uniform sample rather than the first N positions.
-            sample_rate = (
-                min(1.0, max_examples / max(total, 1)) if total > max_examples else 1.0
-            )
-            positions = _stream_positions(
-                pgn_path,
-                max_examples,
-                sample_rate=sample_rate,
-            )
-            results = pool.imap_unordered(
-                _evaluate_position,
-                positions,
-                chunksize=chunksize,
-            )
-            for board_np, policy_np, (win, draw, loss), gid, eco, pc in tqdm(
-                results,
-                total=total,
-                desc="Evaluating positions",
-                unit="pos",
-                smoothing=0.1,
-            ):
-                boards_mm[idx] = board_np
-                policies_mm[idx] = policy_np
-                values_mm[idx] = (win, draw, loss)
-                game_ids[idx] = gid
-                eco_codes[idx] = eco
-                piece_counts[idx] = pc
-                idx += 1
-
-        # Flush memmap to disk before creating torch views
-        boards_mm.flush()
-        policies_mm.flush()
-        values_mm.flush()
-
-        log.info("Evaluated %d positions, saving to %s...", idx, output_path)
-
-        # Build output dict with zero-copy torch views on memmap.
-        # torch.from_numpy on a memmap shares the backing file —
-        # torch.save reads pages on demand via the OS page cache.
-        result: dict[str, Any] = {
-            "boards": torch.from_numpy(np.asarray(boards_mm)),
-            "policies": torch.from_numpy(np.asarray(policies_mm)),
-            "values": torch.from_numpy(np.asarray(values_mm)),
-            "game_ids": torch.from_numpy(game_ids),
-            "piece_counts": torch.from_numpy(piece_counts),
-        }
-        if any(eco is not None for eco in eco_codes):
-            result["eco_codes"] = eco_codes
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(result, output_path)
-        log.info("Saved %d examples to %s", idx, output_path)
-        return idx
-    finally:
-        # Clean up temp memmap files
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+    chunk_gib = _estimate_chunk_buffer_gib(chunk_examples, num_planes)
+    log.info(
+        "Chunked generation: max_examples=%d workers=%d chunk_examples=%d (~%.2f GiB chunk buffers)",
+        max_examples,
+        num_workers,
+        chunk_examples,
+        chunk_gib,
+    )
+    return _generate_to_file_chunked(
+        pgn_path=pgn_path,
+        output_path=output_path,
+        stockfish_path=stockfish_path,
+        stockfish_depth=stockfish_depth,
+        max_examples=max_examples,
+        num_workers=num_workers,
+        policy_temperature=policy_temperature,
+        label_smoothing=label_smoothing,
+        chunksize=chunksize,
+        chunk_examples=chunk_examples,
+    )
 
 
 @graceful_main("denoisr-generate-data", logger=log)
@@ -566,17 +419,7 @@ def main() -> None:
         "--chunk-examples",
         env_var="DENOISR_CHUNK_EXAMPLES",
         type=int,
-        help=(
-            "Save data in shard files with this many examples per chunk "
-            "(0 = single-file output)"
-        ),
-    )
-    add_env_argument(
-        parser,
-        "--scratch-dir",
-        env_var="DENOISR_SCRATCH_DIR",
-        type=str,
-        help="Directory for temporary memmap files",
+        help="Save data in shard files with this many examples per chunk",
     )
     add_env_argument(
         parser,
@@ -608,7 +451,6 @@ def main() -> None:
         label_smoothing=args.label_smoothing,
         chunksize=args.chunksize,
         seed=args.seed,
-        scratch_dir=Path(args.scratch_dir),
         chunk_examples=args.chunk_examples,
     )
     log.info("Done: %d examples generated.", count)

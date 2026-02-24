@@ -62,7 +62,7 @@ _GROK_HOLDOUT_SPLITS = ("random", "game_level", "opening_family", "piece_count")
 
 @dataclass(frozen=True)
 class _TensorDataShard:
-    path: Path | None
+    path: Path
     count: int
     train_indices: Tensor
     holdout_indices: Tensor
@@ -74,7 +74,6 @@ class _TensorDataPlan:
     total_examples: int
     train_examples: int
     holdout_examples: int
-    single_data: dict[str, Any] | None
     holdout_split_indices: dict[str, list[Tensor]]
     holdout_split_counts: dict[str, int]
 
@@ -153,32 +152,33 @@ def _unstack_tensor_dict(data: dict[str, Any]) -> list[TrainingExample]:
 
 
 def _load_examples_from_data(path: Path) -> list[TrainingExample]:
-    """Load examples from either legacy single-file or chunked manifest format."""
+    """Load examples from a chunked manifest and its shard files."""
     raw = _load_pt_dict(path, mmap=True)
-    if isinstance(raw, dict) and raw.get("format") == _CHUNK_FORMAT:
-        chunks = raw.get("chunks", [])
-        if not isinstance(chunks, list):
-            raise ValueError("Chunked manifest has invalid 'chunks' field")
-        all_examples: list[TrainingExample] = []
-        for idx, chunk_meta in enumerate(chunks):
-            if not isinstance(chunk_meta, dict):
-                raise ValueError(f"Chunk metadata at index {idx} is invalid")
-            rel_path = chunk_meta.get("path")
-            if not isinstance(rel_path, str) or rel_path == "":
-                raise ValueError(f"Chunk metadata at index {idx} missing path")
-            chunk_path = path.parent / rel_path
-            chunk_raw = _load_pt_dict(chunk_path, mmap=True)
-            all_examples.extend(_unstack_tensor_dict(chunk_raw))
-        expected_total = raw.get("total_examples")
-        if isinstance(expected_total, int) and expected_total != len(all_examples):
-            log.warning(
-                "Chunked manifest total_examples=%d but loaded=%d",
-                expected_total,
-                len(all_examples),
-            )
-        return all_examples
-
-    return _unstack_tensor_dict(raw)
+    if raw.get("format") != _CHUNK_FORMAT:
+        raise ValueError(
+            f"Unsupported training data format in {path}: expected {_CHUNK_FORMAT!r}"
+        )
+    chunks = raw.get("chunks", [])
+    if not isinstance(chunks, list):
+        raise ValueError("Chunked manifest has invalid 'chunks' field")
+    all_examples: list[TrainingExample] = []
+    for idx, chunk_meta in enumerate(chunks):
+        if not isinstance(chunk_meta, dict):
+            raise ValueError(f"Chunk metadata at index {idx} is invalid")
+        rel_path = chunk_meta.get("path")
+        if not isinstance(rel_path, str) or rel_path == "":
+            raise ValueError(f"Chunk metadata at index {idx} missing path")
+        chunk_path = path.parent / rel_path
+        chunk_raw = _load_pt_dict(chunk_path, mmap=True)
+        all_examples.extend(_unstack_tensor_dict(chunk_raw))
+    expected_total = raw.get("total_examples")
+    if isinstance(expected_total, int) and expected_total != len(all_examples):
+        log.warning(
+            "Chunked manifest total_examples=%d but loaded=%d",
+            expected_total,
+            len(all_examples),
+        )
+    return all_examples
 
 
 def _split_indices(
@@ -202,22 +202,14 @@ def _split_indices(
     return train_indices, holdout_indices
 
 
-def _load_shard_payload(
-    plan: _TensorDataPlan,
-    shard: _TensorDataShard,
-) -> dict[str, Any]:
-    if shard.path is None:
-        if plan.single_data is None:
-            raise ValueError("Single-file tensor data missing in plan")
-        return plan.single_data
+def _load_shard_payload(shard: _TensorDataShard) -> dict[str, Any]:
     return _load_pt_dict(shard.path, mmap=True)
 
 
 def _load_shard_tensors(
-    plan: _TensorDataPlan,
     shard: _TensorDataShard,
 ) -> tuple[Tensor, Tensor, Tensor]:
-    raw = _load_shard_payload(plan, shard)
+    raw = _load_shard_payload(shard)
     boards = raw.get("boards")
     policies = raw.get("policies")
     values = raw.get("values")
@@ -238,50 +230,30 @@ def _build_tensor_data_plan(
     endgame_threshold: int = 6,
 ) -> _TensorDataPlan:
     raw = _load_pt_dict(path, mmap=True)
+    if raw.get("format") != _CHUNK_FORMAT:
+        raise ValueError(
+            f"Unsupported training data format in {path}: expected {_CHUNK_FORMAT!r}"
+        )
     g = torch.Generator()
     g.manual_seed(_HOLDOUT_SPLIT_SEED)
 
     shards: list[_TensorDataShard] = []
-    single_data: dict[str, Any] | None = None
-
-    if raw.get("format") == _CHUNK_FORMAT:
-        chunks = raw.get("chunks", [])
-        if not isinstance(chunks, list):
-            raise ValueError("Chunked manifest has invalid 'chunks' field")
-        for idx, chunk_meta in enumerate(chunks):
-            if not isinstance(chunk_meta, dict):
-                raise ValueError(f"Chunk metadata at index {idx} is invalid")
-            rel_path = chunk_meta.get("path")
-            count = chunk_meta.get("count")
-            if not isinstance(rel_path, str) or rel_path == "":
-                raise ValueError(f"Chunk metadata at index {idx} missing path")
-            if not isinstance(count, int) or count < 0:
-                raise ValueError(f"Chunk metadata at index {idx} has invalid count")
-            train_idx, holdout_idx = _split_indices(count, holdout_frac, g)
-            shards.append(
-                _TensorDataShard(
-                    path=path.parent / rel_path,
-                    count=count,
-                    train_indices=train_idx,
-                    holdout_indices=holdout_idx,
-                )
-            )
-    else:
-        boards = raw.get("boards")
-        policies = raw.get("policies")
-        values = raw.get("values")
-        if not isinstance(boards, torch.Tensor):
-            raise ValueError("Training data missing tensor 'boards'")
-        if not isinstance(policies, torch.Tensor):
-            raise ValueError("Training data missing tensor 'policies'")
-        if not isinstance(values, torch.Tensor):
-            raise ValueError("Training data missing tensor 'values'")
-        count = int(boards.shape[0])
+    chunks = raw.get("chunks", [])
+    if not isinstance(chunks, list):
+        raise ValueError("Chunked manifest has invalid 'chunks' field")
+    for idx, chunk_meta in enumerate(chunks):
+        if not isinstance(chunk_meta, dict):
+            raise ValueError(f"Chunk metadata at index {idx} is invalid")
+        rel_path = chunk_meta.get("path")
+        count = chunk_meta.get("count")
+        if not isinstance(rel_path, str) or rel_path == "":
+            raise ValueError(f"Chunk metadata at index {idx} missing path")
+        if not isinstance(count, int) or count < 0:
+            raise ValueError(f"Chunk metadata at index {idx} has invalid count")
         train_idx, holdout_idx = _split_indices(count, holdout_frac, g)
-        single_data = raw
         shards.append(
             _TensorDataShard(
-                path=None,
+                path=path.parent / rel_path,
                 count=count,
                 train_indices=train_idx,
                 holdout_indices=holdout_idx,
@@ -302,22 +274,12 @@ def _build_tensor_data_plan(
         eco_families = np.zeros(total_examples, dtype=np.uint8)
         shard_bounds: list[tuple[int, int]] = []
 
-        temp_plan = _TensorDataPlan(
-            shards=shards,
-            total_examples=0,
-            train_examples=0,
-            holdout_examples=0,
-            single_data=single_data,
-            holdout_split_indices={},
-            holdout_split_counts={},
-        )
-
         offset = 0
         for shard in shards:
             start = offset
             end = start + shard.count
             shard_bounds.append((start, end))
-            raw_shard = _load_shard_payload(temp_plan, shard)
+            raw_shard = _load_shard_payload(shard)
 
             game_ids_tensor = raw_shard.get("game_ids")
             if isinstance(game_ids_tensor, torch.Tensor):
@@ -436,7 +398,6 @@ def _build_tensor_data_plan(
         total_examples=total_examples,
         train_examples=train_examples,
         holdout_examples=holdout_examples,
-        single_data=single_data,
         holdout_split_indices=holdout_split_indices,
         holdout_split_counts=holdout_split_counts,
     )
@@ -476,7 +437,7 @@ def _measure_accuracy_from_indices(
             split_idx = indices_by_shard[shard_idx]
             if split_idx.numel() == 0:
                 continue
-            boards, policies, _values = _load_shard_tensors(data_plan, shard)
+            boards, policies, _values = _load_shard_tensors(shard)
             n = int(split_idx.numel())
             total += n
             for i in range(0, n, batch_size):
@@ -812,7 +773,7 @@ def main() -> None:
                 shard = data_plan.shards[shard_idx]
                 if shard.train_indices.numel() == 0:
                     continue
-                boards, policies, values = _load_shard_tensors(data_plan, shard)
+                boards, policies, values = _load_shard_tensors(shard)
                 train_dataset = _IndexedTensorDataset(
                     boards=boards,
                     policies=policies,

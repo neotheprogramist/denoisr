@@ -229,14 +229,11 @@ def step_generate_data(
     workers = resolve_workers(cfg.data.workers)
 
     log.info(
-        ("Generating training data (max_examples=%d, workers=%d, chunk_examples=%s)"),
+        "Generating training data (max_examples=%d, workers=%d, chunksize=%d, chunk_examples=%d)",
         cfg.data.max_examples,
         workers,
-        (
-            str(cfg.data.chunk_examples)
-            if cfg.data.chunk_examples > 0
-            else "single-file"
-        ),
+        cfg.data.chunksize,
+        cfg.data.chunk_examples,
     )
 
     count = generate_to_file(
@@ -246,7 +243,7 @@ def step_generate_data(
         stockfish_depth=cfg.data.stockfish_depth,
         max_examples=cfg.data.max_examples,
         num_workers=workers,
-        scratch_dir=(Path(cfg.data.scratch_dir) if cfg.data.scratch_dir else None),
+        chunksize=cfg.data.chunksize,
         chunk_examples=cfg.data.chunk_examples,
     )
 

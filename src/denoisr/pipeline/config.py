@@ -1,9 +1,7 @@
-"""Pipeline configuration: frozen dataclasses + TOML loader."""
+"""Pipeline configuration: frozen dataclasses + env overrides."""
 
 import os
-import tomllib
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import Any, Callable
 
 
@@ -16,10 +14,10 @@ class DataConfig:
     pgn_path: str = "data/lichess.pgn.zst"
     stockfish_path: str = ""
     stockfish_depth: int = 10
-    max_examples: int = 1_000_000
-    workers: int = 48
-    scratch_dir: str = "outputs/scratch"
-    chunk_examples: int = 250_000
+    max_examples: int = 4_000_000
+    workers: int = 64
+    chunksize: int = 1_024
+    chunk_examples: int = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -115,7 +113,7 @@ _DATA_ENV_SPECS: tuple[_EnvFieldSpec, ...] = (
     ("DENOISR_STOCKFISH_DEPTH", "stockfish_depth", _parse_int),
     ("DENOISR_MAX_EXAMPLES", "max_examples", _parse_int),
     ("DENOISR_WORKERS", "workers", _parse_int),
-    ("DENOISR_SCRATCH_DIR", "scratch_dir", _parse_str),
+    ("DENOISR_CHUNKSIZE", "chunksize", _parse_int),
     ("DENOISR_CHUNK_EXAMPLES", "chunk_examples", _parse_int),
 )
 _MODEL_ENV_SPECS: tuple[_EnvFieldSpec, ...] = (
@@ -188,18 +186,14 @@ def _apply_env_overrides(cfg: PipelineConfig) -> PipelineConfig:
     )
 
 
-def load_config(path: Path | None = None) -> PipelineConfig:
-    """Load pipeline config from optional TOML and env overrides."""
-    raw: dict[str, dict[str, object]] = {}
-    if path is not None:
-        with open(path, "rb") as f:
-            raw = tomllib.load(f)
+def load_config() -> PipelineConfig:
+    """Load pipeline config from defaults with env overrides."""
     cfg = PipelineConfig(
-        data=DataConfig(**raw.get("data", {})),
-        model=ModelSectionConfig(**raw.get("model", {})),
-        phase1=Phase1Config(**raw.get("phase1", {})),
-        phase2=Phase2Config(**raw.get("phase2", {})),
-        phase3=Phase3Config(**raw.get("phase3", {})),
-        output=OutputConfig(**raw.get("output", {})),
+        data=DataConfig(),
+        model=ModelSectionConfig(),
+        phase1=Phase1Config(),
+        phase2=Phase2Config(),
+        phase3=Phase3Config(),
+        output=OutputConfig(),
     )
     return _apply_env_overrides(cfg)

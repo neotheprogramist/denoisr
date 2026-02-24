@@ -63,7 +63,7 @@ class ChessLossComputer:
         pred_flat = pred_policy.reshape(B, -1)
         target_flat = target_policy.reshape(B, -1)
         # Mask illegal moves using explicit legal mask when provided.
-        # Fallback to target>0 keeps backward compatibility for legacy callers.
+        # Otherwise derive legality from nonzero target support.
         if policy_legal_mask is not None:
             legal_mask = policy_legal_mask.reshape(B, -1).to(
                 device=pred_flat.device, dtype=torch.bool

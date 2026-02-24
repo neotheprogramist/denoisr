@@ -84,15 +84,14 @@ cp .env.example .env
 uv run denoisr-train
 ```
 
-The CLI auto-loads `.env`. Required settings are fail-fast when missing.  
-You can remove `config.toml` entirely; it is optional now.
+The CLI auto-loads `.env`. Required settings are fail-fast when missing.
 
 Hardware-tuned defaults in `.env.example` target:
 
 - RTX 3060 12GB: conservative training batches (`phase1=128`, `phase2=64`, `phase3=128`)
-- Threadripper 3970X (64 threads): high but safe data workers (`DENOISR_WORKERS=48`)
+- Threadripper 3970X (64 threads): full CPU worker utilization (`DENOISR_WORKERS=64`)
 
-The pipeline randomly samples positions from raw PGN, generates Stockfish targets, trains Phase 1, then advances through Phase 2 and Phase 3.
+The pipeline streams positions from raw PGN, generates Stockfish targets, trains Phase 1, then advances through Phase 2 and Phase 3.
 
 **Pipeline state resumption:** Progress is saved to `pipeline_state.json` in the output directory. If interrupted, re-running the same command resumes from the last completed step. Use `--restart` to start fresh. Use `--only` to run specific steps:
 
@@ -109,7 +108,6 @@ uv run denoisr-train --only fetch,init
 
 | Flag        | Default     | Description                                                     |
 | ----------- | ----------- | --------------------------------------------------------------- |
-| `--config`  | (not set)   | Optional path to a TOML base config (env overrides still win)   |
 | `--restart` | off         | Ignore saved state and start fresh                              |
 | `--only`    | (all steps) | Comma-separated steps to run: `fetch,init,phase1,phase2,phase3` |
 
@@ -141,29 +139,29 @@ This is the same random model from the quick start -- if you already created it,
 
 #### Step 3: Generate training examples
 
-Data generation uses a memory-efficient two-pass streaming pipeline. Pass 1 counts positions from the PGN (fast, no Stockfish). Pass 2 streams positions through a worker pool into disk-backed numpy memory-mapped arrays, keeping RSS at ~4-8 GB even for tens of millions of examples. Each worker runs its own Stockfish instance. Generate once, then iterate on training without re-generating:
+Data generation writes chunked shard files plus a `chunked_v1` manifest. Each worker runs its own Stockfish instance, and fixed-size chunk buffers bound peak RAM while supporting very large datasets:
 
 ```bash
 uv run denoisr-generate-data \
     --pgn data/lichess_db_standard_rated_2025-01.pgn.zst \
-    --max-examples 1000000 \
+    --max-examples 4000000 \
     --output outputs/training_data.pt
 ```
 
 Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to override.
 
-When the PGN contains more positions than `--max-examples`, positions are randomly sub-sampled across the entire file rather than taking the first N sequentially.
+Generation stops after writing `--max-examples` streamed positions from the PGN.
 Defaults below reflect the recommended `.env.example` profile.
 
 **What you'll see:**
 
 ```
-Pass 1: counting positions...
-Found 1000000 positions, starting evaluation with 33 workers
-Evaluating positions: 45%|████████▌          | 450000/1000000 [15:00<18:20, 498pos/s]
-Evaluated 1000000 positions, saving to outputs/training_data.pt...
-Saved 1000000 examples to outputs/training_data.pt
-Done: 1000000 examples generated.
+Chunked generation: max_examples=4000000 workers=64 chunk_examples=1000000 (~44.36 GiB chunk buffers)
+Evaluating positions: 45%|████████▌          | 1800000/4000000 [58:12<70:00, 523pos/s]
+Wrote chunk 0 (1000000 examples): outputs/training_data_chunks/chunk_000000.pt
+Wrote chunk 1 (1000000 examples): outputs/training_data_chunks/chunk_000001.pt
+Saved chunked manifest with 4000000 examples across 4 chunks to outputs/training_data.pt
+Done: 4000000 examples generated.
 ```
 
 | Flag                   | Default                    | Description                                    |
@@ -171,12 +169,13 @@ Done: 1000000 examples generated.
 | `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file              |
 | `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                       |
 | `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)     |
-| `--max-examples`       | `1000000`                  | Training examples to generate                  |
-| `--workers`            | `48`                       | Worker processes (each runs its own Stockfish) |
+| `--max-examples`       | `4000000`                  | Training examples to generate                  |
+| `--workers`            | `64`                       | Worker processes (each runs its own Stockfish) |
 | `--policy-temperature` | `80`                       | Softmax temperature for policy targets         |
 | `--label-smoothing`    | `0.02`                     | Label smoothing epsilon for policy targets     |
 | `--seed`               | (none)                     | Random seed for reproducible sampling          |
-| `--chunksize`          | `128`                      | `imap_unordered` chunksize for worker batching |
+| `--chunksize`          | `1024`                     | `imap_unordered` chunksize for worker batching |
+| `--chunk-examples`     | `1000000`                  | Examples per output shard                      |
 | `--output`             | `outputs/training_data.pt` | Output path for generated data                 |
 
 #### Step 4: Phase 1 -- Supervised learning
@@ -389,9 +388,9 @@ logs/
 
 ### Grokking detection (Phase 1)
 
-Neural networks sometimes exhibit **grokking** — a phenomenon where the model memorizes training data first, then suddenly generalizes to held-out data much later. Denoisr includes opt-in grokking detection that monitors weight dynamics, representation structure, and structured holdout performance to detect and accelerate this transition.
+Neural networks sometimes exhibit **grokking** — a phenomenon where the model memorizes training data first, then suddenly generalizes to held-out data much later. Denoisr includes grokking detection that monitors weight dynamics, representation structure, and structured holdout performance to detect and accelerate this transition.
 
-Enable with `--grok-tracking`:
+Grok tracking is enabled by default. You can still set it explicitly:
 
 ```bash
 uv run denoisr-train-phase1 \
@@ -426,7 +425,7 @@ When enabled, training automatically:
 
 #### Grokfast acceleration
 
-To accelerate grokking ~50x, enable **Grokfast** — an EMA gradient filter that amplifies slow-varying gradient components (the generalizing signal) while leaving fast-varying components (memorization) alone:
+**Grokfast** is enabled by default and can accelerate grokking by amplifying slow-varying gradient components (the generalizing signal) while leaving fast-varying components (memorization) alone:
 
 ```bash
 uv run denoisr-train-phase1 \
@@ -440,6 +439,8 @@ uv run denoisr-train-phase1 \
 ```
 
 The filter is applied between gradient unscaling and gradient clipping in the training loop, so it works correctly with mixed precision training.
+
+Disable either feature with `--no-grok-tracking` and `--no-grokfast`.
 
 #### Grokking detection flags
 
@@ -647,7 +648,7 @@ uv run denoisr-benchmark \
     --sprt-elo1 50
 ```
 
-Games run in parallel across `64` workers (each owning a persistent engine + Stockfish subprocess pair). A bundled 50-position opening book ensures game variety. Stockfish is auto-detected from PATH.
+Games run in parallel across `64` workers (each owning a persistent engine + Stockfish subprocess pair). A bundled opening book ensures game variety. Stockfish is auto-detected from PATH.
 
 ### Trained model vs random baseline with Elo estimation
 
@@ -734,24 +735,24 @@ outputs/pgn/
 
 ### Benchmark flags
 
-| Flag                     | Default                  | Description                                |
-| ------------------------ | ------------------------ | ------------------------------------------ |
-| `--engine-cmd`           | (required)               | Command to run the Denoisr UCI engine      |
-| `--baseline-cmd`         | (none)                   | Baseline engine for comparison             |
-| `--head-to-head`         | off                      | Play engine vs baseline directly           |
-| `--opponent-cmd`         | auto-detect `stockfish`  | Opponent engine command                    |
-| `--opponent-elo`         | full strength            | Limit opponent via UCI_Elo (e.g. 1200)     |
-| `--opponent-skill`       | (none)                   | Stockfish Skill Level 0-20 (0 = weakest)   |
-| `--games`                | `100`                    | Number of games to play                    |
-| `--time-control`         | `10+0.1`                 | Base+increment seconds                     |
-| `--openings`             | bundled 50-position book | Path to EPD opening book                   |
-| `--concurrency`          | `64`                     | Parallel game workers                      |
-| `--sprt-elo0`            | (none)                   | SPRT null hypothesis Elo difference        |
-| `--sprt-elo1`            | (none)                   | SPRT alternative hypothesis Elo difference |
-| `--pgn-out`              | (none)                   | Directory to save PGN files                |
-| `--analyze`              | off                      | Run Stockfish ACPL analysis after games    |
-| `--analysis-depth`       | `12`                     | Stockfish analysis depth                   |
-| `--analysis-concurrency` | same as `--concurrency`  | Parallel Stockfish analysis workers        |
+| Flag                     | Default                 | Description                                |
+| ------------------------ | ----------------------- | ------------------------------------------ |
+| `--engine-cmd`           | (required)              | Command to run the Denoisr UCI engine      |
+| `--baseline-cmd`         | (none)                  | Baseline engine for comparison             |
+| `--head-to-head`         | off                     | Play engine vs baseline directly           |
+| `--opponent-cmd`         | auto-detect `stockfish` | Opponent engine command                    |
+| `--opponent-elo`         | full strength           | Limit opponent via UCI_Elo (e.g. 1200)     |
+| `--opponent-skill`       | (none)                  | Stockfish Skill Level 0-20 (0 = weakest)   |
+| `--games`                | `100`                   | Number of games to play                    |
+| `--time-control`         | `10+0.1`                | Base+increment seconds                     |
+| `--openings`             | bundled opening book    | Path to EPD opening book                   |
+| `--concurrency`          | `64`                    | Parallel game workers                      |
+| `--sprt-elo0`            | (none)                  | SPRT null hypothesis Elo difference        |
+| `--sprt-elo1`            | (none)                  | SPRT alternative hypothesis Elo difference |
+| `--pgn-out`              | (none)                  | Directory to save PGN files                |
+| `--analyze`              | off                     | Run Stockfish ACPL analysis after games    |
+| `--analysis-depth`       | `12`                    | Stockfish analysis depth                   |
+| `--analysis-concurrency` | same as `--concurrency` | Parallel Stockfish analysis workers        |
 
 ## Architecture deep dive
 
@@ -809,7 +810,7 @@ Training proceeds in three phases, each gated on measurable quality thresholds t
 
 | Command                        | Description                                            |
 | ------------------------------ | ------------------------------------------------------ |
-| `uv run denoisr-train`         | **Full pipeline from TOML config** (recommended)       |
+| `uv run denoisr-train`         | **Full pipeline from env config** (recommended)        |
 | `uv run denoisr-init`          | Initialize a random (untrained) model checkpoint       |
 | `uv run denoisr-generate-data` | Generate training data from PGN + Stockfish            |
 | `uv run denoisr-train-phase1`  | Phase 1: Supervised learning from generated data       |
@@ -850,15 +851,14 @@ denoisr/
 │   ├── data/           # Encoders, PGN streaming, Stockfish oracle, dataset
 │   ├── nn/             # Neural network modules (encoder, backbone, heads, world model, diffusion)
 │   ├── training/       # Loss, trainers, MCTS, self-play, replay buffer, reanalyse, orchestrator
-│   ├── pipeline/       # Unified pipeline: TOML config, state persistence, step runner
+│   ├── pipeline/       # Unified pipeline: env config, state persistence, step runner
 │   ├── engine/         # Shared engine infrastructure (UCI, match engine, Elo/SPRT, openings)
 │   ├── gui/            # Built-in chess GUI (play, match)
 │   ├── inference/      # Chess engines (single-pass, diffusion-enhanced), UCI protocol
 │   ├── evaluation/     # Self-contained parallel benchmarking
 │   └── scripts/        # CLI entry points for all phases + inference + benchmarking
-├── tests/              # 440+ tests mirroring src/ structure
+├── tests/              # Test suite mirroring src/ structure
 ├── fixtures/           # Sample PGN files for testing
-├── docs/plans/         # Architecture design and implementation plans
 ├── logs/               # TensorBoard + text training logs (gitignored)
 └── outputs/            # Training artifacts (gitignored)
 ```

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import torch
 
 from denoisr.scripts.train_phase1 import (
@@ -56,11 +57,11 @@ def test_load_examples_from_chunked_manifest(tmp_path: Path) -> None:
     assert examples[2].game_id == 20
 
 
-def test_load_examples_from_legacy_single_file(tmp_path: Path) -> None:
+def test_load_examples_requires_chunked_manifest(tmp_path: Path) -> None:
     path = tmp_path / "training_data.pt"
     _make_chunk(path, n=2, start_gid=0)
-    examples = _load_examples_from_data(path)
-    assert len(examples) == 2
+    with pytest.raises(ValueError, match="Unsupported training data format"):
+        _load_examples_from_data(path)
 
 
 def test_build_tensor_data_plan_chunked_counts(tmp_path: Path) -> None:
@@ -91,17 +92,18 @@ def test_build_tensor_data_plan_chunked_counts(tmp_path: Path) -> None:
     assert plan.holdout_examples == 2
 
 
-def test_build_tensor_data_plan_single_file_counts(tmp_path: Path) -> None:
+def test_build_tensor_data_plan_requires_chunked_manifest(tmp_path: Path) -> None:
     path = tmp_path / "training_data.pt"
     _make_chunk(path, n=4, start_gid=0)
-    plan = _build_tensor_data_plan(path, holdout_frac=0.25)
-    assert plan.total_examples == 4
-    assert plan.train_examples == 3
-    assert plan.holdout_examples == 1
+    with pytest.raises(ValueError, match="Unsupported training data format"):
+        _build_tensor_data_plan(path, holdout_frac=0.25)
 
 
 def test_build_tensor_data_plan_grok_tracking_splits(tmp_path: Path) -> None:
     path = tmp_path / "training_data.pt"
+    chunk_dir = tmp_path / "training_data_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    chunk_path = chunk_dir / "chunk_000000.pt"
     n = 8
     torch.save(
         {
@@ -113,6 +115,14 @@ def test_build_tensor_data_plan_grok_tracking_splits(tmp_path: Path) -> None:
                 [5, 32, 32, 32, 32, 32, 32, 32], dtype=torch.int32
             ),
             "eco_codes": ["A00", "A10", "B00", "B10", "C00", "C10", "D00", "D10"],
+        },
+        chunk_path,
+    )
+    torch.save(
+        {
+            "format": "chunked_v1",
+            "total_examples": n,
+            "chunks": [{"path": "training_data_chunks/chunk_000000.pt", "count": n}],
         },
         path,
     )

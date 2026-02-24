@@ -174,7 +174,7 @@ def test_generate_data_calls_generate(tmp_path: Path) -> None:
             pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
             max_examples=123,
             workers=4,
-            scratch_dir=str(tmp_path / "scratch"),
+            chunksize=512,
             chunk_examples=2048,
         ),
         model=ModelSectionConfig(
@@ -200,7 +200,7 @@ def test_generate_data_calls_generate(tmp_path: Path) -> None:
             kwargs = mock_gen.call_args.kwargs
             assert kwargs["max_examples"] == 123
             assert kwargs["stockfish_path"] == "/usr/bin/stockfish"
-            assert kwargs["scratch_dir"] == Path(tmp_path / "scratch")
+            assert kwargs["chunksize"] == 512
             assert kwargs["chunk_examples"] == 2048
 
     assert state.last_data != ""
