@@ -1,4 +1,5 @@
 import pathlib
+import math
 
 import pytest
 import torch
@@ -194,6 +195,22 @@ class TestSupervisedTrainer:
         # After cosine decay, LRs should be below peak
         assert all(c < p for c, p in zip(current_lrs, peak_lrs))
 
+    def test_marks_overflow_on_nonfinite_loss(
+        self, trainer: SupervisedTrainer, device: torch.device
+    ) -> None:
+        boards = torch.randn(4, 12, 8, 8, device=device)
+        policies = torch.zeros(4, 64, 64, device=device)
+        policies[:, 12, 28] = 1.0
+        values = torch.zeros(4, 3, device=device)
+        values[:, 1] = 1.0
+        values[0, 0] = float("nan")
+        values[0, 1] = 0.0
+
+        loss, breakdown = trainer.train_step_tensors(boards, policies, values)
+        assert math.isnan(loss)
+        assert breakdown["overflow"] is True
+        assert math.isnan(float(breakdown["grad_norm"]))
+
 
 class TestSupervisedTrainerGrokfast:
     @pytest.fixture
@@ -237,3 +254,27 @@ class TestSupervisedTrainerGrokfast:
         trainer_with_grokfast.train_step(batch)
         assert trainer_with_grokfast._grokfast_filter is not None
         assert len(trainer_with_grokfast._grokfast_filter.grads) > 0
+
+    def test_recovers_after_nonfinite_batch_with_grokfast(
+        self, trainer_with_grokfast: SupervisedTrainer, device: torch.device
+    ) -> None:
+        boards = torch.randn(4, 12, 8, 8, device=device)
+        policies = torch.zeros(4, 64, 64, device=device)
+        policies[:, 12, 28] = 1.0
+        values = torch.zeros(4, 3, device=device)
+        values[:, 1] = 1.0
+        values[0, 0] = float("nan")
+        values[0, 1] = 0.0
+
+        _, bad_breakdown = trainer_with_grokfast.train_step_tensors(
+            boards, policies, values
+        )
+        assert bad_breakdown["overflow"] is True
+
+        clean_values = torch.zeros(4, 3, device=device)
+        clean_values[:, 1] = 1.0
+        clean_loss, clean_breakdown = trainer_with_grokfast.train_step_tensors(
+            boards, policies, clean_values
+        )
+        assert math.isfinite(clean_loss)
+        assert clean_breakdown["overflow"] is False

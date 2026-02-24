@@ -57,6 +57,11 @@ class SupervisedTrainer:
         self.optimizer = torch.optim.AdamW(
             param_groups, weight_decay=weight_decay
         )
+        self._params: list[torch.nn.Parameter] = [
+            p
+            for group in self.optimizer.param_groups
+            for p in group["params"]
+        ]
 
         self._warmup_epochs = warmup_epochs
         self._base_lrs: list[float] = [float(g["lr"]) for g in param_groups]  # type: ignore[arg-type]
@@ -75,6 +80,26 @@ class SupervisedTrainer:
             )
         self._scheduler.base_lrs = list(self._base_lrs)
         self._epoch = 0
+
+    def _has_nonfinite_gradients(self) -> bool:
+        for param in self._params:
+            grad = param.grad
+            if grad is None:
+                continue
+            if not torch.isfinite(grad).all():
+                return True
+        return False
+
+    def _handle_overflow(self, breakdown: dict[str, float | bool], batch_top1: float) -> None:
+        self.optimizer.zero_grad(set_to_none=True)
+        if self.scaler.is_enabled():
+            new_scale = max(float(self.scaler.get_scale()) / 2.0, 1.0)
+            self.scaler.update(new_scale)
+        if self._grokfast_filter is not None:
+            self._grokfast_filter.reset()
+        breakdown["grad_norm"] = float("nan")
+        breakdown["overflow"] = True
+        breakdown["batch_top1"] = batch_top1
 
     def _forward_backward(
         self,
@@ -105,9 +130,16 @@ class SupervisedTrainer:
             masked = pf.masked_fill(~mask, float("-inf"))
             batch_top1 = (masked.argmax(-1) == tf.argmax(-1)).float().mean().item()
 
-        self.optimizer.zero_grad()
+        if not torch.isfinite(total_loss):
+            self._handle_overflow(breakdown, batch_top1)
+            return float("nan"), breakdown
+
+        self.optimizer.zero_grad(set_to_none=True)
         self.scaler.scale(total_loss).backward()  # type: ignore[no-untyped-call]
         self.scaler.unscale_(self.optimizer)
+        if self._has_nonfinite_gradients():
+            self._handle_overflow(breakdown, batch_top1)
+            return total_loss.item(), breakdown
         if self._grokfast_filter is not None:
             for module in [
                 self.encoder,
@@ -116,16 +148,23 @@ class SupervisedTrainer:
                 self.value_head,
             ]:
                 self._grokfast_filter.apply(module)
+            if self._has_nonfinite_gradients():
+                self._handle_overflow(breakdown, batch_top1)
+                return total_loss.item(), breakdown
         total_norm = torch.nn.utils.clip_grad_norm_(
-            [p for group in self.optimizer.param_groups for p in group["params"]],
+            self._params,
             self.max_grad_norm,
         )
+        grad_norm = total_norm.item()
+        if not math.isfinite(grad_norm):
+            self._handle_overflow(breakdown, batch_top1)
+            return total_loss.item(), breakdown
+
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        grad_norm = total_norm.item()
         breakdown["grad_norm"] = grad_norm
-        breakdown["overflow"] = not math.isfinite(grad_norm)
+        breakdown["overflow"] = False
         breakdown["batch_top1"] = batch_top1
         return total_loss.item(), breakdown
 

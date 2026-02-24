@@ -52,3 +52,34 @@ class TestGrokfastFilter:
         gf = GrokfastFilter(alpha=0.98, lamb=2.0)
         gf.apply(model)  # Should not error
         assert "weight" not in str(list(gf.grads.keys()))
+
+    def test_nonfinite_gradients_do_not_poison_ema(self) -> None:
+        model = nn.Linear(10, 5, bias=False)
+        gf = GrokfastFilter(alpha=0.98, lamb=2.0)
+
+        x = torch.randn(4, 10)
+        loss = model(x).sum()
+        loss.backward()
+        gf.apply(model)
+
+        model.weight.grad.fill_(float("inf"))
+        gf.apply(model)
+        assert "weight" not in gf.grads
+
+        model.zero_grad()
+        loss = model(x).sum()
+        loss.backward()
+        gf.apply(model)
+        assert torch.isfinite(model.weight.grad).all()
+
+    def test_reset_clears_ema_buffers(self) -> None:
+        model = nn.Linear(10, 5)
+        model.zero_grad()
+        x = torch.randn(4, 10)
+        loss = model(x).sum()
+        loss.backward()
+        gf = GrokfastFilter(alpha=0.98, lamb=2.0)
+        gf.apply(model)
+        assert len(gf.grads) > 0
+        gf.reset()
+        assert gf.grads == {}

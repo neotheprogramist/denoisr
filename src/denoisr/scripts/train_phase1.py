@@ -7,6 +7,7 @@ Gate to Phase 2: policy top-1 accuracy > 30% on held-out positions.
 """
 
 import argparse
+import math
 import logging
 import random
 import time
@@ -757,12 +758,15 @@ def main() -> None:
         for epoch in range(args.epochs):
             epoch_loss = 0.0
             num_batches = 0
+            num_loss_batches = 0
             epoch_start = time.monotonic()
             monitor.reset()
             step_losses: list[float] = []
             step_grad_norms: list[float] = []
             policy_loss_sum = 0.0
             value_loss_sum = 0.0
+            policy_loss_count = 0
+            value_loss_count = 0
             overflow_count = 0
             data_time = 0.0
             compute_time = 0.0
@@ -821,9 +825,18 @@ def main() -> None:
                             global_step, breakdown, breakdown.get("grad_norm", 0.0)
                         )
                         logger.log_grok_metrics(global_step, grok_metrics)
-                    step_losses.append(loss)
-                    policy_loss_sum += float(breakdown.get("policy", 0.0))
-                    value_loss_sum += float(breakdown.get("value", 0.0))
+                    if math.isfinite(loss):
+                        step_losses.append(loss)
+                        epoch_loss += loss
+                        num_loss_batches += 1
+                    policy_loss = float(breakdown.get("policy", 0.0))
+                    if math.isfinite(policy_loss):
+                        policy_loss_sum += policy_loss
+                        policy_loss_count += 1
+                    value_loss = float(breakdown.get("value", 0.0))
+                    if math.isfinite(value_loss):
+                        value_loss_sum += value_loss
+                        value_loss_count += 1
                     if breakdown.get("overflow", False):
                         overflow_count += 1
                     else:
@@ -832,7 +845,6 @@ def main() -> None:
                         logger.log_gpu(global_step)
                         monitor.sample()
                     global_step += 1
-                    epoch_loss += loss
                     num_batches += 1
                     pbar.set_postfix(
                         loss=f"{loss:.4f}",
@@ -846,7 +858,7 @@ def main() -> None:
 
             epoch_duration = time.monotonic() - epoch_start
             samples_per_sec = data_plan.train_examples / max(epoch_duration, 1e-9)
-            avg_loss = epoch_loss / max(num_batches, 1)
+            avg_loss = epoch_loss / max(num_loss_batches, 1)
             top1, top5 = _measure_accuracy_from_plan(
                 trainer,
                 data_plan,
@@ -869,9 +881,17 @@ def main() -> None:
                 )
             current_lr = trainer.optimizer.param_groups[0]["lr"]
             head_lr = trainer.optimizer.param_groups[2]["lr"]
-            avg_policy_loss = policy_loss_sum / max(num_batches, 1)
-            avg_value_loss = value_loss_sum / max(num_batches, 1)
+            avg_policy_loss = policy_loss_sum / max(policy_loss_count, 1)
+            avg_value_loss = value_loss_sum / max(value_loss_count, 1)
             overflow_frac = overflow_count / max(num_batches, 1)
+
+            skipped_loss_batches = num_batches - num_loss_batches
+            if skipped_loss_batches > 0:
+                log.warning(
+                    "Epoch %d skipped %d non-finite batches in loss aggregates.",
+                    epoch + 1,
+                    skipped_loss_batches,
+                )
 
             if overflow_frac > 0.25:
                 log.warning(
