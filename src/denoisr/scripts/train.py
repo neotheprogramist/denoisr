@@ -20,14 +20,14 @@ log = logging.getLogger(__name__)
 def main() -> None:
     """Parse CLI arguments and run the full Denoisr training pipeline."""
     load_env_file()
-    parser = build_parser("Run the full Denoisr training pipeline from a TOML config")
+    parser = build_parser("Run the full Denoisr training pipeline from env + optional TOML")
     add_env_argument(
         parser,
         "--config",
         env_var="DENOISR_CONFIG",
         type=str,
-        default="config.toml",
-        help="Path to training TOML config",
+        required=False,
+        help="Optional path to pipeline TOML config (env overrides always win)",
     )
     add_env_argument(
         parser,
@@ -48,7 +48,18 @@ def main() -> None:
     log_path = configure_logging()
     log.info("logging to %s", log_path)
 
-    cfg = load_config(Path(args.config))
+    cfg_path = Path(args.config) if args.config else None
+    if cfg_path is not None and not cfg_path.exists():
+        log.warning(
+            "Config file %s not found; continuing with env/default settings",
+            cfg_path,
+        )
+        cfg_path = None
+    cfg = load_config(cfg_path)
+    if cfg_path is None:
+        log.info("No config file provided; using env/default pipeline settings")
+    else:
+        log.info("Loaded base pipeline settings from %s with env overrides", cfg_path)
     only = frozenset(args.only.split(",")) if args.only else None
     runner = PipelineRunner(cfg, restart=args.restart, only=only)
     try:

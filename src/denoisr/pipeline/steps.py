@@ -24,6 +24,26 @@ from denoisr.pipeline.state import PipelineState
 log = logging.getLogger(__name__)
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _update_state(
+    state: PipelineState,
+    *,
+    phase: str | None = None,
+    last_checkpoint: Path | None = None,
+    last_data: Path | None = None,
+) -> None:
+    if phase is not None:
+        state.phase = phase
+    if last_checkpoint is not None:
+        state.last_checkpoint = str(last_checkpoint)
+    if last_data is not None:
+        state.last_data = str(last_data)
+    state.updated_at = _now_iso()
+
+
 def _run_python_module(module: str, args: list[str]) -> None:
     """Run a project Python module in a subprocess."""
     cmd = [sys.executable, "-m", module, *args]
@@ -54,8 +74,7 @@ def step_fetch_data(cfg: PipelineConfig, state: PipelineState) -> None:
     pgn_path = Path(cfg.data.pgn_path)
     if pgn_path.exists():
         log.info("PGN already exists at %s, skipping download", pgn_path)
-        state.phase = "fetched"
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        _update_state(state, phase="fetched")
         return
 
     log.info("Downloading PGN from %s to %s", cfg.data.pgn_url, pgn_path)
@@ -74,8 +93,7 @@ def step_fetch_data(cfg: PipelineConfig, state: PipelineState) -> None:
             raise KeyboardInterrupt from None
         raise
     log.info("Download complete: %s", pgn_path)
-    state.phase = "fetched"
-    state.updated_at = datetime.now(timezone.utc).isoformat()
+    _update_state(state, phase="fetched")
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +126,11 @@ def step_init_model(cfg: PipelineConfig, state: PipelineState) -> None:
         ckpt = Path(state.last_checkpoint)
         if ckpt.exists():
             log.info("Checkpoint already exists at %s, skipping init", ckpt)
+            _update_state(
+                state,
+                phase="model_initialized",
+                last_checkpoint=ckpt,
+            )
             return
 
     model_cfg = ModelConfig(
@@ -148,9 +171,11 @@ def step_init_model(cfg: PipelineConfig, state: PipelineState) -> None:
         consistency=consistency.state_dict(),
     )
 
-    state.last_checkpoint = str(ckpt_path)
-    state.phase = "model_initialized"
-    state.updated_at = datetime.now(timezone.utc).isoformat()
+    _update_state(
+        state,
+        phase="model_initialized",
+        last_checkpoint=ckpt_path,
+    )
     log.info("Random model checkpoint saved to %s", ckpt_path)
 
 
@@ -175,8 +200,7 @@ def step_generate_data(
 
     if data_path.exists():
         log.info("Training data already exists at %s, skipping", data_path)
-        state.last_data = str(data_path)
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        _update_state(state, last_data=data_path)
         return
 
     stockfish_cfg = cfg.data.stockfish_path.strip()
@@ -195,8 +219,8 @@ def step_generate_data(
         detected = shutil.which("stockfish")
         if not detected:
             raise FileNotFoundError(
-                "Stockfish not found in PATH. Set [data].stockfish_path in "
-                "config.toml to an absolute Stockfish binary path."
+                "Stockfish not found in PATH. Set DENOISR_STOCKFISH_PATH "
+                "or [data].stockfish_path to an absolute Stockfish binary path."
             )
         stockfish_path = detected
 
@@ -226,8 +250,7 @@ def step_generate_data(
         chunk_examples=cfg.data.chunk_examples,
     )
 
-    state.last_data = str(data_path)
-    state.updated_at = datetime.now(timezone.utc).isoformat()
+    _update_state(state, last_data=data_path)
     log.info("Generated %d examples at %s", count, data_path)
 
 
@@ -245,9 +268,11 @@ def step_train_phase1(
     output_ckpt = output_dir / "phase1.pt"
     if output_ckpt.exists():
         log.info("Phase 1 checkpoint already exists at %s, skipping", output_ckpt)
-        state.last_checkpoint = str(output_ckpt)
-        state.phase = "phase1_complete"
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        _update_state(
+            state,
+            phase="phase1_complete",
+            last_checkpoint=output_ckpt,
+        )
         return
 
     if not state.last_checkpoint:
@@ -292,9 +317,11 @@ def step_train_phase1(
     if not output_ckpt.exists():
         raise FileNotFoundError(f"Phase 1 did not produce checkpoint: {output_ckpt}")
 
-    state.last_checkpoint = str(output_ckpt)
-    state.phase = "phase1_complete"
-    state.updated_at = datetime.now(timezone.utc).isoformat()
+    _update_state(
+        state,
+        phase="phase1_complete",
+        last_checkpoint=output_ckpt,
+    )
     log.info("Phase 1 complete: %s", output_ckpt)
 
 
@@ -309,9 +336,11 @@ def step_train_phase2(cfg: PipelineConfig, state: PipelineState) -> None:
     output_ckpt = output_dir / "phase2.pt"
     if output_ckpt.exists():
         log.info("Phase 2 checkpoint already exists at %s, skipping", output_ckpt)
-        state.last_checkpoint = str(output_ckpt)
-        state.phase = "phase2_complete"
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        _update_state(
+            state,
+            phase="phase2_complete",
+            last_checkpoint=output_ckpt,
+        )
         return
 
     if not state.last_checkpoint:
@@ -350,9 +379,11 @@ def step_train_phase2(cfg: PipelineConfig, state: PipelineState) -> None:
     if not output_ckpt.exists():
         raise FileNotFoundError(f"Phase 2 did not produce checkpoint: {output_ckpt}")
 
-    state.last_checkpoint = str(output_ckpt)
-    state.phase = "phase2_complete"
-    state.updated_at = datetime.now(timezone.utc).isoformat()
+    _update_state(
+        state,
+        phase="phase2_complete",
+        last_checkpoint=output_ckpt,
+    )
     log.info("Phase 2 complete: %s", output_ckpt)
 
 
@@ -367,9 +398,11 @@ def step_train_phase3(cfg: PipelineConfig, state: PipelineState) -> None:
     output_ckpt = output_dir / "phase3.pt"
     if output_ckpt.exists():
         log.info("Phase 3 checkpoint already exists at %s, skipping", output_ckpt)
-        state.last_checkpoint = str(output_ckpt)
-        state.phase = "phase3_complete"
-        state.updated_at = datetime.now(timezone.utc).isoformat()
+        _update_state(
+            state,
+            phase="phase3_complete",
+            last_checkpoint=output_ckpt,
+        )
         return
 
     if not state.last_checkpoint:
@@ -422,7 +455,9 @@ def step_train_phase3(cfg: PipelineConfig, state: PipelineState) -> None:
     if not output_ckpt.exists():
         raise FileNotFoundError(f"Phase 3 did not produce checkpoint: {output_ckpt}")
 
-    state.last_checkpoint = str(output_ckpt)
-    state.phase = "phase3_complete"
-    state.updated_at = datetime.now(timezone.utc).isoformat()
+    _update_state(
+        state,
+        phase="phase3_complete",
+        last_checkpoint=output_ckpt,
+    )
     log.info("Phase 3 complete: %s", output_ckpt)

@@ -7,7 +7,6 @@ When --baseline-cmd is provided, both the primary engine and baseline are
 benchmarked against the same opponent, and a comparison table is printed.
 """
 
-import argparse
 import logging
 import math
 import shlex
@@ -26,7 +25,7 @@ from denoisr.evaluation.benchmark import (
 )
 from denoisr.evaluation.pgn_writer import write_combined_pgn, write_pgn
 from denoisr.scripts.interrupts import graceful_main
-from denoisr.scripts.runtime import configure_logging, load_env_file
+from denoisr.scripts.runtime import build_parser, configure_logging, load_env_file
 
 logger = logging.getLogger(__name__)
 
@@ -182,9 +181,7 @@ def _log_comparison(
 @graceful_main("denoisr-benchmark", logger=logger)
 def main() -> None:
     load_env_file()
-    parser = argparse.ArgumentParser(
-        description="Benchmark Denoisr against a reference engine"
-    )
+    parser = build_parser("Benchmark Denoisr against a reference engine")
     parser.add_argument(
         "--engine-cmd",
         required=True,

@@ -1,6 +1,34 @@
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Final, Literal, cast
+
+PipelinePhase = Literal[
+    "",
+    "init",
+    "fetched",
+    "model_initialized",
+    "phase1_complete",
+    "phase2_complete",
+    "phase3_complete",
+]
+_KNOWN_PHASES: Final[frozenset[str]] = frozenset(
+    {
+        "",
+        "init",
+        "fetched",
+        "model_initialized",
+        "phase1_complete",
+        "phase2_complete",
+        "phase3_complete",
+    }
+)
+
+
+def _normalize_phase(raw: object) -> PipelinePhase:
+    if isinstance(raw, str) and raw in _KNOWN_PHASES:
+        return cast(PipelinePhase, raw)
+    return "init"
 
 
 @dataclass
@@ -11,7 +39,7 @@ class PipelineState:
     as the pipeline progresses.
     """
 
-    phase: str = "init"
+    phase: PipelinePhase = "init"
     last_checkpoint: str = ""
     last_data: str = ""
     started_at: str = ""
@@ -31,4 +59,6 @@ class PipelineState:
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text())
-        return cls(**{k: v for k, v in raw.items() if k in cls.__dataclass_fields__})
+        clean = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
+        clean["phase"] = _normalize_phase(clean.get("phase"))
+        return cls(**clean)

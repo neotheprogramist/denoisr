@@ -77,57 +77,22 @@ After seeing how the random model plays, train it through all three phases to pr
 
 ### Recommended: `denoisr-train` (unified pipeline)
 
-The simplest way to train is the unified pipeline command. It handles data download, model initialization, data generation, and all three training phases from a single TOML config:
+The simplest way to train is the unified pipeline command. It handles data download, model initialization, data generation, and all three training phases from env-based configuration.
 
 ```bash
+cp .env.example .env
 uv run denoisr-train
 ```
 
-A `.env.example` with recommended values is included. The CLI loads `.env`
-automatically and uses env-backed arguments with fail-fast validation when required
-inputs are missing.
+The CLI auto-loads `.env`. Required settings are fail-fast when missing.  
+You can remove `config.toml` entirely; it is optional now.
 
-A default `config.toml` is included in the repo. All sections are optional -- defaults are shown:
+Hardware-tuned defaults in `.env.example` target:
 
-```toml
-[data]
-pgn_url = "https://database.lichess.org/standard/lichess_db_standard_rated_2025-01.pgn.zst"
-pgn_path = "data/lichess.pgn.zst"
-stockfish_depth = 10
-max_examples = 2_000_000
+- RTX 3060 12GB: conservative training batches (`phase1=128`, `phase2=64`, `phase3=128`)
+- Threadripper 3970X (64 threads): high but safe data workers (`DENOISR_WORKERS=48`)
 
-[model]
-d_s = 256
-num_heads = 8
-num_layers = 15
-ffn_dim = 1024
-num_timesteps = 100
-
-[phase1]
-epochs = 100
-lr = 3e-4
-batch_size = 1024
-holdout_frac = 0.05
-warmup_epochs = 5
-
-[phase2]
-epochs = 200
-lr = 3e-4
-batch_size = 1024
-seq_len = 10
-max_trajectories = 50_000
-
-[phase3]
-generations = 1000
-games_per_gen = 100
-reanalyse_per_gen = 50
-mcts_sims = 800
-
-[output]
-dir = "outputs/"
-```
-
-The pipeline randomly samples positions from the raw PGN, generates Stockfish-evaluated training data, and runs Phase 1 supervised learning before advancing to Phase 2 and Phase 3.
+The pipeline randomly samples positions from raw PGN, generates Stockfish targets, trains Phase 1, then advances through Phase 2 and Phase 3.
 
 **Pipeline state resumption:** Progress is saved to `pipeline_state.json` in the output directory. If interrupted, re-running the same command resumes from the last completed step. Use `--restart` to start fresh. Use `--only` to run specific steps:
 
@@ -142,15 +107,16 @@ uv run denoisr-train --restart
 uv run denoisr-train --only fetch,init
 ```
 
-| Flag        | Default         | Description                                                     |
-| ----------- | --------------- | --------------------------------------------------------------- |
-| `--config`  | `config.toml`   | Path to pipeline TOML config                                    |
-| `--restart` | off             | Ignore saved state and start fresh                              |
-| `--only`    | (all steps)     | Comma-separated steps to run: `fetch,init,phase1,phase2,phase3` |
+| Flag        | Default     | Description                                                     |
+| ----------- | ----------- | --------------------------------------------------------------- |
+| `--config`  | (not set)   | Optional path to a TOML base config (env overrides still win)   |
+| `--restart` | off         | Ignore saved state and start fresh                              |
+| `--only`    | (all steps) | Comma-separated steps to run: `fetch,init,phase1,phase2,phase3` |
 
 ### Advanced: per-phase commands
 
 For fine-grained control, you can run each phase individually. This is useful for debugging, hyperparameter sweeps, or custom data preparation.
+Examples below assume you copied `.env.example` to `.env` so required args are already provided via environment.
 
 #### Step 1: Download training data
 
@@ -187,6 +153,7 @@ uv run denoisr-generate-data \
 Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to override.
 
 When the PGN contains more positions than `--max-examples`, positions are randomly sub-sampled across the entire file rather than taking the first N sequentially.
+Defaults below reflect the recommended `.env.example` profile.
 
 **What you'll see:**
 
@@ -199,18 +166,18 @@ Saved 1000000 examples to outputs/training_data.pt
 Done: 1000000 examples generated.
 ```
 
-| Flag                   | Default                    | Description                                                      |
-| ---------------------- | -------------------------- | ---------------------------------------------------------------- |
-| `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file                                |
-| `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                                         |
-| `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)                       |
-| `--max-examples`       | `1000000`                  | Training examples to generate                                    |
-| `--workers`            | `64`                       | Worker processes (each runs its own Stockfish)                   |
-| `--policy-temperature` | `80`                       | Softmax temperature for policy targets                           |
-| `--label-smoothing`    | `0.02`                     | Label smoothing epsilon for policy targets                       |
-| `--seed`               | (none)                     | Random seed for reproducible sampling                            |
-| `--chunksize`          | `64`                       | `imap_unordered` chunksize for worker batching                   |
-| `--output`             | `outputs/training_data.pt` | Output path for generated data                                   |
+| Flag                   | Default                    | Description                                    |
+| ---------------------- | -------------------------- | ---------------------------------------------- |
+| `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file              |
+| `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                       |
+| `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)     |
+| `--max-examples`       | `1000000`                  | Training examples to generate                  |
+| `--workers`            | `48`                       | Worker processes (each runs its own Stockfish) |
+| `--policy-temperature` | `80`                       | Softmax temperature for policy targets         |
+| `--label-smoothing`    | `0.02`                     | Label smoothing epsilon for policy targets     |
+| `--seed`               | (none)                     | Random seed for reproducible sampling          |
+| `--chunksize`          | `128`                      | `imap_unordered` chunksize for worker batching |
+| `--output`             | `outputs/training_data.pt` | Output path for generated data                 |
 
 #### Step 4: Phase 1 -- Supervised learning
 
@@ -220,7 +187,7 @@ The network learns basic chess from the pre-generated training data:
 uv run denoisr-train-phase1 \
     --checkpoint outputs/random_model.pt \
     --data outputs/training_data.pt \
-    --epochs 100 \
+    --epochs 80 \
     --output outputs/phase1.pt
 ```
 
@@ -229,8 +196,8 @@ uv run denoisr-train-phase1 \
 ```
 Loaded checkpoint: d_s=256, heads=8, layers=15
 Loaded 100000 training examples from outputs/training_data.pt
-Epoch 12/100:  68%|█████████████▌      | 1088/1600 [00:45<00:21] loss=2.1234 policy=1.8901 value=0.2333
-Epoch 12/100: avg_loss=2.0891 top1_accuracy=28.5%
+Epoch 12/80:  68%|█████████████▌      | 1088/1600 [00:45<00:21] loss=2.1234 policy=1.8901 value=0.2333
+Epoch 12/80: avg_loss=2.0891 top1_accuracy=28.5%
 ```
 
 Training automatically stops when top-1 accuracy exceeds **50%** (Phase 1 gate).
@@ -240,13 +207,13 @@ Training automatically stops when top-1 accuracy exceeds **50%** (Phase 1 gate).
 | `--checkpoint`   | (required)          | Checkpoint to load (create with `denoisr-init`)                |
 | `--data`         | (required)          | Training data `.pt` file (create with `denoisr-generate-data`) |
 | `--holdout-frac` | `0.05`              | Fraction for accuracy evaluation                               |
-| `--batch-size`   | `1024`              | Batch size                                                     |
-| `--epochs`       | `100`               | Maximum epochs                                                 |
+| `--batch-size`   | `128`               | Batch size                                                     |
+| `--epochs`       | `80`                | Maximum epochs                                                 |
 | `--lr`           | `3e-4`              | Learning rate                                                  |
 | `--output`       | `outputs/phase1.pt` | Checkpoint path                                                |
 | `--run-name`     | auto timestamp      | TensorBoard run name (see [Training logs](#training-logs))     |
 
-Plus all [model architecture](#model-architecture-modelconfig) and [training optimization](#training-optimization-trainingconfig) flags.
+Plus all [training optimization](#training-optimization-trainingconfig) flags.
 
 #### Step 5: Phase 2 -- Diffusion bootstrapping
 
@@ -256,17 +223,17 @@ Trains all 6 loss terms (policy, value, diffusion, world model state/reward, con
 uv run denoisr-train-phase2 \
     --checkpoint outputs/phase1.pt \
     --pgn data/lichess_db_standard_rated_2025-01.pgn.zst \
-    --max-trajectories 50000 \
-    --epochs 200 \
+    --max-trajectories 30000 \
+    --epochs 120 \
     --output outputs/phase2.pt
 ```
 
 **What you'll see:**
 
 ```
-Extracting trajectories: 72%|██████████████▍     | 36000/50000 [02:15<00:52, 267traj/s]
-Epoch 45/200:  55%|███████████         | 860/1562 [00:32<00:26] loss=0.0234
-Epoch 45/200: total_loss=0.0218 curriculum_steps=32
+Extracting trajectories: 72%|██████████████▍     | 21600/30000 [02:15<00:52, 267traj/s]
+Epoch 45/120:  55%|███████████         | 860/1562 [00:32<00:26] loss=0.0234
+Epoch 45/120: total_loss=0.0218 curriculum_steps=32
 ```
 
 Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 percentage points.
@@ -276,14 +243,14 @@ Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 pe
 | `--checkpoint`       | (required)          | Phase 1 checkpoint                                          |
 | `--pgn`              | (required)          | PGN file for trajectory extraction                          |
 | `--seq-len`          | `10`                | Board states per trajectory (9 future states for diffusion) |
-| `--max-trajectories` | `50000`             | Trajectories to extract                                     |
-| `--batch-size`       | `1024`              | Batch size                                                  |
-| `--epochs`           | `200`               | Training epochs                                             |
+| `--max-trajectories` | `30000`             | Trajectories to extract                                     |
+| `--batch-size`       | `64`                | Batch size                                                  |
+| `--epochs`           | `120`               | Training epochs                                             |
 | `--lr`               | `3e-4`              | Learning rate                                               |
 | `--output`           | `outputs/phase2.pt` | Checkpoint path                                             |
 | `--run-name`         | auto timestamp      | TensorBoard run name                                        |
 
-Plus all [model architecture](#model-architecture-modelconfig), [training optimization](#training-optimization-trainingconfig), and [diffusion curriculum](#diffusion-curriculum) flags.
+Plus all [training optimization](#training-optimization-trainingconfig) and [diffusion curriculum](#diffusion-curriculum) flags.
 
 #### Step 6: Phase 3 -- RL self-play
 
@@ -292,8 +259,8 @@ The engine improves beyond human/Stockfish supervision by playing against itself
 ```bash
 uv run denoisr-train-phase3 \
     --checkpoint outputs/phase2.pt \
-    --generations 1000 \
-    --games-per-gen 100 \
+    --generations 400 \
+    --games-per-gen 64 \
     --save-every 10 \
     --output outputs/phase3.pt
 ```
@@ -301,24 +268,24 @@ uv run denoisr-train-phase3 \
 **What you'll see:**
 
 ```
-Generations:  5%|█                   | 50/1000 [4:12:30<79:30:00]
-Gen 51 self-play:  34%|██████▊             | 34/100 [08:12<15:55] W=12 D=8 L=14
-Gen 51/1000: buffer=5100 alpha=0.00 temp=0.220 W/D/L=48/21/31 reanalysed=450
+Generations:  5%|█                   | 20/400 [1:41:30<31:59:00]
+Gen 21 self-play:  34%|██████▊             | 22/64 [05:01<09:35] W=8 D=5 L=9
+Gen 21/400: buffer=1344 alpha=0.00 temp=0.310 W/D/L=31/14/19 reanalysed=672
 ```
 
 | Flag                  | Default             | Description                               |
 | --------------------- | ------------------- | ----------------------------------------- |
 | `--checkpoint`        | (required)          | Phase 2 checkpoint                        |
-| `--generations`       | `1000`              | Self-play generations                     |
-| `--games-per-gen`     | `100`               | Games per generation                      |
-| `--reanalyse-per-gen` | `50`                | Old games reanalysed per generation       |
-| `--mcts-sims`         | `800`               | MCTS simulations per move                 |
-| `--buffer-capacity`   | `100000`            | Replay buffer capacity                    |
-| `--alpha-generations` | `50`                | Generations to transition MCTS->diffusion |
+| `--generations`       | `400`               | Self-play generations                     |
+| `--games-per-gen`     | `64`                | Games per generation                      |
+| `--reanalyse-per-gen` | `32`                | Old games reanalysed per generation       |
+| `--mcts-sims`         | `400`               | MCTS simulations per move                 |
+| `--buffer-capacity`   | `50000`             | Replay buffer capacity                    |
+| `--alpha-generations` | `40`                | Generations to transition MCTS->diffusion |
 | `--save-every`        | `10`                | Checkpoint every N generations            |
 | `--output`            | `outputs/phase3.pt` | Checkpoint path                           |
 
-Plus all [model architecture](#model-architecture-modelconfig), [training optimization](#training-optimization-trainingconfig), and [Phase 3 self-play](#phase-3-self-play-and-mcts-phase-3-only) flags.
+Plus all [training optimization](#training-optimization-trainingconfig) and [Phase 3 self-play](#phase-3-self-play-and-mcts-phase-3-only) flags.
 
 ### Training logs
 
@@ -478,11 +445,11 @@ The filter is applied between gradient unscaling and gradient clipping in the tr
 
 | Flag                     | Default | What it controls                                                    |
 | ------------------------ | ------- | ------------------------------------------------------------------- |
-| `--grok-tracking`        | off     | Enable grokking detection metrics, structured holdouts, and alerts  |
+| `--grok-tracking`        | on      | Enable grokking detection metrics, structured holdouts, and alerts  |
 | `--grok-erank-freq`      | `1000`  | Effective rank computation frequency (steps). Lower = more data     |
 | `--grok-spectral-freq`   | `5000`  | Spectral norm / HTSR alpha frequency (steps)                        |
 | `--grok-onset-threshold` | `0.95`  | Weight norm ratio for onset detection (lower = more sensitive)      |
-| `--grokfast`             | off     | Enable Grokfast EMA gradient filtering (~50x grokking acceleration) |
+| `--grokfast`             | on      | Enable Grokfast EMA gradient filtering (~50x grokking acceleration) |
 | `--grokfast-alpha`       | `0.98`  | EMA decay rate. Higher = smoother (more historical averaging)       |
 | `--grokfast-lamb`        | `2.0`   | Amplification factor. Higher = stronger boost to slow gradients     |
 
@@ -523,8 +490,8 @@ These control how the model learns. Safe to change between runs without architec
 | `--encoder-lr-multiplier` | `1.0`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                             |
 | `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
 | `--warmup-epochs`         | `5`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
-| `--num-workers`           | `2`     | DataLoader worker processes. Set 0 for debugging, 2-4 for training                                                                                                  |
-| `--warm-restarts`         | off     | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                            |
+| `--workers`               | `0`     | DataLoader worker processes (`0` = auto)                                                                                                                            |
+| `--warm-restarts`         | on      | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                            |
 | `--threat-weight`         | `0.1`   | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                                      |
 | `--tqdm`                  | off     | Show tqdm progress bars. Off by default for agent-friendly structured log output                                                                                    |
 
@@ -541,7 +508,7 @@ These control the relative importance of each training objective. Higher weight 
 | `--reward-weight`          | `1.0`   | Reward prediction MSE. Teaches outcome prediction from latent states                               |
 | `--ply-weight`             | `0.1`   | Game length prediction Huber loss. Auxiliary signal, low weight                                    |
 | `--illegal-penalty-weight` | `0.01`  | L2 penalty on illegal-move logits. Encourages model to suppress illegal positions                  |
-| `--harmony-dream`          | off     | Enable HarmonyDream dynamic loss balancing (auto-adjusts weights inversely to loss magnitudes)     |
+| `--harmony-dream`          | on      | Enable HarmonyDream dynamic loss balancing (auto-adjusts weights inversely to loss magnitudes)     |
 | `--harmony-ema-decay`      | `0.99`  | EMA decay for HarmonyDream tracking. Higher = smoother adaptation                                  |
 
 #### Diffusion curriculum
@@ -592,13 +559,12 @@ uv run denoisr-train-phase1 \
 #### Example: training on limited VRAM
 
 ```bash
-# Reduce memory usage with gradient checkpointing and fewer workers
+# Reduce memory usage with fewer workers
 uv run denoisr-train-phase1 \
     --checkpoint outputs/random_model.pt \
     --data outputs/training_data.pt \
     --batch-size 16 \
-    --gradient-checkpointing \
-    --num-workers 0 \
+    --workers 0 \
     --run-name low-vram
 ```
 
