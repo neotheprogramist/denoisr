@@ -6,8 +6,12 @@ from pathlib import Path
 
 from denoisr.pipeline.config import load_config
 from denoisr.pipeline.runner import PipelineRunner
+from denoisr.scripts.interrupts import graceful_main
+
+log = logging.getLogger(__name__)
 
 
+@graceful_main("denoisr-train", logger=log)
 def main() -> None:
     """Parse CLI arguments and run the full Denoisr training pipeline."""
     parser = argparse.ArgumentParser(
@@ -39,7 +43,15 @@ def main() -> None:
     cfg = load_config(Path(args.config))
     only = frozenset(args.only.split(",")) if args.only else None
     runner = PipelineRunner(cfg, restart=args.restart, only=only)
-    runner.run()
+    try:
+        runner.run()
+    except KeyboardInterrupt:
+        runner._save_state()
+        log.warning(
+            "Pipeline interrupted. State saved to %s",
+            runner.state_path,
+        )
+        raise
 
 
 if __name__ == "__main__":

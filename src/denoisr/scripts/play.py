@@ -17,6 +17,7 @@ import argparse
 from typing import TYPE_CHECKING
 
 from denoisr.inference.uci import run_uci_loop
+from denoisr.scripts.interrupts import graceful_main
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     import chess
 
 
+@graceful_main("denoisr-play")
 def main() -> None:
     parser = argparse.ArgumentParser(description="Denoisr UCI chess engine")
     parser.add_argument(

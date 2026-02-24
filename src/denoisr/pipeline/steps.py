@@ -12,6 +12,7 @@ and mutate *state* in place to record progress.
 import logging
 import subprocess
 import shutil
+import signal
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +27,16 @@ def _run_python_module(module: str, args: list[str]) -> None:
     """Run a project Python module in a subprocess."""
     cmd = [sys.executable, "-m", module, *args]
     log.info("Running: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    try:
+        subprocess.run(cmd, check=True)
+    except KeyboardInterrupt:
+        log.warning("Interrupted while running module: %s", module)
+        raise
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode in (130, -signal.SIGINT):
+            log.warning("Interrupted module exited with SIGINT: %s", module)
+            raise KeyboardInterrupt from None
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -49,10 +59,19 @@ def step_fetch_data(cfg: PipelineConfig, state: PipelineState) -> None:
 
     log.info("Downloading PGN from %s to %s", cfg.data.pgn_url, pgn_path)
     pgn_path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["wget", "-q", "-O", str(pgn_path), cfg.data.pgn_url],
-        check=True,
-    )
+    try:
+        subprocess.run(
+            ["wget", "-q", "-O", str(pgn_path), cfg.data.pgn_url],
+            check=True,
+        )
+    except KeyboardInterrupt:
+        log.warning("Interrupted while downloading PGN to %s", pgn_path)
+        raise
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode in (130, -signal.SIGINT):
+            log.warning("PGN download interrupted for %s", pgn_path)
+            raise KeyboardInterrupt from None
+        raise
     log.info("Download complete: %s", pgn_path)
     state.phase = "fetched"
     state.updated_at = datetime.now(timezone.utc).isoformat()

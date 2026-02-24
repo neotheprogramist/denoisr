@@ -40,6 +40,7 @@ from denoisr.scripts.config import (
     save_checkpoint,
     training_config_from_args,
 )
+from denoisr.scripts.interrupts import graceful_main
 from denoisr.training.ema import ModelEMA
 from denoisr.training.logger import TrainingLogger
 from denoisr.training.loss import ChessLossComputer
@@ -165,6 +166,7 @@ def extract_trajectories(
     )
 
 
+@graceful_main("denoisr-train-phase2", logger=log)
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Phase 2: World model + diffusion bootstrapping"

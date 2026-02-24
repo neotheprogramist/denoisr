@@ -25,6 +25,7 @@ from denoisr.evaluation.benchmark import (
     run_benchmark,
 )
 from denoisr.evaluation.pgn_writer import write_combined_pgn, write_pgn
+from denoisr.scripts.interrupts import graceful_main
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,7 @@ def _log_comparison(
     logger.info("\n%s", "\n".join(lines))
 
 
+@graceful_main("denoisr-benchmark", logger=logger)
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Benchmark Denoisr against a reference engine"

@@ -37,6 +37,7 @@ from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.data.stockfish_oracle import StockfishOracle
 from denoisr.scripts.config import resolve_workers
+from denoisr.scripts.interrupts import graceful_main
 
 log = logging.getLogger(__name__)
 
@@ -456,6 +457,7 @@ def generate_to_file(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+@graceful_main("denoisr-generate-data", logger=log)
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(

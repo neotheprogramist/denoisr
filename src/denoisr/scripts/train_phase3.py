@@ -37,6 +37,7 @@ from denoisr.scripts.config import (
     resolve_dataloader_workers,
     save_checkpoint,
 )
+from denoisr.scripts.interrupts import graceful_main
 from denoisr.training.phase_orchestrator import PhaseConfig, PhaseOrchestrator
 from denoisr.training.reanalyse import ReanalyseActor
 from denoisr.training.replay_buffer import PriorityReplayBuffer
@@ -58,6 +59,7 @@ def _resolve_phase3_workers(requested: int, default_workers: int) -> int:
     return max(1, min(8, default_workers))
 
 
+@graceful_main("denoisr-train-phase3", logger=log)
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 3: RL self-play")
     parser.add_argument(

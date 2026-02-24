@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 
+from denoisr.scripts.interrupts import graceful_main
 
+
+@graceful_main("denoisr-gui")
 def main() -> None:
     parser = argparse.ArgumentParser(description="Denoisr Chess GUI")
     parser.add_argument(

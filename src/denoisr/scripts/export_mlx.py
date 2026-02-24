@@ -10,6 +10,7 @@ import torch
 from safetensors.torch import save_file
 
 from denoisr.scripts.config import load_checkpoint
+from denoisr.scripts.interrupts import graceful_main
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ def export_weights(checkpoint_path: Path, output_path: Path) -> None:
     log.info("Config saved to %s", config_path)
 
 
+@graceful_main("denoisr-export-mlx", logger=log)
 def main() -> None:
     """CLI entry point for denoisr-export-mlx."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")

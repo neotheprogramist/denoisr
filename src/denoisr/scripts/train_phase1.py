@@ -37,6 +37,7 @@ from denoisr.scripts.config import (
     save_checkpoint,
     training_config_from_args,
 )
+from denoisr.scripts.interrupts import graceful_main
 from denoisr.training.dataset import ChessDataset
 from denoisr.training.ema import ModelEMA
 from denoisr.training.grok_tracker import GrokTracker
@@ -567,6 +568,7 @@ def measure_accuracy(
     return correct_1 / max(total, 1), correct_5 / max(total, 1)
 
 
+@graceful_main("denoisr-train-phase1", logger=log)
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 1: Supervised training")
     parser.add_argument(

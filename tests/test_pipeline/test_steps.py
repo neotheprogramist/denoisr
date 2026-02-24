@@ -1,8 +1,10 @@
 """Tests for pipeline step functions."""
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import torch
 
 from denoisr.pipeline.config import (
@@ -16,6 +18,7 @@ from denoisr.pipeline.config import (
 )
 from denoisr.pipeline.state import PipelineState
 from denoisr.pipeline.steps import (
+    _run_python_module,
     step_fetch_data,
     step_generate_data,
     step_init_model,
@@ -129,6 +132,35 @@ def test_fetch_data_calls_wget_when_missing(tmp_path: Path) -> None:
 
     assert state.phase == "fetched"
     assert state.updated_at != ""
+
+
+def test_fetch_data_maps_sigint_exit_to_keyboard_interrupt(tmp_path: Path) -> None:
+    """SIGINT-style wget exit code is normalized to KeyboardInterrupt."""
+    cfg = _make_cfg(tmp_path)
+    state = PipelineState()
+
+    with patch(
+        "subprocess.run",
+        side_effect=subprocess.CalledProcessError(
+            returncode=130,
+            cmd=["wget"],
+        ),
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            step_fetch_data(cfg, state)
+
+
+def test_run_python_module_maps_sigint_exit_to_keyboard_interrupt() -> None:
+    """SIGINT-style child exit code is normalized to KeyboardInterrupt."""
+    with patch(
+        "subprocess.run",
+        side_effect=subprocess.CalledProcessError(
+            returncode=130,
+            cmd=["python", "-m", "denoisr.scripts.train_phase1"],
+        ),
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            _run_python_module("denoisr.scripts.train_phase1", [])
 
 
 # -- step_generate_data ----------------------------------------------------

@@ -22,10 +22,12 @@ from denoisr.scripts.config import (
     config_from_args,
     save_checkpoint,
 )
+from denoisr.scripts.interrupts import graceful_main
 
 log = logging.getLogger(__name__)
 
 
+@graceful_main("denoisr-init", logger=log)
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
