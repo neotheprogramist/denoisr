@@ -16,9 +16,7 @@ class _DummyModel:
     def __init__(self, d_s: int) -> None:
         self.d_s = d_s
 
-    def predict(
-        self, state: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return torch.rand(64, 64), torch.tensor([0.33, 0.34, 0.33])
 
     def predict_next(
@@ -38,11 +36,10 @@ class TestSelfPlayActor:
             policy_value_fn=model.predict,
             world_model_fn=model.predict_next,
             encode_fn=model.encode,
+            diffusion_policy_fn=None,
             game=ChessGame(),
             board_encoder=ExtendedBoardEncoder(),
-            config=SelfPlayConfig(
-                num_simulations=10, max_moves=50, temperature=1.0
-            ),
+            config=SelfPlayConfig(num_simulations=10, max_moves=50, temperature=1.0),
         )
 
     def test_play_game_returns_record(self, actor: SelfPlayActor) -> None:
@@ -66,6 +63,7 @@ class TestSelfPlayActor:
             policy_value_fn=model.predict,
             world_model_fn=model.predict_next,
             encode_fn=model.encode,
+            diffusion_policy_fn=None,
             game=ChessGame(),
             board_encoder=ExtendedBoardEncoder(),
             config=SelfPlayConfig(
@@ -95,9 +93,7 @@ class TestTemperatureSchedule:
         assert ts.get_temperature(100) == 0.0
 
     def test_generation_decay(self) -> None:
-        ts = TemperatureSchedule(
-            base=1.0, explore_moves=30, generation_decay=0.5
-        )
+        ts = TemperatureSchedule(base=1.0, explore_moves=30, generation_decay=0.5)
         assert ts.get_temperature(0, generation=0) == 1.0
         assert ts.get_temperature(0, generation=1) == pytest.approx(0.5)
         assert ts.get_temperature(0, generation=2) == pytest.approx(0.25)

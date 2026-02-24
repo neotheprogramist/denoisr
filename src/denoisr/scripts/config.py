@@ -376,7 +376,10 @@ def _probe_cuda_compile_support() -> tuple[bool, str]:
             f"Triton ptxas probe failed with exit code {exc.returncode}: {ptxas_path}"
         )
     except PermissionError:
-        return False, f"Triton ptxas cannot be executed (permission denied): {ptxas_path}"
+        return (
+            False,
+            f"Triton ptxas cannot be executed (permission denied): {ptxas_path}",
+        )
     except OSError as exc:
         return False, f"Triton ptxas execution failed: {exc}"
 
@@ -416,7 +419,9 @@ def maybe_compile(
     except Exception as exc:  # noqa: BLE001
         if compile_mode == "on":
             raise RuntimeError(f"torch.compile failed on CUDA: {exc}") from exc
-        log.warning("torch.compile failed on CUDA (%s). Falling back to eager mode.", exc)
+        log.warning(
+            "torch.compile failed on CUDA (%s). Falling back to eager mode.", exc
+        )
     return module
 
 
@@ -478,35 +483,51 @@ def add_model_args(parser: ArgumentParser) -> None:
     """Register CLI flags for model architecture hyperparameters."""
     g = parser.add_argument_group("model")
     g.add_argument(
-        "--d-s", type=int, default=256,
+        "--d-s",
+        type=int,
+        default=256,
         help="latent dimension per square token (default: 256)",
     )
     g.add_argument(
-        "--num-heads", type=int, default=8,
+        "--num-heads",
+        type=int,
+        default=8,
         help="attention heads in backbone (default: 8, must divide d_s)",
     )
     g.add_argument(
-        "--num-layers", type=int, default=15,
+        "--num-layers",
+        type=int,
+        default=15,
         help="policy backbone transformer depth (default: 15)",
     )
     g.add_argument(
-        "--ffn-dim", type=int, default=1024,
+        "--ffn-dim",
+        type=int,
+        default=1024,
         help="feed-forward hidden dim, typically 4×d_s (default: 1024)",
     )
     g.add_argument(
-        "--num-timesteps", type=int, default=100,
+        "--num-timesteps",
+        type=int,
+        default=100,
         help="Diffusion timesteps (default: 100)",
     )
     g.add_argument(
-        "--world-model-layers", type=int, default=12,
+        "--world-model-layers",
+        type=int,
+        default=12,
         help="world model transformer depth (default: 12)",
     )
     g.add_argument(
-        "--diffusion-layers", type=int, default=6,
+        "--diffusion-layers",
+        type=int,
+        default=6,
         help="DiT diffusion denoiser depth (default: 6)",
     )
     g.add_argument(
-        "--proj-dim", type=int, default=256,
+        "--proj-dim",
+        type=int,
+        default=256,
         help="consistency projector dimension (default: 256)",
     )
     g.add_argument(
@@ -521,81 +542,117 @@ def add_training_args(parser: ArgumentParser) -> None:
     """Register CLI flags for all training hyperparameters."""
     g = parser.add_argument_group("training")
     g.add_argument(
-        "--max-grad-norm", type=float, default=5.0,
+        "--max-grad-norm",
+        type=float,
+        default=5.0,
         help="gradient clipping L2 norm threshold (default: 5.0)",
     )
     g.add_argument(
-        "--weight-decay", type=float, default=1e-4,
+        "--weight-decay",
+        type=float,
+        default=1e-4,
         help="AdamW weight decay (default: 1e-4)",
     )
     g.add_argument(
-        "--encoder-lr-multiplier", type=float, default=1.0,
+        "--encoder-lr-multiplier",
+        type=float,
+        default=1.0,
         help="LR multiplier for encoder/backbone vs heads (default: 1.0)",
     )
     g.add_argument(
-        "--min-lr", type=float, default=1e-6,
+        "--min-lr",
+        type=float,
+        default=1e-6,
         help="minimum LR at end of cosine annealing (default: 1e-6)",
     )
     g.add_argument(
-        "--warmup-epochs", type=int, default=5,
+        "--warmup-epochs",
+        type=int,
+        default=5,
         help="linear warmup epochs before cosine decay (default: 5)",
     )
     g.add_argument(
         "--warm-restarts",
-        action=argparse.BooleanOptionalAction, default=True,
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="use cosine annealing with warm restarts (default: on)",
     )
     g.add_argument(
-        "--threat-weight", type=float, default=0.1,
+        "--threat-weight",
+        type=float,
+        default=0.1,
         help="loss weight for threat prediction auxiliary head (default: 0.1)",
     )
     g.add_argument(
-        "--policy-weight", type=float, default=2.0,
+        "--policy-weight",
+        type=float,
+        default=2.0,
         help="loss weight for policy cross-entropy (default: 2.0)",
     )
     g.add_argument(
-        "--value-weight", type=float, default=0.5,
+        "--value-weight",
+        type=float,
+        default=0.5,
         help="loss weight for value cross-entropy (default: 0.5)",
     )
     g.add_argument(
-        "--consistency-weight", type=float, default=1.0,
+        "--consistency-weight",
+        type=float,
+        default=1.0,
         help="loss weight for consistency (default: 1.0)",
     )
     g.add_argument(
-        "--diffusion-weight", type=float, default=1.0,
+        "--diffusion-weight",
+        type=float,
+        default=1.0,
         help="loss weight for diffusion denoising (default: 1.0)",
     )
     g.add_argument(
-        "--reward-weight", type=float, default=1.0,
+        "--reward-weight",
+        type=float,
+        default=1.0,
         help="loss weight for reward prediction (default: 1.0)",
     )
     g.add_argument(
-        "--ply-weight", type=float, default=0.1,
+        "--ply-weight",
+        type=float,
+        default=0.1,
         help="loss weight for game-length prediction (default: 0.1)",
     )
     g.add_argument(
-        "--illegal-penalty-weight", type=float, default=0.01,
+        "--illegal-penalty-weight",
+        type=float,
+        default=0.01,
         help="L2 penalty weight on illegal-move logits (default: 0.01)",
     )
     g.add_argument(
         "--harmony-dream",
-        action=argparse.BooleanOptionalAction, default=True,
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="enable HarmonyDream dynamic loss balancing (default: on)",
     )
     g.add_argument(
-        "--harmony-ema-decay", type=float, default=0.99,
+        "--harmony-ema-decay",
+        type=float,
+        default=0.99,
         help="EMA decay for HarmonyDream loss tracking (default: 0.99)",
     )
     g.add_argument(
-        "--curriculum-initial-fraction", type=float, default=0.25,
+        "--curriculum-initial-fraction",
+        type=float,
+        default=0.25,
         help="fraction of diffusion steps at curriculum start (default: 0.25)",
     )
     g.add_argument(
-        "--curriculum-growth", type=float, default=1.02,
+        "--curriculum-growth",
+        type=float,
+        default=1.02,
         help="per-epoch multiplier for curriculum steps (default: 1.02)",
     )
     g.add_argument(
-        "--workers", type=int, default=0,
+        "--workers",
+        type=int,
+        default=0,
         help="DataLoader worker processes (0 = auto: 64)",
     )
     g.add_argument(
@@ -609,51 +666,71 @@ def add_training_args(parser: ArgumentParser) -> None:
         ),
     )
     g.add_argument(
-        "--tqdm", action="store_true", default=False,
+        "--tqdm",
+        action="store_true",
+        default=False,
         help="show tqdm progress bars (default: off, structured log lines instead)",
     )
     g.add_argument(
-        "--phase1-gate", type=float, default=0.50,
+        "--phase1-gate",
+        type=float,
+        default=0.50,
         help="top-1 accuracy to pass Phase 1 gate (default: 0.50)",
     )
     g.add_argument(
-        "--phase2-gate", type=float, default=5.0,
+        "--phase2-gate",
+        type=float,
+        default=5.0,
         help="diffusion improvement pp to pass Phase 2 gate (default: 5.0)",
     )
     # Grokking detection
     g.add_argument(
         "--grok-tracking",
-        action=argparse.BooleanOptionalAction, default=True,
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="enable grokking detection metrics (default: on)",
     )
     g.add_argument(
-        "--grok-erank-freq", type=int, default=1000,
+        "--grok-erank-freq",
+        type=int,
+        default=1000,
         help="effective rank computation frequency in steps (default: 1000)",
     )
     g.add_argument(
-        "--grok-spectral-freq", type=int, default=5000,
+        "--grok-spectral-freq",
+        type=int,
+        default=5000,
         help="spectral norm / HTSR alpha frequency in steps (default: 5000)",
     )
     g.add_argument(
-        "--grok-onset-threshold", type=float, default=0.95,
+        "--grok-onset-threshold",
+        type=float,
+        default=0.95,
         help="weight norm ratio for onset detection (default: 0.95)",
     )
     g.add_argument(
         "--grokfast",
-        action=argparse.BooleanOptionalAction, default=True,
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="enable Grokfast EMA gradient filtering (default: on)",
     )
     g.add_argument(
-        "--grokfast-alpha", type=float, default=0.98,
+        "--grokfast-alpha",
+        type=float,
+        default=0.98,
         help="Grokfast EMA decay rate (default: 0.98)",
     )
     g.add_argument(
-        "--grokfast-lamb", type=float, default=2.0,
+        "--grokfast-lamb",
+        type=float,
+        default=2.0,
         help="Grokfast amplification factor (default: 2.0)",
     )
     # EMA
     g.add_argument(
-        "--ema-decay", type=float, default=0.999,
+        "--ema-decay",
+        type=float,
+        default=0.999,
         help="EMA decay for shadow model evaluation (0=disabled, default: 0.999)",
     )
 
@@ -662,35 +739,51 @@ def add_phase3_args(parser: ArgumentParser) -> None:
     """Register Phase 3-specific CLI flags for self-play and MCTS."""
     g = parser.add_argument_group("phase3")
     g.add_argument(
-        "--c-puct", type=float, default=1.4,
+        "--c-puct",
+        type=float,
+        default=1.4,
         help="MCTS UCB exploration constant (default: 1.4)",
     )
     g.add_argument(
-        "--dirichlet-alpha", type=float, default=0.3,
+        "--dirichlet-alpha",
+        type=float,
+        default=0.3,
         help="Dirichlet noise alpha for root exploration (default: 0.3)",
     )
     g.add_argument(
-        "--dirichlet-epsilon", type=float, default=0.25,
+        "--dirichlet-epsilon",
+        type=float,
+        default=0.25,
         help="fraction of root prior replaced by Dirichlet noise (default: 0.25)",
     )
     g.add_argument(
-        "--temperature-base", type=float, default=1.0,
+        "--temperature-base",
+        type=float,
+        default=1.0,
         help="base temperature for move selection (default: 1.0)",
     )
     g.add_argument(
-        "--temperature-explore-moves", type=int, default=30,
+        "--temperature-explore-moves",
+        type=int,
+        default=30,
         help="moves per game using full temperature (default: 30)",
     )
     g.add_argument(
-        "--temperature-generation-decay", type=float, default=0.97,
+        "--temperature-generation-decay",
+        type=float,
+        default=0.97,
         help="per-generation temperature decay (default: 0.97)",
     )
     g.add_argument(
-        "--max-moves", type=int, default=300,
+        "--max-moves",
+        type=int,
+        default=300,
         help="maximum moves per self-play game (default: 300)",
     )
     g.add_argument(
-        "--reanalyse-simulations", type=int, default=100,
+        "--reanalyse-simulations",
+        type=int,
+        default=100,
         help="MCTS sims for MuZero Reanalyse (default: 100)",
     )
 
@@ -748,7 +841,9 @@ def full_training_config_from_args(args: Namespace) -> TrainingConfig:
 
 
 def resolve_gradient_checkpointing(
-    cfg: ModelConfig, args: Namespace, device: torch.device,
+    cfg: ModelConfig,
+    args: Namespace,
+    device: torch.device,
 ) -> ModelConfig:
     """Override checkpoint config's gradient_checkpointing with CLI flag.
 

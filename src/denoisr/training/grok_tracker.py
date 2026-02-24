@@ -101,9 +101,7 @@ class GrokTracker:
             ("policy_head", self._policy_head),
             ("value_head", self._value_head),
         ]:
-            sq_sum = sum(
-                p.data.norm(2).item() ** 2 for p in module.parameters()
-            )
+            sq_sum = sum(p.data.norm(2).item() ** 2 for p in module.parameters())
             norms[name] = sq_sum**0.5
         norms["total"] = sum(v**2 for v in norms.values()) ** 0.5
         return norms
@@ -159,18 +157,14 @@ class GrokTracker:
             # Fit power-law tail (top 50% of eigenvalues)
             n = len(eigenvalues)
             tail = eigenvalues[: n // 2]
-            log_rank = torch.log(
-                torch.arange(1, len(tail) + 1, dtype=torch.float32)
-            )
+            log_rank = torch.log(torch.arange(1, len(tail) + 1, dtype=torch.float32))
             log_vals = torch.log(tail.cpu())
             # Linear regression: log_vals = -alpha * log_rank + const
             x = log_rank
             y = log_vals
             x_mean = x.mean()
             y_mean = y.mean()
-            slope = ((x - x_mean) * (y - y_mean)).sum() / (
-                (x - x_mean) ** 2
-            ).sum()
+            slope = ((x - x_mean) * (y - y_mean)).sum() / ((x - x_mean) ** 2).sum()
             alphas[i] = -slope.item()
         return alphas
 
@@ -236,16 +230,12 @@ class GrokTracker:
 
         # Compute loss gap (train - best holdout)
         if holdout_metrics:
-            best_holdout_loss = min(
-                loss for _, loss in holdout_metrics.values()
-            )
+            best_holdout_loss = min(loss for _, loss in holdout_metrics.values())
             metrics["grok/loss_gap"] = train_loss - best_holdout_loss
 
         # Track accuracy for state machine
         if "random" in holdout_metrics:
-            self._holdout_accuracy_history.append(
-                holdout_metrics["random"][0]
-            )
+            self._holdout_accuracy_history.append(holdout_metrics["random"][0])
 
         self._check_epoch_transitions(epoch, holdout_metrics)
         metrics["grok/state"] = float(self._state)
@@ -290,10 +280,7 @@ class GrokTracker:
         acc_history = self._holdout_accuracy_history
 
         # ONSET -> TRANSITIONING
-        if (
-            self._state == GrokState.ONSET_DETECTED
-            and len(acc_history) >= 20
-        ):
+        if self._state == GrokState.ONSET_DETECTED and len(acc_history) >= 20:
             recent = sum(acc_history[-10:]) / 10
             earlier = sum(acc_history[-20:-10]) / 10
             if recent - earlier > 0.05:  # >5pp improvement
@@ -339,14 +326,11 @@ class GrokTracker:
         elif new_state == GrokState.TRANSITIONING:
             self._freq_multiplier = 10
 
-        log.warning(
-            "GROKKING %s (step/epoch %d)", new_state.name, step_or_epoch
-        )
+        log.warning("GROKKING %s (step/epoch %d)", new_state.name, step_or_epoch)
         log.warning("  Trigger: %s", trigger)
         if self._freq_multiplier > 1:
             log.warning(
-                "  Action: eval frequency %dx"
-                " (erank: %d steps, spectral: %d steps)",
+                "  Action: eval frequency %dx (erank: %d steps, spectral: %d steps)",
                 self._freq_multiplier,
                 max(1, self._erank_freq // self._freq_multiplier),
                 max(1, self._spectral_freq // self._freq_multiplier),

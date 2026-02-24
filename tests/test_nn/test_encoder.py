@@ -17,9 +17,7 @@ class TestChessEncoder:
         out = encoder(small_board_tensor)
         assert out.shape == (2, 64, SMALL_D_S)
 
-    def test_single_batch(
-        self, encoder: ChessEncoder, device: torch.device
-    ) -> None:
+    def test_single_batch(self, encoder: ChessEncoder, device: torch.device) -> None:
         x = torch.randn(1, 12, 8, 8, device=device)
         out = encoder(x)
         assert out.shape == (1, 64, SMALL_D_S)

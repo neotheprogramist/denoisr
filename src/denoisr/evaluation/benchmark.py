@@ -115,7 +115,8 @@ def _play_one_game(
         )
     except TimeoutError:
         logging.getLogger(__name__).warning(
-            "Game %d: engine timed out, recording as loss", task.game_num,
+            "Game %d: engine timed out, recording as loss",
+            task.game_num,
         )
         # Engine1 (Denoisr) timed out → count as a loss for engine1
         result_str = "0-1" if e1_color == "white" else "1-0"
@@ -205,9 +206,7 @@ def run_benchmark(
         fen = openings[opening_idx]
         engine_is_white = i % 2 == 0
         tasks.append(
-            _GameTask(
-                game_num=i, start_fen=fen, engine_is_white=engine_is_white
-            )
+            _GameTask(game_num=i, start_fen=fen, engine_is_white=engine_is_white)
         )
 
     wins = 0
@@ -231,9 +230,14 @@ def run_benchmark(
             config.startup_timeout,
         ),
     ) as pool:
-        for game_num, result_str, e1_color, moves, start_fen, reason in (
-            pool.imap_unordered(_play_one_game, tasks)
-        ):
+        for (
+            game_num,
+            result_str,
+            e1_color,
+            moves,
+            start_fen,
+            reason,
+        ) in pool.imap_unordered(_play_one_game, tasks):
             games_played += 1
             completed.append(
                 CompletedGame(
@@ -264,10 +268,7 @@ def run_benchmark(
                 on_game(games_played, wins, draws, losses)
 
             # Check SPRT
-            if (
-                config.sprt_elo0 is not None
-                and config.sprt_elo1 is not None
-            ):
+            if config.sprt_elo0 is not None and config.sprt_elo1 is not None:
                 sprt_result = sprt_test(
                     wins, draws, losses, config.sprt_elo0, config.sprt_elo1
                 )

@@ -18,9 +18,7 @@ class StockfishOracle:
         self._policy_temperature = policy_temperature
         self._label_smoothing = label_smoothing
 
-    def evaluate(
-        self, board: chess.Board
-    ) -> tuple[PolicyTarget, ValueTarget, float]:
+    def evaluate(self, board: chess.Board) -> tuple[PolicyTarget, ValueTarget, float]:
         policy = self._get_policy(board)
         value, cp = self._get_value(board)
         return policy, value, cp
@@ -53,7 +51,9 @@ class StockfishOracle:
         probs = torch.softmax(t / self._policy_temperature, dim=0)
         if self._label_smoothing > 0:
             n_legal = len(legal_moves)
-            probs = (1 - self._label_smoothing) * probs + self._label_smoothing / n_legal
+            probs = (
+                1 - self._label_smoothing
+            ) * probs + self._label_smoothing / n_legal
 
         data = torch.zeros(64, 64, dtype=torch.float32)
         for move, prob in zip(legal_moves, probs):
@@ -62,9 +62,7 @@ class StockfishOracle:
         return PolicyTarget(data)
 
     def _get_value(self, board: chess.Board) -> tuple[ValueTarget, float]:
-        info = self._engine.analyse(
-            board, chess.engine.Limit(depth=self._depth)
-        )
+        info = self._engine.analyse(board, chess.engine.Limit(depth=self._depth))
         score = info["score"].white()
         cp_val = score.score(mate_score=10000)
         if cp_val is None:
@@ -82,9 +80,7 @@ class StockfishOracle:
         else:
             # Approximate WDL from centipawns using sigmoid
             win_prob = 1.0 / (1.0 + 10.0 ** (-float(cp_val) / 400.0))
-            value = ValueTarget(
-                win=win_prob, draw=0.0, loss=1.0 - win_prob
-            )
+            value = ValueTarget(win=win_prob, draw=0.0, loss=1.0 - win_prob)
 
         return value, float(cp_val)
 

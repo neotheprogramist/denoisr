@@ -141,8 +141,6 @@ def test_run_match_stops_between_games() -> None:
     match_config = MatchConfig(
         engine1=config, engine2=config, games=10, time_control=tc
     )
-    results = run_match(
-        match_config, on_game_complete=on_complete, stop_event=stop
-    )
+    results = run_match(match_config, on_game_complete=on_complete, stop_event=stop)
 
     assert len(results) == 1  # Only first game completed

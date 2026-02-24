@@ -27,8 +27,7 @@ try:
     import mlx.nn as mnn
 except ImportError as e:
     raise ImportError(
-        "MLX is required for Apple Silicon inference. "
-        "Install with: uv add mlx"
+        "MLX is required for Apple Silicon inference. Install with: uv add mlx"
     ) from e
 
 
@@ -99,7 +98,7 @@ class MLXTransformerBlock(mnn.Module):
         k = qkv[:, :, 1, :, :].transpose(0, 2, 1, 3)
         v = qkv[:, :, 2, :, :].transpose(0, 2, 1, 3)
 
-        scale = self.head_dim ** -0.5
+        scale = self.head_dim**-0.5
         attn = (q @ k.transpose(0, 1, 3, 2)) * scale
         if attn_bias is not None:
             attn = attn + attn_bias
@@ -121,7 +120,7 @@ class MLXPolicyHead(mnn.Module):
         super().__init__()
         self.query = mnn.Linear(d_s, d_head)
         self.key = mnn.Linear(d_s, d_head)
-        self.scale = d_head ** -0.5
+        self.scale = d_head**-0.5
 
     def __call__(self, x: mx.array) -> mx.array:
         q = self.query(x)
@@ -173,8 +172,7 @@ class MLXChessEngine:
         self._encoder = MLXChessEncoder(num_planes, d_s)
         self._smolgen = MLXSmolgenBias(d_s, num_heads)
         self._layers = [
-            MLXTransformerBlock(d_s, num_heads, ffn_dim)
-            for _ in range(num_layers)
+            MLXTransformerBlock(d_s, num_heads, ffn_dim) for _ in range(num_layers)
         ]
         self._final_norm = mnn.LayerNorm(d_s)
         self._policy_head = MLXPolicyHead(d_s)
@@ -197,9 +195,7 @@ class MLXChessEngine:
         _remap_all_keys(weights, self._num_layers)
 
         # Encoder
-        self._encoder.load_weights(
-            list(self._extract_prefix(weights, "encoder."))
-        )
+        self._encoder.load_weights(list(self._extract_prefix(weights, "encoder.")))
 
         # Smolgen
         self._smolgen.load_weights(
@@ -211,13 +207,9 @@ class MLXChessEngine:
         if f"{shaw_prefix}bias_table" in weights:
             self._shaw_bias_table = weights[f"{shaw_prefix}bias_table"]
         if f"{shaw_prefix}rank_idx" in weights:
-            self._shaw_rank_idx = weights[f"{shaw_prefix}rank_idx"].astype(
-                mx.int32
-            )
+            self._shaw_rank_idx = weights[f"{shaw_prefix}rank_idx"].astype(mx.int32)
         if f"{shaw_prefix}file_idx" in weights:
-            self._shaw_file_idx = weights[f"{shaw_prefix}file_idx"].astype(
-                mx.int32
-            )
+            self._shaw_file_idx = weights[f"{shaw_prefix}file_idx"].astype(mx.int32)
 
         # Transformer layers
         for i, layer in enumerate(self._layers):
@@ -226,9 +218,7 @@ class MLXChessEngine:
 
         # Final norm
         fn_prefix = "backbone.final_norm."
-        self._final_norm.load_weights(
-            list(self._extract_prefix(weights, fn_prefix))
-        )
+        self._final_norm.load_weights(list(self._extract_prefix(weights, fn_prefix)))
 
         # Policy head
         self._policy_head.load_weights(
@@ -255,9 +245,7 @@ class MLXChessEngine:
         """Compute Shaw relative position bias [H, 64, 64]."""
         return self._shaw_bias_table[:, self._shaw_rank_idx, self._shaw_file_idx]
 
-    def _forward(
-        self, board_tensor: mx.array
-    ) -> tuple[mx.array, mx.array, mx.array]:
+    def _forward(self, board_tensor: mx.array) -> tuple[mx.array, mx.array, mx.array]:
         """Full forward pass: encoder -> backbone -> heads."""
         x = self._encoder(board_tensor)
 

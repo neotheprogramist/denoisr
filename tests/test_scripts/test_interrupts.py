@@ -26,6 +26,7 @@ def test_graceful_main_keyboardinterrupt_exits_130_and_logs() -> None:
     handler = logging.StreamHandler(stream)
     logger.addHandler(handler)
     try:
+
         @graceful_main("test-script", logger=logger)
         def _main() -> None:
             raise KeyboardInterrupt
@@ -38,4 +39,3 @@ def test_graceful_main_keyboardinterrupt_exits_130_and_logs() -> None:
     finally:
         logger.removeHandler(handler)
         handler.close()
-

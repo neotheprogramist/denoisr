@@ -67,7 +67,9 @@ class GameAnalysis:
     num_moves: int
 
 
-def _analyze_one_game(task: _AnalysisTask) -> tuple[int, float, tuple[float, ...], int, str, int]:
+def _analyze_one_game(
+    task: _AnalysisTask,
+) -> tuple[int, float, tuple[float, ...], int, str, int]:
     """Analyze a single game in a worker process.
 
     Returns (game_num, acpl, move_losses, blunders, engine1_color, num_moves).
@@ -113,11 +115,7 @@ def _analyze_one_game(task: _AnalysisTask) -> tuple[int, float, tuple[float, ...
 
     # Filter to only engine1's moves for ACPL
     is_white = task.engine1_color == "white"
-    engine_losses = [
-        loss
-        for i, loss in enumerate(losses)
-        if (i % 2 == 0) == is_white
-    ]
+    engine_losses = [loss for i, loss in enumerate(losses) if (i % 2 == 0) == is_white]
     acpl = sum(engine_losses) / max(len(engine_losses), 1)
 
     return (
@@ -199,9 +197,14 @@ def run_analysis(
         initializer=_init_analysis_worker,
         initargs=(stockfish_cmd,),
     ) as pool:
-        for game_num, acpl, move_losses, blunders, e1_color, num_moves in (
-            pool.imap_unordered(_analyze_one_game, tasks)
-        ):
+        for (
+            game_num,
+            acpl,
+            move_losses,
+            blunders,
+            e1_color,
+            num_moves,
+        ) in pool.imap_unordered(_analyze_one_game, tasks):
             analyses.append(
                 GameAnalysis(
                     game_num=game_num,

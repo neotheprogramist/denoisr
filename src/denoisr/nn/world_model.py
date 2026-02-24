@@ -79,9 +79,7 @@ class ChessWorldModel(nn.Module):
     next latent states and rewards.
     """
 
-    def __init__(
-        self, d_s: int, num_heads: int, num_layers: int, ffn_dim: int
-    ) -> None:
+    def __init__(self, d_s: int, num_heads: int, num_layers: int, ffn_dim: int) -> None:
         super().__init__()
         self.d_s = d_s
         self.state_pool = SetAttentionPool(d_s, num_queries=8)
@@ -97,10 +95,7 @@ class ChessWorldModel(nn.Module):
             nn.Linear(d_s, d_s),
         )
         self.layers = nn.ModuleList(
-            [
-                CausalTransformerBlock(d_s, num_heads, ffn_dim)
-                for _ in range(num_layers)
-            ]
+            [CausalTransformerBlock(d_s, num_heads, ffn_dim) for _ in range(num_layers)]
         )
         self.final_norm = nn.LayerNorm(d_s)
         self.state_pred = nn.Linear(d_s, 64 * d_s)

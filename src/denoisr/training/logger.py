@@ -188,9 +188,7 @@ class TrainingLogger:
             if k not in ("loss",):
                 self._writer.add_scalar(f"epoch/{k}_loss", v, epoch)
 
-    def _tb_accuracy(
-        self, epoch: int, accuracy: dict[str, float] | None
-    ) -> None:
+    def _tb_accuracy(self, epoch: int, accuracy: dict[str, float] | None) -> None:
         """Write accuracy scalars."""
         if not accuracy:
             return
@@ -202,9 +200,7 @@ class TrainingLogger:
     def _tb_lr(self, epoch: int, lr: float) -> None:
         self._writer.add_scalar("lr", lr, epoch)
 
-    def _tb_timing(
-        self, epoch: int, duration_s: float, samples_per_sec: float
-    ) -> None:
+    def _tb_timing(self, epoch: int, duration_s: float, samples_per_sec: float) -> None:
         self._writer.add_scalar("timing/epoch_duration_s", duration_s, epoch)
         self._writer.add_scalar("timing/samples_per_sec", samples_per_sec, epoch)
 
@@ -233,9 +229,7 @@ class TrainingLogger:
         loss_sd = stdev(loss_vals) if len(loss_vals) > 1 else 0.0
         self._writer.add_scalar("dynamics/loss_stddev", loss_sd, epoch)
 
-    def _tb_resources(
-        self, epoch: int, resources: dict[str, str] | None
-    ) -> None:
+    def _tb_resources(self, epoch: int, resources: dict[str, str] | None) -> None:
         """Write resource metrics to TensorBoard.
 
         Accepts the string-valued dict from log_epoch_line and parses
@@ -248,12 +242,10 @@ class TrainingLogger:
             try:
                 numeric = float(val.rstrip("%CWmb"))
                 self._writer.add_scalar(f"resources/{key}", numeric, epoch)
-            except (ValueError, AttributeError):
+            except ValueError, AttributeError:
                 pass
 
-    def _tb_pipeline(
-        self, epoch: int, data_pct: float, duration_s: float
-    ) -> None:
+    def _tb_pipeline(self, epoch: int, data_pct: float, duration_s: float) -> None:
         data_frac = data_pct / 100.0
         compute_frac = 1.0 - data_frac
         data_time = duration_s * data_frac
@@ -291,9 +283,7 @@ class TrainingLogger:
     # Hyperparameters (unchanged)
     # ------------------------------------------------------------------
 
-    def log_hparams(
-        self, hparams: dict[str, Any], metrics: dict[str, float]
-    ) -> None:
+    def log_hparams(self, hparams: dict[str, Any], metrics: dict[str, float]) -> None:
         """Log hyperparameters for TensorBoard HParams tab and text file."""
         self._writer.add_hparams(hparams, metrics)
         hparams_path = self._run_dir / "hparams.txt"

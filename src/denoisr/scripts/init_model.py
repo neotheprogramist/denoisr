@@ -30,9 +30,7 @@ log = logging.getLogger(__name__)
 @graceful_main("denoisr-init", logger=log)
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    parser = argparse.ArgumentParser(
-        description="Initialize a random model checkpoint"
-    )
+    parser = argparse.ArgumentParser(description="Initialize a random model checkpoint")
     parser.add_argument(
         "--output",
         type=str,

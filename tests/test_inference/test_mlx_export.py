@@ -71,9 +71,7 @@ class TestExportWeights:
         assert cfg["d_s"] == SMALL_D_S
         assert cfg["num_heads"] == SMALL_NUM_HEADS
 
-    def test_exported_weights_have_expected_keys(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_exported_weights_have_expected_keys(self, tmp_path: pathlib.Path) -> None:
         """Exported safetensors should contain all model weight prefixes."""
         ckpt_path = self._make_checkpoint(tmp_path)
         out_path = tmp_path / "model.safetensors"
@@ -84,9 +82,7 @@ class TestExportWeights:
         assert any(k.startswith("policy_head.") for k in weights)
         assert any(k.startswith("value_head.") for k in weights)
 
-    def test_exported_weights_match_original(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_exported_weights_match_original(self, tmp_path: pathlib.Path) -> None:
         """Exported weights should be numerically identical to the originals."""
         cfg = ModelConfig(
             num_planes=12,
@@ -133,7 +129,9 @@ class TestRemapSequentialKeys:
             "enc.global_embed.2.bias": "b2",
         }
         _remap_sequential_keys(
-            weights, "enc", "global_embed",
+            weights,
+            "enc",
+            "global_embed",
             [(0, "global_embed_0"), (2, "global_embed_2")],
         )
         assert "enc.global_embed_0.weight" in weights

@@ -130,7 +130,9 @@ class PipelineRunner:
             self._save_state()
 
         if not self._should_run("phase2"):
-            log.info("=== Step 5: Phase 2: Diffusion bootstrapping === skipped (--only)")
+            log.info(
+                "=== Step 5: Phase 2: Diffusion bootstrapping === skipped (--only)"
+            )
         elif self.state.phase in (
             "phase2_complete",
             "phase3_complete",
@@ -157,6 +159,4 @@ class PipelineRunner:
             )
             self._save_state()
 
-        log.info(
-            "Pipeline complete! Final checkpoint: %s", self.state.last_checkpoint
-        )
+        log.info("Pipeline complete! Final checkpoint: %s", self.state.last_checkpoint)

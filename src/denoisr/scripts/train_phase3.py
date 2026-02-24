@@ -14,11 +14,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import chess
 import torch
 from torch import Tensor
 from tqdm import tqdm
 
 from denoisr.game.chess_game import ChessGame
+from denoisr.nn.diffusion import DPMSolverPP
 from denoisr.scripts.config import (
     add_model_args,
     add_phase3_args,
@@ -29,6 +31,7 @@ from denoisr.scripts.config import (
     build_diffusion,
     build_encoder,
     build_policy_head,
+    build_schedule,
     build_value_head,
     build_world_model,
     detect_device,
@@ -39,6 +42,7 @@ from denoisr.scripts.config import (
 )
 from denoisr.scripts.interrupts import graceful_main
 from denoisr.training.phase_orchestrator import PhaseConfig, PhaseOrchestrator
+from denoisr.training.phase2_trainer import Phase2Trainer, TrajectoryBatch
 from denoisr.training.reanalyse import ReanalyseActor
 from denoisr.training.replay_buffer import PriorityReplayBuffer
 from denoisr.training.self_play import (
@@ -59,12 +63,98 @@ def _resolve_phase3_workers(requested: int, default_workers: int) -> int:
     return max(1, min(8, default_workers))
 
 
+def _records_to_trajectory_batch(
+    records: list[GameRecord],
+    *,
+    board_encoder: object,
+    seq_len: int,
+) -> TrajectoryBatch | None:
+    all_boards: list[Tensor] = []
+    all_actions_from: list[Tensor] = []
+    all_actions_to: list[Tensor] = []
+    all_policies: list[Tensor] = []
+    all_legal_masks: list[Tensor] = []
+    all_values: list[Tensor] = []
+    all_rewards: list[Tensor] = []
+
+    encode = getattr(board_encoder, "encode", None)
+    if encode is None:
+        raise ValueError("board_encoder must provide encode(board) -> BoardTensor")
+
+    for record in records:
+        if len(record.actions) < (seq_len - 1):
+            continue
+
+        if record.result == 1.0:
+            wdl = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32)
+        elif record.result == -1.0:
+            wdl = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32)
+        else:
+            wdl = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float32)
+
+        board = chess.Board()
+        boards: list[Tensor] = [encode(board).data]
+        from_sqs: list[int] = []
+        to_sqs: list[int] = []
+        legal_masks: list[Tensor] = []
+        move_turns: list[bool] = []
+
+        for action in record.actions:
+            legal = torch.zeros(64, 64, dtype=torch.float32)
+            for legal_move in board.legal_moves:
+                legal[legal_move.from_square, legal_move.to_square] = 1.0
+            legal_masks.append(legal)
+
+            move_turns.append(board.turn == chess.WHITE)
+            from_sqs.append(action.from_square)
+            to_sqs.append(action.to_square)
+            board.push(
+                chess.Move(action.from_square, action.to_square, action.promotion)
+            )
+            boards.append(encode(board).data)
+
+        for start in range(0, len(boards) - seq_len + 1, seq_len):
+            chunk_boards = boards[start : start + seq_len]
+            chunk_from = from_sqs[start : start + seq_len - 1]
+            chunk_to = to_sqs[start : start + seq_len - 1]
+            chunk_legal = legal_masks[start : start + seq_len - 1]
+
+            policies = torch.zeros(seq_len - 1, 64, 64, dtype=torch.float32)
+            for j in range(seq_len - 1):
+                policies[j, chunk_from[j], chunk_to[j]] = 1.0
+
+            rewards = torch.zeros(seq_len - 1, dtype=torch.float32)
+            for j in range(seq_len - 1):
+                was_white = move_turns[start + j]
+                side_sign = 1.0 if was_white else -1.0
+                rewards[j] = record.result * side_sign
+
+            all_boards.append(torch.stack(chunk_boards))
+            all_actions_from.append(torch.tensor(chunk_from, dtype=torch.long))
+            all_actions_to.append(torch.tensor(chunk_to, dtype=torch.long))
+            all_policies.append(policies)
+            all_legal_masks.append(torch.stack(chunk_legal))
+            all_values.append(wdl)
+            all_rewards.append(rewards)
+
+    if not all_boards:
+        return None
+
+    return TrajectoryBatch(
+        boards=torch.stack(all_boards),
+        actions_from=torch.stack(all_actions_from),
+        actions_to=torch.stack(all_actions_to),
+        policies=torch.stack(all_policies),
+        legal_masks=torch.stack(all_legal_masks),
+        values=torch.stack(all_values),
+        rewards=torch.stack(all_rewards),
+    )
+
+
 @graceful_main("denoisr-train-phase3", logger=log)
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phase 3: RL self-play")
-    parser.add_argument(
-        "--checkpoint", required=True, help="Phase 2 checkpoint path"
-    )
+    parser.add_argument("--checkpoint", required=True, help="Phase 2 checkpoint path")
     parser.add_argument("--generations", type=int, default=1000)
     parser.add_argument("--games-per-gen", type=int, default=100)
     parser.add_argument("--reanalyse-per-gen", type=int, default=50)
@@ -73,6 +163,36 @@ def main() -> None:
     parser.add_argument("--alpha-generations", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--train-batch-size", type=int, default=256)
+    parser.add_argument(
+        "--diffusion-steps",
+        type=int,
+        default=10,
+        help="Denoising steps used to form diffusion policy targets during Phase 3",
+    )
+    parser.add_argument(
+        "--aux-updates-per-gen",
+        type=int,
+        default=1,
+        help="Number of auxiliary Phase 2 trajectory updates per generation",
+    )
+    parser.add_argument(
+        "--aux-batch-size",
+        type=int,
+        default=64,
+        help="Batch size for auxiliary trajectory updates",
+    )
+    parser.add_argument(
+        "--aux-seq-len",
+        type=int,
+        default=10,
+        help="Trajectory sequence length for auxiliary updates",
+    )
+    parser.add_argument(
+        "--aux-lr",
+        type=float,
+        default=None,
+        help="Learning rate for auxiliary trajectory updates (default: --lr)",
+    )
     parser.add_argument(
         "--self-play-workers",
         type=int,
@@ -97,12 +217,8 @@ def main() -> None:
     device = detect_device()
     tcfg = full_training_config_from_args(args)
     default_workers = resolve_dataloader_workers(tcfg.workers)
-    self_play_workers = _resolve_phase3_workers(
-        args.self_play_workers, default_workers
-    )
-    reanalyse_workers = _resolve_phase3_workers(
-        args.reanalyse_workers, default_workers
-    )
+    self_play_workers = _resolve_phase3_workers(args.self_play_workers, default_workers)
+    reanalyse_workers = _resolve_phase3_workers(args.reanalyse_workers, default_workers)
     log.info("device=%s", device)
     log.info(
         "phase3 parallel config: self_play_workers=%d reanalyse_workers=%d",
@@ -129,6 +245,15 @@ def main() -> None:
     world_model.load_state_dict(state["world_model"])
     diffusion.load_state_dict(state["diffusion"])
     consistency.load_state_dict(state["consistency"])
+    schedule = build_schedule(cfg).to(device)
+    solver = DPMSolverPP(schedule, num_steps=max(1, args.diffusion_steps))
+
+    encoder.eval()
+    backbone.eval()
+    policy_head.eval()
+    value_head.eval()
+    world_model.eval()
+    diffusion.eval()
 
     # --- Model closures for MCTS ---
     @torch.no_grad()
@@ -151,8 +276,23 @@ def main() -> None:
 
     @torch.no_grad()
     def encode_fn(board_tensor: Tensor) -> Tensor:
-        out: Tensor = encoder(board_tensor.unsqueeze(0)).squeeze(0)
+        if board_tensor.ndim == 3:
+            board_tensor = board_tensor.unsqueeze(0)
+        out: Tensor = encoder(board_tensor.to(device, non_blocking=True)).squeeze(0)
         return out
+
+    @torch.no_grad()
+    def diffusion_policy_fn(latent: Tensor, legal_mask: Tensor) -> Tensor:
+        latent_b = latent.unsqueeze(0)
+        imagined = solver.sample(diffusion, latent_b.shape, latent_b, device)
+        fused = diffusion.fuse(latent_b, imagined)
+        logits = policy_head(backbone(fused)).squeeze(0)
+        legal_mask = legal_mask.to(device=logits.device, dtype=torch.bool)
+        masked_logits = logits.masked_fill(~legal_mask, float("-inf"))
+        if legal_mask.any():
+            probs = torch.softmax(masked_logits.reshape(-1), dim=0).reshape(64, 64)
+            return probs
+        return torch.zeros_like(logits)
 
     # --- Self-play setup ---
     game = ChessGame()
@@ -177,6 +317,7 @@ def main() -> None:
         policy_value_fn=policy_value_fn,
         world_model_fn=world_model_fn,
         encode_fn=encode_fn,
+        diffusion_policy_fn=diffusion_policy_fn,
         game=game,
         board_encoder=board_encoder,
         config=sp_config,
@@ -186,6 +327,7 @@ def main() -> None:
         policy_value_fn=policy_value_fn,
         world_model_fn=world_model_fn,
         encode_fn=encode_fn,
+        diffusion_policy_fn=diffusion_policy_fn,
         game=game,
         board_encoder=board_encoder,
         num_simulations=tcfg.reanalyse_simulations,
@@ -199,6 +341,7 @@ def main() -> None:
                 policy_value_fn=policy_value_fn,
                 world_model_fn=world_model_fn,
                 encode_fn=encode_fn,
+                diffusion_policy_fn=diffusion_policy_fn,
                 game=ChessGame(),
                 board_encoder=build_board_encoder(cfg),
                 config=sp_config,
@@ -213,6 +356,7 @@ def main() -> None:
                 policy_value_fn=policy_value_fn,
                 world_model_fn=world_model_fn,
                 encode_fn=encode_fn,
+                diffusion_policy_fn=diffusion_policy_fn,
                 game=ChessGame(),
                 board_encoder=build_board_encoder(cfg),
                 num_simulations=tcfg.reanalyse_simulations,
@@ -220,11 +364,11 @@ def main() -> None:
             _thread_local.reanalyser = thread_reanalyser
         return thread_reanalyser
 
-    def _play_game_parallel(generation: int) -> GameRecord:
-        return _get_thread_actor().play_game(generation=generation)
+    def _play_game_parallel(generation: int, alpha: float) -> GameRecord:
+        return _get_thread_actor().play_game(generation=generation, alpha=alpha)
 
-    def _reanalyse_parallel(record: GameRecord) -> list[TrainingExample]:
-        return _get_thread_reanalyser().reanalyse(record)
+    def _reanalyse_parallel(record: GameRecord, alpha: float) -> list[TrainingExample]:
+        return _get_thread_reanalyser().reanalyse(record, alpha=alpha)
 
     buffer = PriorityReplayBuffer(capacity=args.buffer_capacity)
     orchestrator = PhaseOrchestrator(
@@ -257,28 +401,78 @@ def main() -> None:
         min_lr=tcfg.min_lr,
         use_warm_restarts=tcfg.use_warm_restarts,
     )
+    aux_lr = args.aux_lr if args.aux_lr is not None else args.lr
+    aux_trainer: Phase2Trainer | None = None
+    if args.aux_updates_per_gen > 0:
+        aux_loss_fn = ChessLossComputer(
+            policy_weight=tcfg.policy_weight,
+            value_weight=tcfg.value_weight,
+            consistency_weight=tcfg.consistency_weight,
+            diffusion_weight=tcfg.diffusion_weight,
+            reward_weight=tcfg.reward_weight,
+            ply_weight=tcfg.ply_weight,
+            use_harmony_dream=tcfg.use_harmony_dream,
+            harmony_ema_decay=tcfg.harmony_ema_decay,
+        )
+        aux_trainer = Phase2Trainer(
+            encoder=encoder,
+            backbone=backbone,
+            policy_head=policy_head,
+            value_head=value_head,
+            world_model=world_model,
+            diffusion=diffusion,
+            consistency=consistency,
+            schedule=schedule,
+            loss_fn=aux_loss_fn,
+            lr=aux_lr,
+            device=device,
+            max_grad_norm=tcfg.max_grad_norm,
+            encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
+            weight_decay=tcfg.weight_decay,
+            curriculum_initial_fraction=tcfg.curriculum_initial_fraction,
+            curriculum_growth=tcfg.curriculum_growth,
+            freeze_encoder=False,
+        )
+        log.info(
+            "phase3 auxiliary trainer enabled: updates/gen=%d batch_size=%d seq_len=%d lr=%.2e",
+            args.aux_updates_per_gen,
+            args.aux_batch_size,
+            args.aux_seq_len,
+            aux_lr,
+        )
     # Advance to phase 3 (gates already passed)
     orchestrator.check_gate({"top1_accuracy": 1.0})
     orchestrator.check_gate({"diffusion_improvement_pp": 100.0})
 
     # --- Training loop ---
-    gen_pbar = tqdm(range(args.generations), desc="Generations", unit="gen", smoothing=0.1)
+    gen_pbar = tqdm(
+        range(args.generations), desc="Generations", unit="gen", smoothing=0.1
+    )
     for gen in gen_pbar:
+        encoder.eval()
+        backbone.eval()
+        policy_head.eval()
+        value_head.eval()
+        world_model.eval()
+        diffusion.eval()
+
         alpha = orchestrator.get_alpha(gen)
         temp_base = temp_schedule.get_temperature(0, gen)
 
         # 1. Self-play
         results = {"wins": 0, "draws": 0, "losses": 0}
+        new_records: list[GameRecord] = []
         sp_pbar = tqdm(
             total=args.games_per_gen,
-            desc=f"Gen {gen+1} self-play",
+            desc=f"Gen {gen + 1} self-play",
             leave=False,
             unit="game",
             smoothing=0.1,
         )
         if self_play_workers <= 1:
             for _ in range(args.games_per_gen):
-                record = actor.play_game(generation=gen)
+                record = actor.play_game(generation=gen, alpha=alpha)
+                new_records.append(record)
                 buffer.add(record, priority=1.0)
                 if record.result == 1.0:
                     results["wins"] += 1
@@ -293,11 +487,12 @@ def main() -> None:
         else:
             with ThreadPoolExecutor(max_workers=self_play_workers) as executor:
                 futures = [
-                    executor.submit(_play_game_parallel, gen)
+                    executor.submit(_play_game_parallel, gen, alpha)
                     for _ in range(args.games_per_gen)
                 ]
                 for future in as_completed(futures):
                     record = future.result()
+                    new_records.append(record)
                     buffer.add(record, priority=1.0)
                     if record.result == 1.0:
                         results["wins"] += 1
@@ -313,21 +508,68 @@ def main() -> None:
                     )
         sp_pbar.close()
 
-        # 2. Reanalyse old games
+        # 2. Auxiliary trajectory updates (keeps world model + diffusion learning in Phase 3)
+        aux_batches = 0
+        avg_aux_loss = 0.0
+        if aux_trainer is not None:
+            trajectory_data = _records_to_trajectory_batch(
+                new_records,
+                board_encoder=board_encoder,
+                seq_len=max(2, args.aux_seq_len),
+            )
+            if trajectory_data is not None:
+                total_traj = int(trajectory_data.boards.shape[0])
+                batch_size = max(1, min(args.aux_batch_size, total_traj))
+                aux_loss_sum = 0.0
+                for _ in range(args.aux_updates_per_gen):
+                    idx = torch.randint(0, total_traj, (batch_size,))
+                    batch = TrajectoryBatch(
+                        boards=trajectory_data.boards[idx].to(
+                            device, non_blocking=True
+                        ),
+                        actions_from=trajectory_data.actions_from[idx].to(
+                            device, non_blocking=True
+                        ),
+                        actions_to=trajectory_data.actions_to[idx].to(
+                            device, non_blocking=True
+                        ),
+                        policies=trajectory_data.policies[idx].to(
+                            device, non_blocking=True
+                        ),
+                        legal_masks=trajectory_data.legal_masks[idx].to(
+                            device, non_blocking=True
+                        )
+                        if trajectory_data.legal_masks is not None
+                        else None,
+                        values=trajectory_data.values[idx].to(
+                            device, non_blocking=True
+                        ),
+                        rewards=trajectory_data.rewards[idx].to(
+                            device, non_blocking=True
+                        ),
+                    )
+                    loss, _ = aux_trainer.train_step(batch)
+                    aux_loss_sum += loss
+                    aux_batches += 1
+                if aux_batches > 0:
+                    aux_trainer.advance_curriculum()
+                    avg_aux_loss = aux_loss_sum / aux_batches
+
+        # 3. Reanalyse old games
         reanalyse_count = 0
         reanalysed_examples = []
         if len(buffer) >= args.reanalyse_per_gen:
             old_records = buffer.sample(args.reanalyse_per_gen)
             ra_pbar = tqdm(
                 total=len(old_records),
-                desc=f"Gen {gen+1} reanalyse",
+                desc=f"Gen {gen + 1} reanalyse",
                 leave=False,
                 unit="game",
                 smoothing=0.1,
             )
             if reanalyse_workers <= 1:
                 for old_record in old_records:
-                    examples = reanalyser.reanalyse(old_record)
+                    examples = reanalyser.reanalyse(old_record, alpha=alpha)
                     reanalyse_count += len(examples)
                     reanalysed_examples.extend(examples)
                     ra_pbar.update(1)
@@ -335,7 +577,7 @@ def main() -> None:
             else:
                 with ThreadPoolExecutor(max_workers=reanalyse_workers) as executor:
                     futures = [
-                        executor.submit(_reanalyse_parallel, old_record)
+                        executor.submit(_reanalyse_parallel, old_record, alpha)
                         for old_record in old_records
                     ]
                     for future in as_completed(futures):
@@ -346,7 +588,7 @@ def main() -> None:
                         ra_pbar.set_postfix(examples=reanalyse_count)
             ra_pbar.close()
 
-        # 3. Train on replay buffer batch
+        # 4. Train on replay buffer batch
         train_batches = 0
         avg_train_loss = 0.0
         if reanalysed_examples:
@@ -363,13 +605,14 @@ def main() -> None:
         gen_pbar.set_postfix(
             buf=len(buffer),
             alpha=f"{alpha:.2f}",
+            aux=f"{avg_aux_loss:.3f}" if aux_batches > 0 else "n/a",
             train=f"{avg_train_loss:.3f}" if train_batches > 0 else "n/a",
             W=results["wins"],
             D=results["draws"],
             L=results["losses"],
         )
         log.info(
-            "gen %d/%d buffer=%d alpha=%.2f temp=%.3f W/D/L=%d/%d/%d reanalysed=%d train_batches=%d train_loss=%.4f",
+            "gen %d/%d buffer=%d alpha=%.2f temp=%.3f W/D/L=%d/%d/%d aux_batches=%d aux_loss=%.4f reanalysed=%d train_batches=%d train_loss=%.4f",
             gen + 1,
             args.generations,
             len(buffer),
@@ -378,13 +621,18 @@ def main() -> None:
             results["wins"],
             results["draws"],
             results["losses"],
+            aux_batches,
+            avg_aux_loss,
             reanalyse_count,
             train_batches,
             avg_train_loss,
         )
 
-        # 4. Checkpoint
+        # 5. Checkpoint
         if (gen + 1) % args.save_every == 0:
+            extra_state: dict[str, object] = {}
+            if aux_trainer is not None:
+                extra_state["phase2_optimizer"] = aux_trainer.optimizer.state_dict()
             save_checkpoint(
                 Path(args.output),
                 cfg,
@@ -397,6 +645,7 @@ def main() -> None:
                 consistency=consistency.state_dict(),
                 optimizer=trainer.optimizer.state_dict(),
                 generation=gen + 1,
+                **extra_state,
             )
 
     log.info("Phase 3 training complete")

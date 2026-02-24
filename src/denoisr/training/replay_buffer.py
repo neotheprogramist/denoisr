@@ -22,9 +22,7 @@ class SimpleReplayBuffer:
             raise ValueError("Cannot sample from empty buffer")
         return random.choices(list(self._buffer), k=batch_size)
 
-    def update_priorities(
-        self, indices: list[int], priorities: list[float]
-    ) -> None:
+    def update_priorities(self, indices: list[int], priorities: list[float]) -> None:
         pass  # no-op for uniform buffer
 
     def __len__(self) -> int:
@@ -39,9 +37,7 @@ class PriorityReplayBuffer:
     Supports priority updates after training on sampled batches.
     """
 
-    def __init__(
-        self, capacity: int, alpha: float = 0.6
-    ) -> None:
+    def __init__(self, capacity: int, alpha: float = 0.6) -> None:
         self._capacity = capacity
         self._alpha = alpha
         self._records: list[GameRecord] = []
@@ -64,9 +60,7 @@ class PriorityReplayBuffer:
         weights = [p**self._alpha for p in self._priorities]
         return random.choices(self._records, weights=weights, k=batch_size)
 
-    def update_priorities(
-        self, indices: list[int], priorities: list[float]
-    ) -> None:
+    def update_priorities(self, indices: list[int], priorities: list[float]) -> None:
         for idx, prio in zip(indices, priorities):
             if 0 <= idx < len(self._priorities):
                 self._priorities[idx] = prio

@@ -40,9 +40,7 @@ class TestChessPolicyBackbone:
         self, backbone: ChessPolicyBackbone, device: torch.device
     ) -> None:
         smolgen_params = [
-            (n, p)
-            for n, p in backbone.named_parameters()
-            if "smolgen" in n
+            (n, p) for n, p in backbone.named_parameters() if "smolgen" in n
         ]
         assert len(smolgen_params) > 0
         x = torch.randn(1, 64, SMALL_D_S, device=device)
@@ -96,9 +94,7 @@ class TestChessPolicyBackbone:
         for name, p in backbone.named_parameters():
             assert p.grad is not None, f"No gradient for {name}"
 
-    def test_gradient_checkpointing_matches_output(
-        self, device: torch.device
-    ) -> None:
+    def test_gradient_checkpointing_matches_output(self, device: torch.device) -> None:
         """Checkpointed and non-checkpointed should produce identical forward output."""
         torch.manual_seed(42)
         bb_normal = ChessPolicyBackbone(
@@ -119,9 +115,7 @@ class TestChessPolicyBackbone:
         x = torch.randn(1, 64, SMALL_D_S, device=device)
         assert torch.allclose(bb_normal(x), bb_ckpt(x), atol=1e-5)
 
-    def test_sdpa_single_layer_valid(
-        self, device: torch.device
-    ) -> None:
+    def test_sdpa_single_layer_valid(self, device: torch.device) -> None:
         """Single-layer backbone with SDPA produces finite correct-shape output."""
         torch.manual_seed(42)
         backbone = ChessPolicyBackbone(

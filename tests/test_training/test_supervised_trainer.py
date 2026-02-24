@@ -29,9 +29,7 @@ def _make_batch(n: int = 8) -> list[TrainingExample]:
         policy_data[12, 28] = 1.0
         policy = PolicyTarget(policy_data)
         value = ValueTarget(win=1.0, draw=0.0, loss=0.0)
-        examples.append(
-            TrainingExample(board=board, policy=policy, value=value)
-        )
+        examples.append(TrainingExample(board=board, policy=policy, value=value))
     return examples
 
 
@@ -58,18 +56,14 @@ class TestSupervisedTrainer:
             device=device,
         )
 
-    def test_train_step_returns_loss(
-        self, trainer: SupervisedTrainer
-    ) -> None:
+    def test_train_step_returns_loss(self, trainer: SupervisedTrainer) -> None:
         batch = _make_batch(4)
         loss, breakdown = trainer.train_step(batch)
         assert isinstance(loss, float)
         assert loss > 0
         assert "policy" in breakdown
 
-    def test_loss_decreases_over_steps(
-        self, trainer: SupervisedTrainer
-    ) -> None:
+    def test_loss_decreases_over_steps(self, trainer: SupervisedTrainer) -> None:
         batch = _make_batch(4)
         losses = []
         for _ in range(20):
@@ -85,17 +79,13 @@ class TestSupervisedTrainer:
         assert path.exists()
         trainer.load_checkpoint(path)
 
-    def test_encoder_lr_lower_than_head_lr(
-        self, trainer: SupervisedTrainer
-    ) -> None:
+    def test_encoder_lr_lower_than_head_lr(self, trainer: SupervisedTrainer) -> None:
         groups = trainer.optimizer.param_groups
         encoder_lr = groups[0]["lr"]
         head_lr = groups[2]["lr"]
         assert encoder_lr < head_lr
 
-    def test_gradients_are_clipped(
-        self, trainer: SupervisedTrainer
-    ) -> None:
+    def test_gradients_are_clipped(self, trainer: SupervisedTrainer) -> None:
         batch = _make_batch(4)
         trainer.train_step(batch)
         all_params = [
@@ -104,39 +94,40 @@ class TestSupervisedTrainer:
             for p in group["params"]
             if p.grad is not None
         ]
-        total_norm = torch.nn.utils.clip_grad_norm_(
-            all_params, float("inf")
-        )
+        total_norm = torch.nn.utils.clip_grad_norm_(all_params, float("inf"))
         assert total_norm.item() < 100.0
 
-    def test_breakdown_includes_batch_top1(
-        self, trainer: SupervisedTrainer
-    ) -> None:
+    def test_breakdown_includes_batch_top1(self, trainer: SupervisedTrainer) -> None:
         batch = _make_batch(4)
         _, breakdown = trainer.train_step(batch)
         assert "batch_top1" in breakdown
         assert 0.0 <= breakdown["batch_top1"] <= 1.0
 
-    def test_lr_reaches_min_at_final_epoch(
-        self, device: torch.device
-    ) -> None:
+    def test_lr_reaches_min_at_final_epoch(self, device: torch.device) -> None:
         """Cosine schedule should reach eta_min at the final epoch."""
         total_epochs = 100
         warmup = 5
         min_lr = 1e-6
         encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
         backbone = ChessPolicyBackbone(
-            d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
-            num_layers=SMALL_NUM_LAYERS, ffn_dim=SMALL_FFN_DIM,
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            ffn_dim=SMALL_FFN_DIM,
         ).to(device)
         policy_head = ChessPolicyHead(d_s=SMALL_D_S).to(device)
         value_head = ChessValueHead(d_s=SMALL_D_S).to(device)
         loss_fn = ChessLossComputer()
         trainer = SupervisedTrainer(
-            encoder=encoder, backbone=backbone,
-            policy_head=policy_head, value_head=value_head,
-            loss_fn=loss_fn, lr=3e-4, device=device,
-            total_epochs=total_epochs, warmup_epochs=warmup,
+            encoder=encoder,
+            backbone=backbone,
+            policy_head=policy_head,
+            value_head=value_head,
+            loss_fn=loss_fn,
+            lr=3e-4,
+            device=device,
+            total_epochs=total_epochs,
+            warmup_epochs=warmup,
             min_lr=min_lr,
         )
 
@@ -148,25 +139,30 @@ class TestSupervisedTrainer:
         # LR should be at or near eta_min at the end
         assert head_lr < min_lr * 2
 
-    def test_warm_restarts_produce_lr_spikes(
-        self, device: torch.device
-    ) -> None:
+    def test_warm_restarts_produce_lr_spikes(self, device: torch.device) -> None:
         """Warm restarts should produce periodic LR resets."""
         total_epochs = 60
         warmup = 3
         encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
         backbone = ChessPolicyBackbone(
-            d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
-            num_layers=SMALL_NUM_LAYERS, ffn_dim=SMALL_FFN_DIM,
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            ffn_dim=SMALL_FFN_DIM,
         ).to(device)
         policy_head = ChessPolicyHead(d_s=SMALL_D_S).to(device)
         value_head = ChessValueHead(d_s=SMALL_D_S).to(device)
         loss_fn = ChessLossComputer()
         trainer = SupervisedTrainer(
-            encoder=encoder, backbone=backbone,
-            policy_head=policy_head, value_head=value_head,
-            loss_fn=loss_fn, lr=3e-4, device=device,
-            total_epochs=total_epochs, warmup_epochs=warmup,
+            encoder=encoder,
+            backbone=backbone,
+            policy_head=policy_head,
+            value_head=value_head,
+            loss_fn=loss_fn,
+            lr=3e-4,
+            device=device,
+            total_epochs=total_epochs,
+            warmup_epochs=warmup,
             use_warm_restarts=True,
         )
 
@@ -181,7 +177,9 @@ class TestSupervisedTrainer:
             post_warmup_lrs[i + 1] > post_warmup_lrs[i]
             for i in range(len(post_warmup_lrs) - 1)
         )
-        assert has_increase, "Warm restarts should cause LR to increase at restart points"
+        assert has_increase, (
+            "Warm restarts should cause LR to increase at restart points"
+        )
 
     def test_scheduler_reduces_lr(self, trainer: SupervisedTrainer) -> None:
         """After warmup + cosine decay, LRs should be below peak."""
@@ -214,9 +212,7 @@ class TestSupervisedTrainer:
 
 class TestSupervisedTrainerGrokfast:
     @pytest.fixture
-    def trainer_with_grokfast(
-        self, device: torch.device
-    ) -> SupervisedTrainer:
+    def trainer_with_grokfast(self, device: torch.device) -> SupervisedTrainer:
         encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
         backbone = ChessPolicyBackbone(
             d_s=SMALL_D_S,

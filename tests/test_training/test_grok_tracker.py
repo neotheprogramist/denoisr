@@ -134,9 +134,7 @@ class TestGrokTrackerStateMachine:
         assert tracker.state == GrokState.BASELINE
         tracker.close()
 
-    def test_onset_detected_on_weight_norm_decrease(
-        self, device: torch.device
-    ) -> None:
+    def test_onset_detected_on_weight_norm_decrease(self, device: torch.device) -> None:
         encoder, backbone, policy_head, value_head = _build_small_model(device)
         tracker = GrokTracker(
             encoder=encoder,
@@ -204,9 +202,7 @@ class TestGrokTrackerStateMachine:
         x = torch.randn(2, 12, 8, 8, device=device)
         latent = encoder(x)
         _ = backbone(latent)
-        metrics = tracker.step(
-            0, {"policy": 1.0, "value": 0.5, "total": 1.5}, 0.5
-        )
+        metrics = tracker.step(0, {"policy": 1.0, "value": 0.5, "total": 1.5}, 0.5)
         assert "grok/state" in metrics
         assert metrics["grok/state"] == 0.0  # BASELINE
         tracker.close()

@@ -138,11 +138,7 @@ def _unstack_tensor_dict(data: dict[str, Any]) -> list[TrainingExample]:
                 if game_ids is not None and game_ids[i].item() >= 0
                 else None
             ),
-            eco_code=(
-                eco_codes[i]
-                if eco_codes is not None
-                else None
-            ),
+            eco_code=(eco_codes[i] if eco_codes is not None else None),
             piece_count=(
                 int(piece_counts[i].item())
                 if piece_counts is not None and piece_counts[i].item() >= 0
@@ -257,9 +253,7 @@ def _build_tensor_data_plan(
             if not isinstance(rel_path, str) or rel_path == "":
                 raise ValueError(f"Chunk metadata at index {idx} missing path")
             if not isinstance(count, int) or count < 0:
-                raise ValueError(
-                    f"Chunk metadata at index {idx} has invalid count"
-                )
+                raise ValueError(f"Chunk metadata at index {idx} has invalid count")
             train_idx, holdout_idx = _split_indices(count, holdout_frac, g)
             shards.append(
                 _TensorDataShard(
@@ -325,9 +319,7 @@ def _build_tensor_data_plan(
             game_ids_tensor = raw_shard.get("game_ids")
             if isinstance(game_ids_tensor, torch.Tensor):
                 if int(game_ids_tensor.shape[0]) != shard.count:
-                    raise ValueError(
-                        "Tensor data has mismatched 'game_ids' shape"
-                    )
+                    raise ValueError("Tensor data has mismatched 'game_ids' shape")
                 game_ids[start:end] = game_ids_tensor.to(
                     dtype=torch.int64, device="cpu"
                 ).numpy()
@@ -335,9 +327,7 @@ def _build_tensor_data_plan(
             piece_counts_tensor = raw_shard.get("piece_counts")
             if isinstance(piece_counts_tensor, torch.Tensor):
                 if int(piece_counts_tensor.shape[0]) != shard.count:
-                    raise ValueError(
-                        "Tensor data has mismatched 'piece_counts' shape"
-                    )
+                    raise ValueError("Tensor data has mismatched 'piece_counts' shape")
                 piece_counts[start:end] = piece_counts_tensor.to(
                     dtype=torch.int32, device="cpu"
                 ).numpy()
@@ -364,8 +354,12 @@ def _build_tensor_data_plan(
         if len(unique_game_ids) >= 2:
             holdout_game_count = max(1, int(len(unique_game_ids) * holdout_frac))
             holdout_game_count = min(holdout_game_count, len(unique_game_ids) - 1)
-            holdout_game_ids = set(rng.sample(sorted(unique_game_ids), holdout_game_count))
-            game_level_mask = np.isin(game_ids, np.array(list(holdout_game_ids), dtype=np.int64))
+            holdout_game_ids = set(
+                rng.sample(sorted(unique_game_ids), holdout_game_count)
+            )
+            game_level_mask = np.isin(
+                game_ids, np.array(list(holdout_game_ids), dtype=np.int64)
+            )
             game_level_mask &= ~excluded
         split_masks["game_level"] = game_level_mask
         excluded |= game_level_mask
@@ -375,7 +369,9 @@ def _build_tensor_data_plan(
         if len(unique_families) >= 2:
             holdout_family_count = max(1, int(len(unique_families) * holdout_frac))
             holdout_family_count = min(holdout_family_count, len(unique_families) - 1)
-            holdout_families = set(rng.sample(sorted(unique_families), holdout_family_count))
+            holdout_families = set(
+                rng.sample(sorted(unique_families), holdout_family_count)
+            )
             opening_family_mask = np.isin(
                 eco_families,
                 np.array(list(holdout_families), dtype=np.uint8),
@@ -410,17 +406,14 @@ def _build_tensor_data_plan(
             return result
 
         split_indices = {
-            name: _mask_to_shard_indices(mask)
-            for name, mask in split_masks.items()
+            name: _mask_to_shard_indices(mask) for name, mask in split_masks.items()
         }
         train_indices = _mask_to_shard_indices(train_mask)
         holdout_split_indices = {
-            name: split_indices[name]
-            for name in _GROK_HOLDOUT_SPLITS
+            name: split_indices[name] for name in _GROK_HOLDOUT_SPLITS
         }
         holdout_split_counts = {
-            name: int(split_masks[name].sum())
-            for name in _GROK_HOLDOUT_SPLITS
+            name: int(split_masks[name].sum()) for name in _GROK_HOLDOUT_SPLITS
         }
         shards = [
             _TensorDataShard(
@@ -500,9 +493,7 @@ def _measure_accuracy_from_indices(
 
                 top5 = masked_logits.topk(5, dim=-1).indices
                 correct_1 += (top5[:, 0] == target_idx).sum().item()
-                correct_5 += (
-                    (top5 == target_idx.unsqueeze(1)).any(dim=1).sum().item()
-                )
+                correct_5 += (top5 == target_idx.unsqueeze(1)).any(dim=1).sum().item()
                 eval_bar.update(int(batch_idx.numel()))
     eval_bar.close()
 
@@ -609,7 +600,12 @@ def main() -> None:
     # --- Load checkpoint ---
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
     cfg = resolve_gradient_checkpointing(cfg, args, device)
-    log.info("checkpoint loaded  d_s=%d  heads=%d  layers=%d", cfg.d_s, cfg.num_heads, cfg.num_layers)
+    log.info(
+        "checkpoint loaded  d_s=%d  heads=%d  layers=%d",
+        cfg.d_s,
+        cfg.num_heads,
+        cfg.num_layers,
+    )
 
     encoder = build_encoder(cfg).to(device)
     backbone = build_backbone(cfg).to(device)
@@ -663,7 +659,11 @@ def main() -> None:
             alpha=tcfg.grokfast_alpha,
             lamb=tcfg.grokfast_lamb,
         )
-        log.info("grokfast enabled  alpha=%.3f  lamb=%.1f", tcfg.grokfast_alpha, tcfg.grokfast_lamb)
+        log.info(
+            "grokfast enabled  alpha=%.3f  lamb=%.1f",
+            tcfg.grokfast_alpha,
+            tcfg.grokfast_lamb,
+        )
 
     # --- EMA shadow model (opt-in) ---
     model_ema: ModelEMA | None = None
@@ -715,7 +715,11 @@ def main() -> None:
                 onset_threshold=tcfg.grok_onset_threshold,
                 on_state_transition=logger.log_grok_state_transition,
             )
-            log.info("grok tracking enabled  erank_freq=%d  spectral_freq=%d", tcfg.grok_erank_freq, tcfg.grok_spectral_freq)
+            log.info(
+                "grok tracking enabled  erank_freq=%d  spectral_freq=%d",
+                tcfg.grok_erank_freq,
+                tcfg.grok_spectral_freq,
+            )
         # --- Build shard stream config ---
         bs = args.batch_size
         worker_count = resolve_dataloader_workers(tcfg.workers)
@@ -787,20 +791,20 @@ def main() -> None:
                     num_planes=cfg.num_planes,
                     augment=True,
                 )
-                train_loader: DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
-                    DataLoader(
-                        train_dataset,
-                        batch_size=bs,
-                        shuffle=True,
-                        num_workers=worker_count,
-                        pin_memory=pin_memory,
-                        persistent_workers=False,
-                    )
+                train_loader: DataLoader[
+                    tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+                ] = DataLoader(
+                    train_dataset,
+                    batch_size=bs,
+                    shuffle=True,
+                    num_workers=worker_count,
+                    pin_memory=pin_memory,
+                    persistent_workers=False,
                 )
                 pbar = tqdm(
                     train_loader,
                     desc=(
-                        f"Epoch {epoch+1}/{args.epochs} "
+                        f"Epoch {epoch + 1}/{args.epochs} "
                         f"[shard {shard_pos}/{len(shard_order)}]"
                     ),
                     leave=False,
@@ -821,7 +825,9 @@ def main() -> None:
 
                     logger.log_train_step(global_step, loss, breakdown)
                     if "batch_top1" in breakdown:
-                        logger._writer.add_scalar("accuracy/batch_top1", breakdown["batch_top1"], global_step)
+                        logger._writer.add_scalar(
+                            "accuracy/batch_top1", breakdown["batch_top1"], global_step
+                        )
                     if grok_tracker is not None:
                         grok_metrics = grok_tracker.step(
                             global_step, breakdown, breakdown.get("grad_norm", 0.0)
@@ -866,7 +872,7 @@ def main() -> None:
                 data_plan,
                 device,
                 use_tqdm=use_tqdm,
-                progress_desc=f"Eval random E{epoch+1}",
+                progress_desc=f"Eval random E{epoch + 1}",
             )
             if model_ema is not None:
                 with model_ema.apply():
@@ -875,11 +881,12 @@ def main() -> None:
                         data_plan,
                         device,
                         use_tqdm=use_tqdm,
-                        progress_desc=f"Eval random EMA E{epoch+1}",
+                        progress_desc=f"Eval random EMA E{epoch + 1}",
                     )
                 log.info(
                     "EMA top1=%.2f%% (regular=%.2f%%)",
-                    ema_top1 * 100, top1 * 100,
+                    ema_top1 * 100,
+                    top1 * 100,
                 )
             current_lr = trainer.optimizer.param_groups[0]["lr"]
             head_lr = trainer.optimizer.param_groups[2]["lr"]
@@ -933,7 +940,9 @@ def main() -> None:
                 if "gpu_util_avg" in resource_metrics:
                     resources["gpu_util"] = f"{resource_metrics['gpu_util_avg']:.0f}%"
                 if "gpu_mem_mb_avg" in resource_metrics:
-                    resources["gpu_mem_mb"] = f"{resource_metrics['gpu_mem_mb_avg']:.0f}"
+                    resources["gpu_mem_mb"] = (
+                        f"{resource_metrics['gpu_mem_mb_avg']:.0f}"
+                    )
                 if "gpu_temp_avg" in resource_metrics:
                     resources["gpu_temp"] = f"{resource_metrics['gpu_temp_avg']:.0f}"
                 if "gpu_power_avg" in resource_metrics:
@@ -974,10 +983,12 @@ def main() -> None:
                         split_top1, _ = _measure_accuracy_from_indices(
                             trainer=trainer,
                             data_plan=data_plan,
-                            indices_by_shard=data_plan.holdout_split_indices[split_name],
+                            indices_by_shard=data_plan.holdout_split_indices[
+                                split_name
+                            ],
                             device=device,
                             use_tqdm=use_tqdm,
-                            progress_desc=f"Eval {split_name} E{epoch+1}",
+                            progress_desc=f"Eval {split_name} E{epoch + 1}",
                         )
                     holdout_results[split_name] = (split_top1, avg_loss)
                 grok_epoch_metrics = grok_tracker.epoch(
@@ -987,8 +998,7 @@ def main() -> None:
 
             # Plateau detection
             grad_norm_avg = (
-                sum(step_grad_norms) / len(step_grad_norms)
-                if step_grad_norms else 0.0
+                sum(step_grad_norms) / len(step_grad_norms) if step_grad_norms else 0.0
             )
             plateau_detector.update(epoch, grad_norm_avg, avg_loss, current_lr)
 
@@ -1013,7 +1023,8 @@ def main() -> None:
             if top1 > tcfg.phase1_gate:
                 log.info(
                     "PHASE 1 GATE PASSED: top-1 accuracy %s > %s — ready for Phase 2",
-                    f"{top1:.1%}", f"{tcfg.phase1_gate:.0%}",
+                    f"{top1:.1%}",
+                    f"{tcfg.phase1_gate:.0%}",
                 )
                 break
             if stop_for_overflow:

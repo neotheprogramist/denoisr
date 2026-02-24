@@ -35,8 +35,6 @@ class TestChessPolicyHead:
         for p in head.parameters():
             assert p.grad is not None
 
-    def test_no_nan(
-        self, head: ChessPolicyHead, small_latent: torch.Tensor
-    ) -> None:
+    def test_no_nan(self, head: ChessPolicyHead, small_latent: torch.Tensor) -> None:
         out = head(small_latent)
         assert not torch.isnan(out).any()

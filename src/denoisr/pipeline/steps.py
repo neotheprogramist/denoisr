@@ -205,10 +205,7 @@ def step_generate_data(
     workers = resolve_workers(cfg.data.workers)
 
     log.info(
-        (
-            "Generating training data "
-            "(max_examples=%d, workers=%d, chunk_examples=%s)"
-        ),
+        ("Generating training data (max_examples=%d, workers=%d, chunk_examples=%s)"),
         cfg.data.max_examples,
         workers,
         (
@@ -234,8 +231,6 @@ def step_generate_data(
     log.info("Generated %d examples at %s", count, data_path)
 
 
-
-
 # ---------------------------------------------------------------------------
 # Step 4: Train Phase 1
 # ---------------------------------------------------------------------------
@@ -256,7 +251,9 @@ def step_train_phase1(
         return
 
     if not state.last_checkpoint:
-        raise ValueError("Phase 1 requires an initialized checkpoint in state.last_checkpoint")
+        raise ValueError(
+            "Phase 1 requires an initialized checkpoint in state.last_checkpoint"
+        )
     init_ckpt = Path(state.last_checkpoint)
     if not init_ckpt.exists():
         raise FileNotFoundError(f"Phase 1 input checkpoint not found: {init_ckpt}")
@@ -268,15 +265,23 @@ def step_train_phase1(
         raise FileNotFoundError(f"Phase 1 data file not found: {data_path}")
 
     args = [
-        "--checkpoint", str(init_ckpt),
-        "--data", str(data_path),
-        "--lr", str(cfg.phase1.lr),
-        "--batch-size", str(cfg.phase1.batch_size),
-        "--warmup-epochs", str(cfg.phase1.warmup_epochs),
-        "--weight-decay", str(cfg.phase1.weight_decay),
-        "--compile", str(cfg.phase1.compile),
+        "--checkpoint",
+        str(init_ckpt),
+        "--data",
+        str(data_path),
+        "--lr",
+        str(cfg.phase1.lr),
+        "--batch-size",
+        str(cfg.phase1.batch_size),
+        "--warmup-epochs",
+        str(cfg.phase1.warmup_epochs),
+        "--weight-decay",
+        str(cfg.phase1.weight_decay),
+        "--compile",
+        str(cfg.phase1.compile),
         "--tqdm",
-        "--output", str(output_ckpt),
+        "--output",
+        str(output_ckpt),
     ]
     if cfg.output.run_name:
         args.extend(["--run-name", cfg.output.run_name])
@@ -318,16 +323,25 @@ def step_train_phase2(cfg: PipelineConfig, state: PipelineState) -> None:
         raise FileNotFoundError(f"Phase 2 PGN file not found: {pgn_path}")
 
     args = [
-        "--checkpoint", str(phase1_ckpt),
-        "--pgn", str(pgn_path),
-        "--seq-len", str(cfg.phase2.seq_len),
-        "--max-trajectories", str(cfg.phase2.max_trajectories),
-        "--batch-size", str(cfg.phase2.batch_size),
-        "--epochs", str(cfg.phase2.epochs),
-        "--lr", str(cfg.phase2.lr),
-        "--compile", str(cfg.phase2.compile),
+        "--checkpoint",
+        str(phase1_ckpt),
+        "--pgn",
+        str(pgn_path),
+        "--seq-len",
+        str(cfg.phase2.seq_len),
+        "--max-trajectories",
+        str(cfg.phase2.max_trajectories),
+        "--batch-size",
+        str(cfg.phase2.batch_size),
+        "--epochs",
+        str(cfg.phase2.epochs),
+        "--lr",
+        str(cfg.phase2.lr),
+        "--compile",
+        str(cfg.phase2.compile),
         "--tqdm",
-        "--output", str(output_ckpt),
+        "--output",
+        str(output_ckpt),
     ]
     if cfg.output.run_name:
         args.extend(["--run-name", cfg.output.run_name])
@@ -365,13 +379,19 @@ def step_train_phase3(cfg: PipelineConfig, state: PipelineState) -> None:
         raise FileNotFoundError(f"Phase 3 input checkpoint not found: {phase2_ckpt}")
 
     args = [
-        "--checkpoint", str(phase2_ckpt),
-        "--generations", str(cfg.phase3.generations),
-        "--games-per-gen", str(cfg.phase3.games_per_gen),
-        "--mcts-sims", str(cfg.phase3.mcts_sims),
-        "--save-every", "1",
+        "--checkpoint",
+        str(phase2_ckpt),
+        "--generations",
+        str(cfg.phase3.generations),
+        "--games-per-gen",
+        str(cfg.phase3.games_per_gen),
+        "--mcts-sims",
+        str(cfg.phase3.mcts_sims),
+        "--save-every",
+        "1",
         "--tqdm",
-        "--output", str(output_ckpt),
+        "--output",
+        str(output_ckpt),
     ]
 
     _run_python_module("denoisr.scripts.train_phase3", args)

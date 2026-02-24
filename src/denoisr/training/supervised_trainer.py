@@ -45,7 +45,9 @@ class SupervisedTrainer:
         self._grokfast_filter = grokfast_filter
         self.max_grad_norm = max_grad_norm
         self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
-        self._autocast_device = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
+        self._autocast_device = (
+            self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
+        )
         self._autocast_enabled = self.device.type == "cuda"
 
         param_groups = [
@@ -54,13 +56,9 @@ class SupervisedTrainer:
             {"params": list(policy_head.parameters()), "lr": lr},
             {"params": list(value_head.parameters()), "lr": lr},
         ]
-        self.optimizer = torch.optim.AdamW(
-            param_groups, weight_decay=weight_decay
-        )
+        self.optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
         self._params: list[torch.nn.Parameter] = [
-            p
-            for group in self.optimizer.param_groups
-            for p in group["params"]
+            p for group in self.optimizer.param_groups for p in group["params"]
         ]
 
         self._warmup_epochs = warmup_epochs
@@ -71,12 +69,17 @@ class SupervisedTrainer:
         if use_warm_restarts:
             self._scheduler: torch.optim.lr_scheduler.LRScheduler = (
                 torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                    self.optimizer, T_0=20, T_mult=2, eta_min=min_lr,
+                    self.optimizer,
+                    T_0=20,
+                    T_mult=2,
+                    eta_min=min_lr,
                 )
             )
         else:
             self._scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=max(1, total_epochs - warmup_epochs), eta_min=min_lr,
+                self.optimizer,
+                T_max=max(1, total_epochs - warmup_epochs),
+                eta_min=min_lr,
             )
         self._scheduler.base_lrs = list(self._base_lrs)
         self._epoch = 0
@@ -90,7 +93,9 @@ class SupervisedTrainer:
                 return True
         return False
 
-    def _handle_overflow(self, breakdown: dict[str, float | bool], batch_top1: float) -> None:
+    def _handle_overflow(
+        self, breakdown: dict[str, float | bool], batch_top1: float
+    ) -> None:
         self.optimizer.zero_grad(set_to_none=True)
         if self.scaler.is_enabled():
             new_scale = max(float(self.scaler.get_scale()) / 2.0, 1.0)
@@ -172,9 +177,7 @@ class SupervisedTrainer:
         self, batch: list[TrainingExample]
     ) -> tuple[float, dict[str, float | bool]]:
         boards = torch.stack([ex.board.data for ex in batch]).to(self.device)
-        target_policies = torch.stack([ex.policy.data for ex in batch]).to(
-            self.device
-        )
+        target_policies = torch.stack([ex.policy.data for ex in batch]).to(self.device)
         target_values = torch.tensor(
             [[ex.value.win, ex.value.draw, ex.value.loss] for ex in batch],
             dtype=torch.float32,

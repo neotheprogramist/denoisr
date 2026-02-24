@@ -77,9 +77,7 @@ class TestRunBenchmark:
 
     def test_openings_are_used(self, tmp_path: Path) -> None:
         epd = tmp_path / "test.epd"
-        epd.write_text(
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1\n"
-        )
+        epd.write_text("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1\n")
         config = BenchmarkConfig(
             engine_cmd=_mock_cmd(),
             engine_args=_mock_args(),

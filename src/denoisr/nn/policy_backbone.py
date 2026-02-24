@@ -67,10 +67,7 @@ class ChessPolicyBackbone(nn.Module):
         self.smolgen = SmolgenBias(d_s, num_heads)
         self.shaw_relative_pe = ShawRelativePositionBias(num_heads)
         self.layers = nn.ModuleList(
-            [
-                TransformerBlock(d_s, num_heads, ffn_dim)
-                for _ in range(num_layers)
-            ]
+            [TransformerBlock(d_s, num_heads, ffn_dim) for _ in range(num_layers)]
         )
         self.final_norm = nn.LayerNorm(d_s)
 
@@ -80,9 +77,7 @@ class ChessPolicyBackbone(nn.Module):
         combined_bias = smolgen_bias + shaw_bias.unsqueeze(0)
         for layer in self.layers:
             if self._gradient_checkpointing and self.training:
-                x = torch_checkpoint(
-                    layer, x, combined_bias, use_reentrant=False
-                )
+                x = torch_checkpoint(layer, x, combined_bias, use_reentrant=False)
             else:
                 x = layer(x, attn_bias=combined_bias)
         out: Tensor = self.final_norm(x)

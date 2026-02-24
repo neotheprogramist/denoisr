@@ -21,9 +21,7 @@ class TestChessWorldModel:
             ffn_dim=SMALL_FFN_DIM,
         ).to(device)
 
-    def test_output_shapes(
-        self, model: ChessWorldModel, device: torch.device
-    ) -> None:
+    def test_output_shapes(self, model: ChessWorldModel, device: torch.device) -> None:
         B, T = 2, 5
         states = torch.randn(B, T, 64, SMALL_D_S, device=device)
         act_from = torch.randint(0, 64, (B, T), device=device)
@@ -32,18 +30,14 @@ class TestChessWorldModel:
         assert next_states.shape == (B, T, 64, SMALL_D_S)
         assert rewards.shape == (B, T)
 
-    def test_single_step(
-        self, model: ChessWorldModel, device: torch.device
-    ) -> None:
+    def test_single_step(self, model: ChessWorldModel, device: torch.device) -> None:
         states = torch.randn(1, 1, 64, SMALL_D_S, device=device)
         act_from = torch.randint(0, 64, (1, 1), device=device)
         act_to = torch.randint(0, 64, (1, 1), device=device)
         next_states, rewards = model(states, act_from, act_to)
         assert next_states.shape == (1, 1, 64, SMALL_D_S)
 
-    def test_causal_masking(
-        self, model: ChessWorldModel, device: torch.device
-    ) -> None:
+    def test_causal_masking(self, model: ChessWorldModel, device: torch.device) -> None:
         """Changing future inputs should not affect past outputs."""
         B, T = 1, 4
         states = torch.randn(B, T, 64, SMALL_D_S, device=device)
@@ -59,9 +53,7 @@ class TestChessWorldModel:
 
         assert torch.allclose(out1[:, :-1], out2[:, :-1], atol=1e-5)
 
-    def test_gradient_flows(
-        self, model: ChessWorldModel, device: torch.device
-    ) -> None:
+    def test_gradient_flows(self, model: ChessWorldModel, device: torch.device) -> None:
         states = torch.randn(2, 3, 64, SMALL_D_S, device=device)
         act_from = torch.randint(0, 64, (2, 3), device=device)
         act_to = torch.randint(0, 64, (2, 3), device=device)
@@ -70,9 +62,7 @@ class TestChessWorldModel:
         for name, p in model.named_parameters():
             assert p.grad is not None, f"No gradient for {name}"
 
-    def test_no_nan(
-        self, model: ChessWorldModel, device: torch.device
-    ) -> None:
+    def test_no_nan(self, model: ChessWorldModel, device: torch.device) -> None:
         states = torch.randn(2, 3, 64, SMALL_D_S, device=device)
         act_from = torch.randint(0, 64, (2, 3), device=device)
         act_to = torch.randint(0, 64, (2, 3), device=device)
@@ -80,9 +70,7 @@ class TestChessWorldModel:
         assert not torch.isnan(ns).any()
         assert not torch.isnan(rw).any()
 
-    def test_has_set_attention_pool(
-        self, model: ChessWorldModel
-    ) -> None:
+    def test_has_set_attention_pool(self, model: ChessWorldModel) -> None:
         """World model uses set attention pooling instead of mean pooling."""
         assert hasattr(model, "state_pool")
         assert hasattr(model.state_pool, "queries")

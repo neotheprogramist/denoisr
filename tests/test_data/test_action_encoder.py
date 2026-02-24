@@ -31,18 +31,14 @@ class TestSimpleActionEncoder:
         move = encoder.decode_action(action, board)
         assert move == chess.Move.from_uci("e2e4")
 
-    def test_round_trip_starting_position(
-        self, encoder: SimpleActionEncoder
-    ) -> None:
+    def test_round_trip_starting_position(self, encoder: SimpleActionEncoder) -> None:
         board = chess.Board()
         for move in board.legal_moves:
             action = encoder.encode_move(move)
             decoded = encoder.decode_action(action, board)
             assert decoded == move
 
-    def test_action_to_index_range(
-        self, encoder: SimpleActionEncoder
-    ) -> None:
+    def test_action_to_index_range(self, encoder: SimpleActionEncoder) -> None:
         action = Action(0, 63)
         idx = encoder.action_to_index(action)
         assert 0 <= idx < 64 * 64
@@ -58,9 +54,7 @@ class TestSimpleActionEncoder:
 
     @given(board=random_boards())
     @settings(max_examples=30)
-    def test_all_legal_moves_round_trip(
-        self, board: chess.Board
-    ) -> None:
+    def test_all_legal_moves_round_trip(self, board: chess.Board) -> None:
         encoder = SimpleActionEncoder()
         for move in board.legal_moves:
             action = encoder.encode_move(move)

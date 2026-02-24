@@ -197,9 +197,7 @@ class TestTrainingLogger:
         with caplog.at_level(logging.INFO, logger="denoisr.metrics.test"):
             metrics_log.addHandler(caplog.handler)
             try:
-                logger.log_epoch_summary(
-                    {"epoch": "0", "loss": "2.13", "top1": "5.2%"}
-                )
+                logger.log_epoch_summary({"epoch": "0", "loss": "2.13", "top1": "5.2%"})
             finally:
                 metrics_log.removeHandler(caplog.handler)
         logger.close()
@@ -224,9 +222,7 @@ class TestTrainingLogger:
 
 
 class TestGrokLogging:
-    def test_log_grok_metrics_writes_scalars(
-        self, tmp_path: pathlib.Path
-    ) -> None:
+    def test_log_grok_metrics_writes_scalars(self, tmp_path: pathlib.Path) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         metrics = {
             "grok/weight_norm_total": 42.0,
@@ -235,9 +231,7 @@ class TestGrokLogging:
         }
         logger.log_grok_metrics(step=100, metrics=metrics)
         logger.close()
-        event_files = list(
-            (tmp_path / "test").glob("events.out.tfevents.*")
-        )
+        event_files = list((tmp_path / "test").glob("events.out.tfevents.*"))
         assert len(event_files) >= 1
 
     def test_log_grok_state_transition_writes_text(

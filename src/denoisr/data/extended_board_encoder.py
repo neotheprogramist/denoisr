@@ -13,7 +13,9 @@ _HISTORY_DEPTH = 7
 _PIECE_PLANES = 12
 _HISTORY_PLANES = _PIECE_PLANES * _HISTORY_DEPTH  # 84
 _META_PLANES = 14  # castling(4) + ep(1) + rule50(1) + repetition(1) + stm(1) + material(2) + check(2) + opp_bishops(2)
-_TACTICAL_PLANES = 12  # attack(2) + defense(2) + hanging(2) + pin(2) + mobility(2) + threat(2)
+_TACTICAL_PLANES = (
+    12  # attack(2) + defense(2) + hanging(2) + pin(2) + mobility(2) + threat(2)
+)
 _TOTAL_PLANES = _PIECE_PLANES + _HISTORY_PLANES + _META_PLANES + _TACTICAL_PLANES  # 122
 
 
@@ -48,12 +50,14 @@ class ExtendedBoardEncoder:
         meta_start = _PIECE_PLANES + _HISTORY_PLANES
 
         # Castling rights (4 planes, broadcast)
-        for i, right in enumerate([
-            chess.BB_H1,  # white kingside
-            chess.BB_A1,  # white queenside
-            chess.BB_H8,  # black kingside
-            chess.BB_A8,  # black queenside
-        ]):
+        for i, right in enumerate(
+            [
+                chess.BB_H1,  # white kingside
+                chess.BB_A1,  # white queenside
+                chess.BB_H8,  # black kingside
+                chess.BB_A8,  # black queenside
+            ]
+        ):
             has_right = bool(board.castling_rights & right)
             if has_right:
                 data[meta_start + i] = 1.0
@@ -115,17 +119,22 @@ class ExtendedBoardEncoder:
                 (chess.square_rank(sq) + chess.square_file(sq)) % 2 == 1
                 for sq in black_bishops
             )
-            if (w_light and b_dark and not w_dark and not b_light) or \
-               (w_dark and b_light and not w_light and not b_dark):
+            if (w_light and b_dark and not w_dark and not b_light) or (
+                w_dark and b_light and not w_light and not b_dark
+            ):
                 data[meta_start + 12] = 1.0
                 data[meta_start + 13] = 1.0
 
         # --- Tactical feature planes (110-121) ---
         tac_start = meta_start + _META_PLANES
 
-        # Attack maps (planes 0-1): squares attacked by this color
+        # Attack maps (planes 0-1): squares attacked by this color.
+        # board.attacks_mask() expects a square, not a color.
         for ci, color in enumerate(chess.COLORS):
-            attack_mask = board.attacks_mask(color)
+            attack_mask = 0
+            for sq, piece in board.piece_map().items():
+                if piece.color == color:
+                    attack_mask |= board.attacks_mask(sq)
             for sq in chess.scan_forward(attack_mask):
                 data[tac_start + ci, chess.square_rank(sq), chess.square_file(sq)] = 1.0
 
@@ -135,7 +144,11 @@ class ExtendedBoardEncoder:
                 for sq in board.pieces(pt, color):
                     defenders = board.attackers(color, sq)
                     if defenders:
-                        data[tac_start + 2 + ci, chess.square_rank(sq), chess.square_file(sq)] = 1.0
+                        data[
+                            tac_start + 2 + ci,
+                            chess.square_rank(sq),
+                            chess.square_file(sq),
+                        ] = 1.0
 
         # Hanging pieces (planes 4-5): attacked by opponent and not defended
         for ci, color in enumerate(chess.COLORS):
@@ -145,7 +158,11 @@ class ExtendedBoardEncoder:
                     continue
                 for sq in board.pieces(pt, color):
                     if board.is_attacked_by(opp, sq) and not board.attackers(color, sq):
-                        data[tac_start + 4 + ci, chess.square_rank(sq), chess.square_file(sq)] = 1.0
+                        data[
+                            tac_start + 4 + ci,
+                            chess.square_rank(sq),
+                            chess.square_file(sq),
+                        ] = 1.0
 
         # Pinned pieces (planes 6-7): pieces pinned to king
         for ci, color in enumerate(chess.COLORS):
@@ -157,7 +174,11 @@ class ExtendedBoardEncoder:
                     continue
                 for sq in board.pieces(pt, color):
                     if board.pin(color, sq) != chess.BB_ALL:
-                        data[tac_start + 6 + ci, chess.square_rank(sq), chess.square_file(sq)] = 1.0
+                        data[
+                            tac_start + 6 + ci,
+                            chess.square_rank(sq),
+                            chess.square_file(sq),
+                        ] = 1.0
 
         # Mobility maps (planes 8-9): normalized count of legal moves from each square
         # We approximate mobility per-square by counting pseudo-legal moves per piece
@@ -166,12 +187,18 @@ class ExtendedBoardEncoder:
             for move in board.legal_moves:
                 piece = board.piece_at(move.from_square)
                 if piece is not None and piece.color == color:
-                    move_counts[move.from_square] = move_counts.get(move.from_square, 0) + 1
+                    move_counts[move.from_square] = (
+                        move_counts.get(move.from_square, 0) + 1
+                    )
             if move_counts:
                 max_count = max(move_counts.values())
                 if max_count > 0:
                     for sq, count in move_counts.items():
-                        data[tac_start + 8 + ci, chess.square_rank(sq), chess.square_file(sq)] = count / max_count
+                        data[
+                            tac_start + 8 + ci,
+                            chess.square_rank(sq),
+                            chess.square_file(sq),
+                        ] = count / max_count
 
         # Threat maps (planes 10-11): opponent attacks on our pieces
         for ci, color in enumerate(chess.COLORS):
@@ -181,6 +208,10 @@ class ExtendedBoardEncoder:
                     continue
                 for sq in board.pieces(pt, color):
                     if board.is_attacked_by(opp, sq):
-                        data[tac_start + 10 + ci, chess.square_rank(sq), chess.square_file(sq)] = 1.0
+                        data[
+                            tac_start + 10 + ci,
+                            chess.square_rank(sq),
+                            chess.square_file(sq),
+                        ] = 1.0
 
         return BoardTensor(data)

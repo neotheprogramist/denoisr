@@ -198,12 +198,8 @@ def test_pipeline_restart_clears_state(tmp_path: Path) -> None:
     with (
         patch(f"{_RUNNER}.step_fetch_data", side_effect=_fake_fetch) as m_fetch,
         patch(f"{_RUNNER}.step_init_model", side_effect=_fake_init) as m_init,
-        patch(
-            f"{_RUNNER}.step_generate_data", side_effect=_fake_generate
-        ) as m_gen,
-        patch(
-            f"{_RUNNER}.step_train_phase1", side_effect=_fake_p1
-        ) as m_p1,
+        patch(f"{_RUNNER}.step_generate_data", side_effect=_fake_generate) as m_gen,
+        patch(f"{_RUNNER}.step_train_phase1", side_effect=_fake_p1) as m_p1,
         patch(f"{_RUNNER}.step_train_phase2", side_effect=_fake_p2) as m_p2,
         patch(f"{_RUNNER}.step_train_phase3", side_effect=_fake_p3) as m_p3,
     ):
@@ -245,9 +241,7 @@ def test_pipeline_only_phase1(tmp_path: Path) -> None:
     with (
         patch(f"{_RUNNER}.step_fetch_data") as m_fetch,
         patch(f"{_RUNNER}.step_init_model") as m_init,
-        patch(
-            f"{_RUNNER}.step_generate_data", side_effect=_fake_generate
-        ) as m_gen,
+        patch(f"{_RUNNER}.step_generate_data", side_effect=_fake_generate) as m_gen,
         patch(f"{_RUNNER}.step_train_phase1", side_effect=_fake_p1) as m_p1,
         patch(f"{_RUNNER}.step_train_phase2") as m_p2,
         patch(f"{_RUNNER}.step_train_phase3") as m_p3,

@@ -12,9 +12,7 @@ class PolicyTarget:
 
     def __post_init__(self) -> None:
         if self.data.shape != (64, 64):
-            raise ValueError(
-                f"Expected shape [64, 64], got {list(self.data.shape)}"
-            )
+            raise ValueError(f"Expected shape [64, 64], got {list(self.data.shape)}")
 
 
 @dataclass(frozen=True)

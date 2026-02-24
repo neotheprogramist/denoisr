@@ -21,10 +21,7 @@ class CosineNoiseSchedule(nn.Module):
         super().__init__()
         self.num_timesteps = num_timesteps
         steps = torch.arange(num_timesteps + 1, dtype=torch.float64)
-        f = (
-            torch.cos((steps / num_timesteps + s) / (1 + s) * math.pi / 2)
-            ** 2
-        )
+        f = torch.cos((steps / num_timesteps + s) / (1 + s) * math.pi / 2) ** 2
         alpha_bar = f / f[0]
         self.register_buffer(
             "alpha_bar",
@@ -174,9 +171,7 @@ class DiTBlock(nn.Module):
     def forward(self, x: Tensor, c: Tensor) -> Tensor:
         B, S, D = x.shape
         params = self.adaln(c)
-        shift1, scale1, gate1, shift2, scale2, gate2 = params.chunk(
-            6, dim=-1
-        )
+        shift1, scale1, gate1, shift2, scale2, gate2 = params.chunk(6, dim=-1)
 
         h = self.norm1(x) * (1 + scale1) + shift1
         qkv = self.qkv(h).reshape(B, S, 3, self.num_heads, self.head_dim)

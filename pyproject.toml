@@ -43,5 +43,6 @@ dev = [
     "hypothesis>=6.151.9",
     "pytest>=9.0.2",
     "pytest-xdist>=3.8.0",
+    "ruff>=0.15.2",
     "types-tqdm>=4.67.3.20260205",
 ]

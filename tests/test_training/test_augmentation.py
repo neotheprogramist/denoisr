@@ -98,7 +98,9 @@ class TestExtendedBoardFlip:
         board = chess.Board()
         tensor = encoder.encode(board).data
         # Store originals for all 6 pairs
-        originals = [(tensor[110 + i].clone(), tensor[111 + i].clone()) for i in range(0, 12, 2)]
+        originals = [
+            (tensor[110 + i].clone(), tensor[111 + i].clone()) for i in range(0, 12, 2)
+        ]
         flipped = flip_board(tensor, 122)
         for pair_idx, (orig_w, orig_b) in enumerate(originals):
             base = 110 + pair_idx * 2

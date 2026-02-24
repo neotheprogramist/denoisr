@@ -17,8 +17,6 @@ class BoardTensor:
         if self.data.ndim != 3:
             raise ValueError(f"Expected 3D tensor, got {self.data.ndim}D")
         if self.data.shape[1:] != (BOARD_SIZE, BOARD_SIZE):
-            raise ValueError(
-                f"Expected shape [C, 8, 8], got {list(self.data.shape)}"
-            )
+            raise ValueError(f"Expected shape [C, 8, 8], got {list(self.data.shape)}")
         if self.data.dtype != torch.float32:
             raise ValueError(f"Expected float32, got {self.data.dtype}")

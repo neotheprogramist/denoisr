@@ -40,9 +40,7 @@ class SimplePGNStreamer:
         except ValueError:
             return None
 
-    def _parse_games(
-        self, stream: TextIO
-    ) -> Iterator[GameRecord]:
+    def _parse_games(self, stream: TextIO) -> Iterator[GameRecord]:
         while True:
             game = chess.pgn.read_game(stream)
             if game is None:

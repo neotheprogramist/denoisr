@@ -28,33 +28,25 @@ class TestCosineNoiseSchedule:
         for i in range(len(ab) - 1):
             assert ab[i] > ab[i + 1]
 
-    def test_alpha_bar_bounds(
-        self, schedule: CosineNoiseSchedule
-    ) -> None:
+    def test_alpha_bar_bounds(self, schedule: CosineNoiseSchedule) -> None:
         assert schedule.alpha_bar[0] > 0.9
         assert schedule.alpha_bar[-1] < 0.1
 
-    def test_q_sample_shape(
-        self, schedule: CosineNoiseSchedule
-    ) -> None:
+    def test_q_sample_shape(self, schedule: CosineNoiseSchedule) -> None:
         x_0 = torch.randn(2, 64, SMALL_D_S)
         t = torch.tensor([0, SMALL_NUM_TIMESTEPS - 1])
         noise = torch.randn_like(x_0)
         x_t = schedule.q_sample(x_0, t, noise)
         assert x_t.shape == x_0.shape
 
-    def test_q_sample_t0_close_to_clean(
-        self, schedule: CosineNoiseSchedule
-    ) -> None:
+    def test_q_sample_t0_close_to_clean(self, schedule: CosineNoiseSchedule) -> None:
         x_0 = torch.randn(1, 64, SMALL_D_S)
         t = torch.tensor([0])
         noise = torch.randn_like(x_0)
         x_t = schedule.q_sample(x_0, t, noise)
         assert torch.allclose(x_t, x_0, atol=0.2)
 
-    def test_schedule_is_nn_module(
-        self, schedule: CosineNoiseSchedule
-    ) -> None:
+    def test_schedule_is_nn_module(self, schedule: CosineNoiseSchedule) -> None:
         import torch.nn as nn
 
         assert isinstance(schedule, nn.Module)
@@ -65,9 +57,7 @@ class TestCosineNoiseSchedule:
         schedule.to(device)
         assert schedule.alpha_bar.device.type == device.type
 
-    def test_compute_v_target_shape(
-        self, schedule: CosineNoiseSchedule
-    ) -> None:
+    def test_compute_v_target_shape(self, schedule: CosineNoiseSchedule) -> None:
         x_0 = torch.randn(2, 64, SMALL_D_S)
         noise = torch.randn_like(x_0)
         t = torch.tensor([0, SMALL_NUM_TIMESTEPS - 1])
@@ -157,9 +147,7 @@ class TestChessDiffusionModule:
                 continue
             assert p.grad is not None, f"No gradient for {name}"
 
-    def test_adaln_zero_init(
-        self, diffusion: ChessDiffusionModule
-    ) -> None:
+    def test_adaln_zero_init(self, diffusion: ChessDiffusionModule) -> None:
         w = diffusion.final_proj.weight
         b = diffusion.final_proj.bias
         assert torch.allclose(w, torch.zeros_like(w))
@@ -196,9 +184,7 @@ class TestChessDiffusionModule:
                 continue
             assert p.grad is not None, f"No gradient for {name}"
 
-    def test_gradient_checkpointing_matches_output(
-        self, device: torch.device
-    ) -> None:
+    def test_gradient_checkpointing_matches_output(self, device: torch.device) -> None:
         """Checkpointed and non-checkpointed diffusion produce identical output."""
         torch.manual_seed(42)
         diff_normal = ChessDiffusionModule(
@@ -219,9 +205,7 @@ class TestChessDiffusionModule:
         x = torch.randn(1, 64, SMALL_D_S, device=device)
         t = torch.tensor([0], device=device)
         cond = torch.randn(1, 64, SMALL_D_S, device=device)
-        assert torch.allclose(
-            diff_normal(x, t, cond), diff_ckpt(x, t, cond), atol=1e-5
-        )
+        assert torch.allclose(diff_normal(x, t, cond), diff_ckpt(x, t, cond), atol=1e-5)
 
 
 class TestDPMSolverPP:
@@ -235,7 +219,9 @@ class TestDPMSolverPP:
         schedule = schedule.to(device)
         solver = DPMSolverPP(schedule, num_steps=5)
 
-        def dummy_model(x: torch.Tensor, t: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        def dummy_model(
+            x: torch.Tensor, t: torch.Tensor, cond: torch.Tensor
+        ) -> torch.Tensor:
             return torch.zeros_like(x)
 
         cond = torch.randn(2, 64, SMALL_D_S, device=device)
@@ -273,7 +259,9 @@ class TestDPMSolverPP:
         schedule = schedule.to(device)
         solver = DPMSolverPP(schedule, num_steps=5)
 
-        def dummy_model(x: torch.Tensor, t: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        def dummy_model(
+            x: torch.Tensor, t: torch.Tensor, cond: torch.Tensor
+        ) -> torch.Tensor:
             return x * 0.1
 
         cond = torch.randn(1, 64, SMALL_D_S, device=device)
@@ -290,7 +278,9 @@ class TestDPMSolverPP:
         schedule = schedule.to(device)
         solver = DPMSolverPP(schedule, num_steps=2)
 
-        def dummy_model(x: torch.Tensor, t: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        def dummy_model(
+            x: torch.Tensor, t: torch.Tensor, cond: torch.Tensor
+        ) -> torch.Tensor:
             return torch.zeros_like(x)
 
         cond = torch.randn(1, 64, SMALL_D_S, device=device)

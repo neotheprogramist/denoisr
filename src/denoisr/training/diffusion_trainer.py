@@ -35,11 +35,15 @@ class DiffusionTrainer:
         self.optimizer = torch.optim.AdamW(params, lr=lr)
         self.max_grad_norm = max_grad_norm
         self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
-        self._autocast_device = self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
+        self._autocast_device = (
+            self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
+        )
         self._autocast_enabled = self.device.type == "cuda"
 
         self._curriculum_max_steps = schedule.num_timesteps
-        initial_steps = max(1, int(schedule.num_timesteps * curriculum_initial_fraction))
+        initial_steps = max(
+            1, int(schedule.num_timesteps * curriculum_initial_fraction)
+        )
         self._current_max_steps_f = float(initial_steps)
         self._current_max_steps = initial_steps
         self._curriculum_growth = curriculum_growth
@@ -64,13 +68,9 @@ class DiffusionTrainer:
             cond = latent[:, 0]
 
             target_idx = torch.randint(1, T, (B,), device=self.device)
-            target = torch.stack(
-                [latent[b, target_idx[b]] for b in range(B)]
-            )
+            target = torch.stack([latent[b, target_idx[b]] for b in range(B)])
 
-            t = torch.randint(
-                0, self._current_max_steps, (B,), device=self.device
-            )
+            t = torch.randint(0, self._current_max_steps, (B,), device=self.device)
             noise = torch.randn_like(target)
             noisy_target = self.schedule.q_sample(target, t, noise)
 

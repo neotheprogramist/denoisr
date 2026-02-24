@@ -35,11 +35,13 @@ class UCIEngine:
             bufsize=1,
         )
         self._reader_thread = threading.Thread(
-            target=self._reader_loop, daemon=True,
+            target=self._reader_loop,
+            daemon=True,
         )
         self._reader_thread.start()
         self._stderr_thread = threading.Thread(
-            target=self._stderr_loop, daemon=True,
+            target=self._stderr_loop,
+            daemon=True,
         )
         self._stderr_thread.start()
 
@@ -96,7 +98,7 @@ class UCIEngine:
             try:
                 self._send("quit")
                 self._process.wait(timeout=5.0)
-            except (BrokenPipeError, subprocess.TimeoutExpired, OSError):
+            except BrokenPipeError, subprocess.TimeoutExpired, OSError:
                 self._process.kill()
             finally:
                 self._process = None
@@ -162,7 +164,7 @@ class UCIEngine:
             with self._lock:
                 for i, line in enumerate(self._lines):
                     if line.startswith(prefix):
-                        self._lines = self._lines[i + 1:]
+                        self._lines = self._lines[i + 1 :]
                         return line
             self._line_event.clear()
             remaining = deadline - time.monotonic()

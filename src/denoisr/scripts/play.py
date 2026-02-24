@@ -28,9 +28,7 @@ if TYPE_CHECKING:
 @graceful_main("denoisr-play")
 def main() -> None:
     parser = argparse.ArgumentParser(description="Denoisr UCI chess engine")
-    parser.add_argument(
-        "--checkpoint", required=True, help="Path to model checkpoint"
-    )
+    parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint")
     parser.add_argument(
         "--mode",
         choices=["single", "diffusion"],

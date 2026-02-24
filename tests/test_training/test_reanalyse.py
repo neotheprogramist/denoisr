@@ -14,9 +14,7 @@ class _DummyModel:
     def __init__(self, d_s: int) -> None:
         self.d_s = d_s
 
-    def predict(
-        self, state: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return torch.rand(64, 64), torch.tensor([0.33, 0.34, 0.33])
 
     def predict_next(
@@ -36,14 +34,13 @@ class TestReanalyseActor:
             policy_value_fn=model.predict,
             world_model_fn=model.predict_next,
             encode_fn=model.encode,
+            diffusion_policy_fn=None,
             game=ChessGame(),
             board_encoder=ExtendedBoardEncoder(),
             num_simulations=10,
         )
 
-    def test_reanalyse_produces_examples(
-        self, actor: ReanalyseActor
-    ) -> None:
+    def test_reanalyse_produces_examples(self, actor: ReanalyseActor) -> None:
         move = chess.Move.from_uci("e2e4")
         record = GameRecord(
             actions=(Action(move.from_square, move.to_square),),
@@ -53,9 +50,7 @@ class TestReanalyseActor:
         assert len(examples) == 1
         assert isinstance(examples[0], TrainingExample)
 
-    def test_policy_targets_are_distributions(
-        self, actor: ReanalyseActor
-    ) -> None:
+    def test_policy_targets_are_distributions(self, actor: ReanalyseActor) -> None:
         moves = ["e2e4", "e7e5", "g1f3"]
         record = GameRecord(
             actions=tuple(

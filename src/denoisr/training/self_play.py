@@ -23,9 +23,7 @@ class TemperatureSchedule:
     explore_moves: int = 30
     generation_decay: float = 0.97
 
-    def get_temperature(
-        self, move_number: int, generation: int = 0
-    ) -> float:
+    def get_temperature(self, move_number: int, generation: int = 0) -> float:
         base = self.base * (self.generation_decay**generation)
         return base if move_number < self.explore_moves else 0.0
 
@@ -49,6 +47,7 @@ class SelfPlayActor:
         policy_value_fn: Callable[[Tensor], tuple[Tensor, Tensor]],
         world_model_fn: Callable[[Tensor, int, int], tuple[Tensor, float]],
         encode_fn: Callable[[Tensor], Tensor],
+        diffusion_policy_fn: Callable[[Tensor, Tensor], Tensor] | None,
         game: ChessGame,
         board_encoder: ExtendedBoardEncoder,
         config: SelfPlayConfig,
@@ -56,6 +55,7 @@ class SelfPlayActor:
         self._game = game
         self._board_encoder = board_encoder
         self._encode = encode_fn
+        self._diffusion_policy_fn = diffusion_policy_fn
         self._config = config
         self._mcts = MCTS(
             policy_value_fn=policy_value_fn,
@@ -67,11 +67,27 @@ class SelfPlayActor:
                 dirichlet_epsilon=config.dirichlet_epsilon,
                 temperature=config.temperature,
             ),
+            legal_mask_fn=lambda b: self._game.get_valid_moves(b).data,
+            transition_fn=self._transition_board,
         )
 
-    def play_game(self, generation: int = 0) -> GameRecord:
+    def _transition_board(
+        self, board: chess.Board, from_sq: int, to_sq: int
+    ) -> chess.Board:
+        promotion = None
+        piece = board.piece_at(from_sq)
+        if piece is not None and piece.piece_type == chess.PAWN:
+            to_rank = chess.square_rank(to_sq)
+            if (piece.color == chess.WHITE and to_rank == 7) or (
+                piece.color == chess.BLACK and to_rank == 0
+            ):
+                promotion = chess.QUEEN
+        return self._game.get_next_state(board, Action(from_sq, to_sq, promotion))
+
+    def play_game(self, generation: int = 0, alpha: float = 0.0) -> GameRecord:
         board = self._game.get_init_board()
         actions: list[Action] = []
+        alpha = max(0.0, min(1.0, alpha))
 
         for move_num in range(self._config.max_moves):
             result = self._game.get_game_ended(board)
@@ -79,9 +95,7 @@ class SelfPlayActor:
                 return GameRecord(actions=tuple(actions), result=result)
 
             if self._config.temp_schedule is not None:
-                temp = self._config.temp_schedule.get_temperature(
-                    move_num, generation
-                )
+                temp = self._config.temp_schedule.get_temperature(move_num, generation)
                 self._mcts._config = MCTSConfig(
                     num_simulations=self._config.num_simulations,
                     c_puct=self._config.c_puct,
@@ -92,12 +106,24 @@ class SelfPlayActor:
 
             board_tensor = self._board_encoder.encode(board).data
             latent = self._encode(board_tensor.unsqueeze(0)).squeeze(0)
-            legal_mask = self._game.get_valid_moves(board).data
+            legal_mask = self._game.get_valid_moves(board).data.to(
+                device=latent.device, dtype=torch.bool
+            )
 
             to_play = 1 if board.turn == chess.WHITE else -1
             visit_dist = self._mcts.search(
-                latent, legal_mask, root_to_play=to_play
+                latent,
+                legal_mask,
+                root_to_play=to_play,
+                root_board=board,
             )
+            if self._diffusion_policy_fn is not None and alpha > 0.0:
+                diffusion_policy = self._diffusion_policy_fn(latent, legal_mask)
+                visit_dist = (1.0 - alpha) * visit_dist + alpha * diffusion_policy
+                visit_dist = visit_dist * legal_mask.float()
+                total = visit_dist.sum()
+                if total > 0:
+                    visit_dist = visit_dist / total
 
             flat_dist = visit_dist.reshape(-1)
             if flat_dist.sum() == 0:

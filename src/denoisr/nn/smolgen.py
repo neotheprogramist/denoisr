@@ -10,9 +10,7 @@ class SmolgenBias(nn.Module):
     connections in closed positions).
     """
 
-    def __init__(
-        self, d_s: int, num_heads: int, compress_dim: int = 256
-    ) -> None:
+    def __init__(self, d_s: int, num_heads: int, compress_dim: int = 256) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.compress = nn.Sequential(

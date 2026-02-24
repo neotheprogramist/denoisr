@@ -27,9 +27,7 @@ class TestStockfishOracle:
         total = policy.data.sum().item()
         assert abs(total - 1.0) < 0.01
 
-    def test_starting_position_value_is_wdl(
-        self, oracle: StockfishOracle
-    ) -> None:
+    def test_starting_position_value_is_wdl(self, oracle: StockfishOracle) -> None:
         _, value, _ = oracle.evaluate(chess.Board())
         assert abs(value.win + value.draw + value.loss - 1.0) < 1e-5
 
@@ -60,9 +58,7 @@ class TestStockfishOracle:
         # Best move should be above uniform baseline
         assert max_prob > uniform_prob
 
-    def test_policy_only_on_legal_moves(
-        self, oracle: StockfishOracle
-    ) -> None:
+    def test_policy_only_on_legal_moves(self, oracle: StockfishOracle) -> None:
         board = chess.Board()
         policy, _, _ = oracle.evaluate(board)
         # Check that nonzero entries correspond to legal moves
@@ -73,7 +69,9 @@ class TestStockfishOracle:
                         m.from_square == from_sq and m.to_square == to_sq
                         for m in board.legal_moves
                     )
-                    assert found, f"Policy nonzero at ({from_sq},{to_sq}) but no legal move"
+                    assert found, (
+                        f"Policy nonzero at ({from_sq},{to_sq}) but no legal move"
+                    )
 
     def test_temperature_changes_distribution_sharpness(
         self, oracle: StockfishOracle
@@ -98,15 +96,15 @@ class TestStockfishOracle:
         sharp_oracle.close()
         soft_oracle.close()
 
-    def test_label_smoothing_redistributes_mass(
-        self, oracle: StockfishOracle
-    ) -> None:
+    def test_label_smoothing_redistributes_mass(self, oracle: StockfishOracle) -> None:
         """With label smoothing, minimum probability on legal moves should be > 0."""
         board = chess.Board()
         assert STOCKFISH_PATH is not None
         smoothed = StockfishOracle(
-            path=STOCKFISH_PATH, depth=10,
-            policy_temperature=150.0, label_smoothing=0.1,
+            path=STOCKFISH_PATH,
+            depth=10,
+            policy_temperature=150.0,
+            label_smoothing=0.1,
         )
         policy, _, _ = smoothed.evaluate(board)
         # All legal moves should have nonzero probability

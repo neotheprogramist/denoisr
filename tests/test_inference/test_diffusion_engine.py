@@ -38,16 +38,12 @@ class TestDiffusionChessEngine:
             num_denoising_steps=5,
         )
 
-    def test_select_move_returns_legal(
-        self, engine: DiffusionChessEngine
-    ) -> None:
+    def test_select_move_returns_legal(self, engine: DiffusionChessEngine) -> None:
         board = chess.Board()
         move = engine.select_move(board)
         assert move in board.legal_moves
 
-    def test_evaluate_returns_wdl(
-        self, engine: DiffusionChessEngine
-    ) -> None:
+    def test_evaluate_returns_wdl(self, engine: DiffusionChessEngine) -> None:
         board = chess.Board()
         wdl = engine.evaluate(board)
         assert len(wdl) == 3

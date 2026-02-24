@@ -8,9 +8,7 @@ class SimpleActionEncoder:
         return Action(move.from_square, move.to_square, move.promotion)
 
     def decode_action(self, action: Action, board: chess.Board) -> chess.Move:
-        return chess.Move(
-            action.from_square, action.to_square, action.promotion
-        )
+        return chess.Move(action.from_square, action.to_square, action.promotion)
 
     def action_to_index(self, action: Action) -> int:
         return action.from_square * 64 + action.to_square

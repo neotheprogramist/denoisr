@@ -14,12 +14,18 @@ class TestAction:
         a = Action(from_square=52, to_square=60, promotion=5)
         assert a.promotion == 5
 
-    @given(sq=st.integers(min_value=-100, max_value=-1) | st.integers(min_value=64, max_value=200))
+    @given(
+        sq=st.integers(min_value=-100, max_value=-1)
+        | st.integers(min_value=64, max_value=200)
+    )
     def test_rejects_invalid_from_square(self, sq: int) -> None:
         with pytest.raises(ValueError, match="from_square"):
             Action(from_square=sq, to_square=0)
 
-    @given(sq=st.integers(min_value=-100, max_value=-1) | st.integers(min_value=64, max_value=200))
+    @given(
+        sq=st.integers(min_value=-100, max_value=-1)
+        | st.integers(min_value=64, max_value=200)
+    )
     def test_rejects_invalid_to_square(self, sq: int) -> None:
         with pytest.raises(ValueError, match="to_square"):
             Action(from_square=0, to_square=sq)

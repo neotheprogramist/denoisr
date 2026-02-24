@@ -37,8 +37,7 @@ class ModelEMA:
         self._decay = decay
         # Deep copy initial state dicts as shadow weights
         self._shadow: dict[str, dict[str, torch.Tensor]] = {
-            name: copy.deepcopy(module.state_dict())
-            for name, module in modules.items()
+            name: copy.deepcopy(module.state_dict()) for name, module in modules.items()
         }
         self._steps = 0
 

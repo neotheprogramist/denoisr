@@ -14,13 +14,9 @@ class ChessGame:
     def get_action_size(self) -> int:
         return 64 * 64
 
-    def get_next_state(
-        self, board: chess.Board, action: Action
-    ) -> chess.Board:
+    def get_next_state(self, board: chess.Board, action: Action) -> chess.Board:
         new_board = board.copy()
-        move = chess.Move(
-            action.from_square, action.to_square, action.promotion
-        )
+        move = chess.Move(action.from_square, action.to_square, action.promotion)
         new_board.push(move)
         return new_board
 

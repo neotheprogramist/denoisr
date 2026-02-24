@@ -88,9 +88,9 @@ _EvalResultWithMeta = tuple[
     npt.NDArray[np.float32],
     npt.NDArray[np.float32],
     tuple[float, float, float],
-    int,          # game_id
-    str | None,   # eco_code
-    int,          # piece_count
+    int,  # game_id
+    str | None,  # eco_code
+    int,  # piece_count
 ]
 
 
@@ -129,7 +129,6 @@ def _count_positions(
     return count
 
 
-
 def _stream_positions(
     pgn_path: Path,
     max_positions: int,
@@ -147,7 +146,9 @@ def _stream_positions(
     for record in streamer.stream(pgn_path):
         board = chess.Board()
         for action in record.actions:
-            board.push(chess.Move(action.from_square, action.to_square, action.promotion))
+            board.push(
+                chess.Move(action.from_square, action.to_square, action.promotion)
+            )
             if count >= max_positions:
                 break
             # Random sampling: skip positions with probability (1 - sample_rate)
@@ -169,6 +170,7 @@ def _stream_positions(
 
 _GIB = 1024 * 1024 * 1024
 _CHUNK_FORMAT = "chunked_v1"
+
 
 def _estimate_dataset_gib(num_examples: int, num_planes: int) -> float:
     bytes_per_example = ((num_planes * 8 * 8) + (64 * 64) + 3) * 4
@@ -264,8 +266,12 @@ def _generate_to_file_chunked(
         initializer=_init_worker,
         initargs=(stockfish_path, stockfish_depth, policy_temperature, label_smoothing),
     ) as pool:
-        positions = _stream_positions(pgn_path, max_positions=max_examples, sample_rate=1.0)
-        results = pool.imap_unordered(_evaluate_position, positions, chunksize=chunksize)
+        positions = _stream_positions(
+            pgn_path, max_positions=max_examples, sample_rate=1.0
+        )
+        results = pool.imap_unordered(
+            _evaluate_position, positions, chunksize=chunksize
+        )
         for board_np, policy_np, (win, draw, loss), gid, eco, pc in tqdm(
             results,
             total=max_examples,
@@ -371,11 +377,14 @@ def generate_to_file(
 
     if total == 0:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
-            "boards": torch.empty(0, num_planes, 8, 8),
-            "policies": torch.empty(0, 64, 64),
-            "values": torch.empty(0, 3),
-        }, output_path)
+        torch.save(
+            {
+                "boards": torch.empty(0, num_planes, 8, 8),
+                "policies": torch.empty(0, 64, 64),
+                "values": torch.empty(0, 3),
+            },
+            output_path,
+        )
         return 0
 
     # Create temp directory for memmap files
@@ -386,15 +395,21 @@ def generate_to_file(
         # Allocate memmap arrays on disk
         boards_mm = np.memmap(
             os.path.join(tmp_dir, "boards.dat"),
-            dtype=np.float32, mode="w+", shape=(total, num_planes, 8, 8),
+            dtype=np.float32,
+            mode="w+",
+            shape=(total, num_planes, 8, 8),
         )
         policies_mm = np.memmap(
             os.path.join(tmp_dir, "policies.dat"),
-            dtype=np.float32, mode="w+", shape=(total, 64, 64),
+            dtype=np.float32,
+            mode="w+",
+            shape=(total, 64, 64),
         )
         values_mm = np.memmap(
             os.path.join(tmp_dir, "values.dat"),
-            dtype=np.float32, mode="w+", shape=(total, 3),
+            dtype=np.float32,
+            mode="w+",
+            shape=(total, 3),
         )
 
         # Small metadata arrays stay in RAM (~200 MB at 16M examples)
@@ -407,21 +422,34 @@ def generate_to_file(
         with multiprocessing.Pool(
             num_workers,
             initializer=_init_worker,
-            initargs=(stockfish_path, stockfish_depth, policy_temperature, label_smoothing),
+            initargs=(
+                stockfish_path,
+                stockfish_depth,
+                policy_temperature,
+                label_smoothing,
+            ),
         ) as pool:
             # Compute sample_rate for random sub-sampling across the PGN.
             # If we found more positions than needed, randomly skip some
             # so we get a uniform sample rather than the first N positions.
-            sample_rate = min(1.0, max_examples / max(total, 1)) if total > max_examples else 1.0
+            sample_rate = (
+                min(1.0, max_examples / max(total, 1)) if total > max_examples else 1.0
+            )
             positions = _stream_positions(
-                pgn_path, max_examples,
+                pgn_path,
+                max_examples,
                 sample_rate=sample_rate,
             )
             results = pool.imap_unordered(
-                _evaluate_position, positions, chunksize=chunksize,
+                _evaluate_position,
+                positions,
+                chunksize=chunksize,
             )
             for board_np, policy_np, (win, draw, loss), gid, eco, pc in tqdm(
-                results, total=total, desc="Evaluating positions", unit="pos",
+                results,
+                total=total,
+                desc="Evaluating positions",
+                unit="pos",
                 smoothing=0.1,
             ):
                 boards_mm[idx] = board_np
@@ -481,15 +509,25 @@ def main() -> None:
         default=0,
         help="Worker processes (0 = auto: 64)",
     )
+    parser.add_argument("--output", type=str, default="outputs/training_data.pt")
     parser.add_argument(
-        "--output", type=str, default="outputs/training_data.pt"
+        "--policy-temperature",
+        type=float,
+        default=80.0,
+        help="Softmax temperature for policy targets (default: 80.0)",
     )
-    parser.add_argument("--policy-temperature", type=float, default=80.0,
-        help="Softmax temperature for policy targets (default: 80.0)")
-    parser.add_argument("--label-smoothing", type=float, default=0.02,
-        help="Label smoothing epsilon (default: 0.02)")
-    parser.add_argument("--chunksize", type=int, default=64,
-        help="imap_unordered chunksize for worker batching (default: 64)")
+    parser.add_argument(
+        "--label-smoothing",
+        type=float,
+        default=0.02,
+        help="Label smoothing epsilon (default: 0.02)",
+    )
+    parser.add_argument(
+        "--chunksize",
+        type=int,
+        default=64,
+        help="imap_unordered chunksize for worker batching (default: 64)",
+    )
     parser.add_argument(
         "--chunk-examples",
         type=int,
@@ -503,13 +541,12 @@ def main() -> None:
         "--scratch-dir",
         type=str,
         default="outputs/scratch",
-        help=(
-            "Directory for temporary memmap files "
-            "(default: outputs/scratch)"
-        ),
+        help=("Directory for temporary memmap files (default: outputs/scratch)"),
     )
     parser.add_argument(
-        "--seed", type=int, default=None,
+        "--seed",
+        type=int,
+        default=None,
         help="Random seed for reproducible sampling (default: None = random)",
     )
     args = parser.parse_args()

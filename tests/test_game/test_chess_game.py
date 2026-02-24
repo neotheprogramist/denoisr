@@ -31,9 +31,7 @@ class TestChessGame:
         assert new_board.piece_at(28) == chess.Piece(chess.PAWN, chess.WHITE)
         assert new_board.piece_at(12) is None
 
-    def test_next_state_does_not_mutate_original(
-        self, game: ChessGame
-    ) -> None:
+    def test_next_state_does_not_mutate_original(self, game: ChessGame) -> None:
         board = game.get_init_board()
         original_fen = board.fen()
         game.get_next_state(board, Action(12, 28))
@@ -84,9 +82,7 @@ class TestChessGame:
 
     @given(board=random_boards())
     @settings(max_examples=50)
-    def test_valid_moves_count_matches_python_chess(
-        self, board: chess.Board
-    ) -> None:
+    def test_valid_moves_count_matches_python_chess(self, board: chess.Board) -> None:
         game = ChessGame()
         if game.get_game_ended(board) is not None:
             return

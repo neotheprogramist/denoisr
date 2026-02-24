@@ -1,3 +1,4 @@
+import chess
 import pytest
 import torch
 
@@ -10,9 +11,7 @@ class _MockPolicyValue:
     def __init__(self, d_s: int) -> None:
         self.d_s = d_s
 
-    def predict(
-        self, state: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         policy = torch.ones(64, 64) / (64 * 64)
         value = torch.tensor([0.33, 0.34, 0.33])
         return policy, value
@@ -48,9 +47,7 @@ class TestMCTS:
             config=config,
         )
 
-    def test_search_returns_valid_distribution(
-        self, mcts: MCTS
-    ) -> None:
+    def test_search_returns_valid_distribution(self, mcts: MCTS) -> None:
         state = torch.randn(64, SMALL_D_S)
         legal_mask = torch.zeros(64, 64, dtype=torch.bool)
         legal_mask[12, 28] = True
@@ -87,9 +84,7 @@ class TestMCTS:
         dist_few = mcts_few.search(state, legal_mask)
         dist_many = mcts_many.search(state, legal_mask)
 
-        entropy_few = -(
-            dist_few[dist_few > 0] * dist_few[dist_few > 0].log()
-        ).sum()
+        entropy_few = -(dist_few[dist_few > 0] * dist_few[dist_few > 0].log()).sum()
         entropy_many = -(
             dist_many[dist_many > 0] * dist_many[dist_many > 0].log()
         ).sum()
@@ -104,9 +99,7 @@ class TestMCTS:
 
     def test_search_accepts_logit_policy(self) -> None:
         class _LogitPV:
-            def predict(
-                self, state: torch.Tensor
-            ) -> tuple[torch.Tensor, torch.Tensor]:
+            def predict(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
                 logits = torch.full((64, 64), -5.0)
                 logits[12, 28] = 5.0
                 logits[12, 20] = 1.0
@@ -126,3 +119,36 @@ class TestMCTS:
         dist = mcts.search(state, legal_mask)
         assert dist.sum().item() == pytest.approx(1.0, abs=1e-5)
         assert dist[12, 28].item() > dist[12, 20].item()
+
+    def test_board_aware_legality_applies_beyond_root(self) -> None:
+        class _UniformPV:
+            def predict(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                return torch.zeros(64, 64), torch.tensor([0.4, 0.2, 0.4])
+
+        wm = _MockWorldModel(SMALL_D_S)
+        board = chess.Board()
+
+        def legal_mask_fn(b: chess.Board) -> torch.Tensor:
+            mask = torch.zeros(64, 64, dtype=torch.bool)
+            for move in b.legal_moves:
+                mask[move.from_square, move.to_square] = True
+            return mask
+
+        def transition_fn(b: chess.Board, f: int, t: int) -> chess.Board:
+            move = chess.Move(f, t)
+            assert move in b.legal_moves
+            next_board = b.copy()
+            next_board.push(move)
+            return next_board
+
+        mcts = MCTS(
+            policy_value_fn=_UniformPV().predict,
+            world_model_fn=wm.predict_next,
+            config=MCTSConfig(num_simulations=80, c_puct=1.4),
+            legal_mask_fn=legal_mask_fn,
+            transition_fn=transition_fn,
+        )
+        state = torch.randn(64, SMALL_D_S)
+        root_legal = legal_mask_fn(board)
+        dist = mcts.search(state, root_legal, root_board=board)
+        assert dist.sum().item() == pytest.approx(1.0, abs=1e-5)

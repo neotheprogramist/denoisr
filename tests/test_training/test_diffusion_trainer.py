@@ -60,9 +60,7 @@ class TestDiffusionTrainer:
         self, trainer: DiffusionTrainer, device: torch.device
     ) -> None:
         """DiffusionTrainer.train_step should return loss and breakdown with grad_norm."""
-        loss, breakdown = trainer.train_step(
-            torch.randn(2, 5, 12, 8, 8, device=device)
-        )
+        loss, breakdown = trainer.train_step(torch.randn(2, 5, 12, 8, 8, device=device))
         assert isinstance(loss, float)
         assert "grad_norm" in breakdown
         assert breakdown["grad_norm"] >= 0
@@ -77,9 +75,7 @@ class TestDiffusionTrainer:
         assert loss > 0
         assert loss == loss  # NaN check
 
-    def test_curriculum_increases_over_epochs(
-        self, trainer: DiffusionTrainer
-    ) -> None:
+    def test_curriculum_increases_over_epochs(self, trainer: DiffusionTrainer) -> None:
         initial = trainer._current_max_steps
         for _ in range(100):
             trainer.advance_curriculum()

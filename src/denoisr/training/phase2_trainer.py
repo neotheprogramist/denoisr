@@ -43,13 +43,11 @@ class TrajectoryBatch:
                 )
             if actual[1] != Tm1:
                 raise ValueError(
-                    f"{name} time dim {actual[1]} != expected {Tm1} "
-                    f"(boards T={T})"
+                    f"{name} time dim {actual[1]} != expected {Tm1} (boards T={T})"
                 )
         if self.values.shape[0] != B:
             raise ValueError(
-                f"values batch dim {self.values.shape[0]} != boards batch "
-                f"dim {B}"
+                f"values batch dim {self.values.shape[0]} != boards batch dim {B}"
             )
         if self.legal_masks is not None:
             lm = self.legal_masks
@@ -85,6 +83,7 @@ class Phase2Trainer:
         weight_decay: float = 1e-4,
         curriculum_initial_fraction: float = 0.25,
         curriculum_growth: float = 1.02,
+        freeze_encoder: bool = True,
     ) -> None:
         self.encoder = encoder
         self.backbone = backbone
@@ -103,9 +102,11 @@ class Phase2Trainer:
         )
         self._autocast_enabled = self.device.type == "cuda"
 
-        # Freeze encoder
-        for p in encoder.parameters():
-            p.requires_grad_(False)
+        # Freeze encoder for standard Phase 2 training. Phase 3 auxiliary
+        # updates can disable this to avoid interfering with other optimizers.
+        if freeze_encoder:
+            for p in encoder.parameters():
+                p.requires_grad_(False)
 
         # Single optimizer with differential learning rates
         param_groups = [
@@ -182,9 +183,7 @@ class Phase2Trainer:
             # 5. Diffusion: v-prediction on random future
             cond = latent[:, 0]
             target_idx = torch.randint(1, T, (B,), device=self.device)
-            diff_target = torch.stack(
-                [latent[b, target_idx[b]] for b in range(B)]
-            )
+            diff_target = torch.stack([latent[b, target_idx[b]] for b in range(B)])
             t = torch.randint(0, self._current_max_steps, (B,), device=self.device)
             noise = torch.randn_like(diff_target)
             noisy_target = self.schedule.q_sample(diff_target, t, noise)
@@ -285,8 +284,8 @@ def evaluate_phase2_gate(
         pred_from = pred_flat // 64
         pred_to = pred_flat % 64
         single_correct = (
-            (pred_from == target_from) & (pred_to == target_to)
-        ).float().mean().item()
+            ((pred_from == target_from) & (pred_to == target_to)).float().mean().item()
+        )
 
         # Diffusion-conditioned accuracy (DPM-Solver++)
         solver = DPMSolverPP(schedule, num_steps=num_diff_steps)
@@ -301,16 +300,16 @@ def evaluate_phase2_gate(
             )
             has_legal = flat_legal.any(dim=-1, keepdim=True)
             flat_diff = flat_diff.masked_fill(~flat_legal, float("-inf"))
-            flat_diff = flat_diff.masked_fill(
-                ~has_legal.expand_as(flat_diff), 0.0
-            )
+            flat_diff = flat_diff.masked_fill(~has_legal.expand_as(flat_diff), 0.0)
         pred_flat_diff = flat_diff.argmax(dim=-1)
         pred_from_diff = pred_flat_diff // 64
         pred_to_diff = pred_flat_diff % 64
         diff_correct = (
-            (pred_from_diff == target_from)
-            & (pred_to_diff == target_to)
-        ).float().mean().item()
+            ((pred_from_diff == target_from) & (pred_to_diff == target_to))
+            .float()
+            .mean()
+            .item()
+        )
 
     delta = (diff_correct - single_correct) * 100.0
     return single_correct, diff_correct, delta

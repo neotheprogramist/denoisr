@@ -30,9 +30,7 @@ class DenoisrApp:
         self._board = chess.Board()
         self._engine: UCIEngine | None = None
         self._engine_thread: threading.Thread | None = None
-        self._move_queue: queue.Queue[Any] = (
-            queue.Queue()
-        )
+        self._move_queue: queue.Queue[Any] = queue.Queue()
         self._moves: list[str] = []
         self._human_color = chess.WHITE
         self._match_running = False
@@ -68,12 +66,18 @@ class DenoisrApp:
         # Mode selector
         self._mode_var = tk.StringVar(value="play")
         self._play_radio = ttk.Radiobutton(
-            ctrl, text="Play", variable=self._mode_var, value="play",
+            ctrl,
+            text="Play",
+            variable=self._mode_var,
+            value="play",
             command=self._on_mode_change,
         )
         self._play_radio.grid(row=0, column=0, sticky="w")
         self._match_radio = ttk.Radiobutton(
-            ctrl, text="Match", variable=self._mode_var, value="match",
+            ctrl,
+            text="Match",
+            variable=self._mode_var,
+            value="match",
             command=self._on_mode_change,
         )
         self._match_radio.grid(row=0, column=1, sticky="w")
@@ -87,7 +91,9 @@ class DenoisrApp:
         ckpt_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
         self._ckpt_entry = ttk.Entry(ckpt_frame, textvariable=self._ckpt_var, width=20)
         self._ckpt_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self._browse_btn = ttk.Button(ckpt_frame, text="Browse", command=self._browse_ckpt)
+        self._browse_btn = ttk.Button(
+            ckpt_frame, text="Browse", command=self._browse_ckpt
+        )
         self._browse_btn.pack(side=tk.LEFT, padx=(4, 0))
 
         # Engine mode
@@ -105,9 +111,7 @@ class DenoisrApp:
         self._engine_mode_combo.grid(row=3, column=1, sticky="w", pady=(8, 0))
 
         # Human color
-        ttk.Label(ctrl, text="Play as:").grid(
-            row=4, column=0, sticky="w", pady=(8, 0)
-        )
+        ttk.Label(ctrl, text="Play as:").grid(row=4, column=0, sticky="w", pady=(8, 0))
         self._color_var = tk.StringVar(value="white")
         self._color_combo = ttk.Combobox(
             ctrl,
@@ -125,30 +129,30 @@ class DenoisrApp:
             btn_frame, text="New Game", command=self._new_game
         )
         self._new_game_btn.pack(side=tk.LEFT, padx=2)
-        ttk.Button(
-            btn_frame, text="Stop", command=self._stop_game
-        ).pack(side=tk.LEFT, padx=2)
-        ttk.Button(
-            btn_frame, text="Flip", command=self._board_widget.flip
-        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="Stop", command=self._stop_game).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(btn_frame, text="Flip", command=self._board_widget.flip).pack(
+            side=tk.LEFT, padx=2
+        )
 
         # Bottom: status
         status_frame = ttk.LabelFrame(main, text="Game", padding=8)
-        status_frame.grid(
-            row=1, column=1, sticky="nsew", pady=(8, 0)
-        )
+        status_frame.grid(row=1, column=1, sticky="nsew", pady=(8, 0))
 
         bg = ttk.Style().lookup("TLabelframe", "background") or "SystemButtonFace"
         self._status_text = tk.Text(
-            status_frame, height=3, wrap=tk.WORD, state=tk.DISABLED,
-            relief=tk.FLAT, bg=bg,
+            status_frame,
+            height=3,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            relief=tk.FLAT,
+            bg=bg,
         )
         self._status_text.pack(anchor="w", fill=tk.X)
         self._set_status("Set checkpoint, then New Game")
 
-        ttk.Label(status_frame, text="Moves:").pack(
-            anchor="w", pady=(8, 0)
-        )
+        ttk.Label(status_frame, text="Moves:").pack(anchor="w", pady=(8, 0))
         self._moves_text = tk.Text(
             status_frame, width=28, height=12, wrap=tk.WORD, state=tk.DISABLED
         )
@@ -158,9 +162,7 @@ class DenoisrApp:
         self._match_frame = ttk.LabelFrame(main, text="Match Settings", padding=8)
 
         # Opponent command
-        ttk.Label(self._match_frame, text="Opponent:").grid(
-            row=0, column=0, sticky="w"
-        )
+        ttk.Label(self._match_frame, text="Opponent:").grid(row=0, column=0, sticky="w")
         self._opp_var = tk.StringVar(value="stockfish")
         ttk.Entry(self._match_frame, textvariable=self._opp_var, width=20).grid(
             row=0, column=1, sticky="ew"
@@ -172,8 +174,11 @@ class DenoisrApp:
         )
         self._games_var = tk.IntVar(value=100)
         ttk.Spinbox(
-            self._match_frame, from_=2, to=10000,
-            textvariable=self._games_var, width=8,
+            self._match_frame,
+            from_=2,
+            to=10000,
+            textvariable=self._games_var,
+            width=8,
         ).grid(row=1, column=1, sticky="w", pady=(4, 0))
 
         # Time control
@@ -182,8 +187,11 @@ class DenoisrApp:
         )
         self._tc_base_var = tk.DoubleVar(value=10.0)
         ttk.Spinbox(
-            self._match_frame, from_=1, to=3600,
-            textvariable=self._tc_base_var, width=8,
+            self._match_frame,
+            from_=1,
+            to=3600,
+            textvariable=self._tc_base_var,
+            width=8,
         ).grid(row=2, column=1, sticky="w", pady=(4, 0))
 
         ttk.Label(self._match_frame, text="Increment:").grid(
@@ -191,8 +199,12 @@ class DenoisrApp:
         )
         self._tc_inc_var = tk.DoubleVar(value=0.1)
         ttk.Spinbox(
-            self._match_frame, from_=0, to=60, increment=0.1,
-            textvariable=self._tc_inc_var, width=8,
+            self._match_frame,
+            from_=0,
+            to=60,
+            increment=0.1,
+            textvariable=self._tc_inc_var,
+            width=8,
         ).grid(row=3, column=1, sticky="w", pady=(4, 0))
 
         # Move delay for visualization
@@ -201,14 +213,19 @@ class DenoisrApp:
         )
         self._delay_var = tk.IntVar(value=200)
         ttk.Scale(
-            self._match_frame, from_=0, to=2000,
-            variable=self._delay_var, orient=tk.HORIZONTAL,
+            self._match_frame,
+            from_=0,
+            to=2000,
+            variable=self._delay_var,
+            orient=tk.HORIZONTAL,
         ).grid(row=4, column=1, sticky="ew", pady=(4, 0))
 
         # SPRT
         self._sprt_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            self._match_frame, text="SPRT", variable=self._sprt_var,
+            self._match_frame,
+            text="SPRT",
+            variable=self._sprt_var,
         ).grid(row=5, column=0, sticky="w", pady=(4, 0))
         sprt_frame = ttk.Frame(self._match_frame)
         sprt_frame.grid(row=5, column=1, sticky="w", pady=(4, 0))
@@ -224,11 +241,20 @@ class DenoisrApp:
 
         # Match stats display
         self._match_stats_text = tk.Text(
-            self._match_frame, height=5, wrap=tk.WORD, state=tk.DISABLED,
-            width=28, relief=tk.FLAT, bg=bg,
+            self._match_frame,
+            height=5,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            width=28,
+            relief=tk.FLAT,
+            bg=bg,
         )
         self._match_stats_text.grid(
-            row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0),
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
         )
 
     def _set_status(self, text: str) -> None:
@@ -257,14 +283,17 @@ class DenoisrApp:
         btn_frame = ttk.Frame(dialog)
         btn_frame.pack(fill=tk.X, padx=4, pady=(0, 4))
         ttk.Button(
-            btn_frame, text="Copy to Clipboard",
+            btn_frame,
+            text="Copy to Clipboard",
             command=lambda: (
                 dialog.clipboard_clear(),
                 dialog.clipboard_append(message),
             ),
         ).pack(side=tk.LEFT)
         ttk.Button(
-            btn_frame, text="Close", command=dialog.destroy,
+            btn_frame,
+            text="Close",
+            command=dialog.destroy,
         ).pack(side=tk.RIGHT)
 
     def _set_match_stats(self, text: str) -> None:
@@ -379,9 +408,7 @@ class DenoisrApp:
             assert self._engine is not None
             try:
                 self._engine.set_position(fen=None, moves=list(self._moves))
-                uci = self._engine.go(
-                    time_control=tc, wtime_ms=60000, btime_ms=60000
-                )
+                uci = self._engine.go(time_control=tc, wtime_ms=60000, btime_ms=60000)
                 self._move_queue.put(chess.Move.from_uci(uci))
             except Exception as e:
                 self._move_queue.put(f"error:{e}")
@@ -493,8 +520,10 @@ class DenoisrApp:
             increment=self._tc_inc_var.get(),
         )
         config = MatchConfig(
-            engine1=e1, engine2=e2,
-            games=self._games_var.get(), time_control=tc,
+            engine1=e1,
+            engine2=e2,
+            games=self._games_var.get(),
+            time_control=tc,
         )
 
         self._match_running = True
@@ -530,18 +559,18 @@ class DenoisrApp:
 
             elo, error = compute_elo(wins, draws, losses)
             los = likelihood_of_superiority(wins, draws, losses)
-            stats = (
-                f"Game {game_num + 1}/{config.games}\n"
-                f"W={wins} D={draws} L={losses}"
-            )
+            stats = f"Game {game_num + 1}/{config.games}\nW={wins} D={draws} L={losses}"
             if elo != float("inf") and elo != float("-inf"):
                 stats += f"\nElo: {elo:+.1f} \u00b1 {error:.1f}"
             stats += f"\nLOS: {los:.1f}%"
 
             if self._sprt_var.get():
                 sprt = sprt_test(
-                    wins, draws, losses,
-                    self._sprt_elo0_var.get(), self._sprt_elo1_var.get(),
+                    wins,
+                    draws,
+                    losses,
+                    self._sprt_elo0_var.get(),
+                    self._sprt_elo1_var.get(),
                 )
                 if sprt is not None:
                     stats += f"\nSPRT: {sprt} accepted"

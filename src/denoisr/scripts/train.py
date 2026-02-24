@@ -32,10 +32,7 @@ def main() -> None:
         "--only",
         type=str,
         default=None,
-        help=(
-            "Comma-separated list of steps to run "
-            "(fetch,init,phase1,phase2,phase3)"
-        ),
+        help=("Comma-separated list of steps to run (fetch,init,phase1,phase2,phase3)"),
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")

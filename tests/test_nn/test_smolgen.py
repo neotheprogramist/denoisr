@@ -9,9 +9,7 @@ from conftest import SMALL_D_S, SMALL_NUM_HEADS
 class TestSmolgenBias:
     @pytest.fixture
     def smolgen(self, device: torch.device) -> SmolgenBias:
-        return SmolgenBias(
-            d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS
-        ).to(device)
+        return SmolgenBias(d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS).to(device)
 
     def test_output_shape(
         self, smolgen: SmolgenBias, small_latent: torch.Tensor
@@ -35,8 +33,6 @@ class TestSmolgenBias:
         for p in smolgen.parameters():
             assert p.grad is not None
 
-    def test_no_nan(
-        self, smolgen: SmolgenBias, small_latent: torch.Tensor
-    ) -> None:
+    def test_no_nan(self, smolgen: SmolgenBias, small_latent: torch.Tensor) -> None:
         out = smolgen(small_latent)
         assert not torch.isnan(out).any()

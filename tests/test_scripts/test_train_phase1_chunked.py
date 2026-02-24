@@ -109,7 +109,9 @@ def test_build_tensor_data_plan_grok_tracking_splits(tmp_path: Path) -> None:
             "policies": torch.zeros(n, 64, 64, dtype=torch.float32),
             "values": torch.zeros(n, 3, dtype=torch.float32),
             "game_ids": torch.tensor([0, 0, 1, 1, 2, 2, 3, 3], dtype=torch.int64),
-            "piece_counts": torch.tensor([5, 32, 32, 32, 32, 32, 32, 32], dtype=torch.int32),
+            "piece_counts": torch.tensor(
+                [5, 32, 32, 32, 32, 32, 32, 32], dtype=torch.int32
+            ),
             "eco_codes": ["A00", "A10", "B00", "B10", "C00", "C10", "D00", "D10"],
         },
         path,

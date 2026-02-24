@@ -15,16 +15,22 @@ from conftest import SMALL_D_S, SMALL_NUM_HEADS, SMALL_NUM_LAYERS, SMALL_FFN_DIM
 def _make_trainer(device: torch.device) -> SupervisedTrainer:
     encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
     backbone = ChessPolicyBackbone(
-        d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
-        num_layers=SMALL_NUM_LAYERS, ffn_dim=SMALL_FFN_DIM,
+        d_s=SMALL_D_S,
+        num_heads=SMALL_NUM_HEADS,
+        num_layers=SMALL_NUM_LAYERS,
+        ffn_dim=SMALL_FFN_DIM,
     ).to(device)
     policy_head = ChessPolicyHead(d_s=SMALL_D_S).to(device)
     value_head = ChessValueHead(d_s=SMALL_D_S).to(device)
     loss_fn = ChessLossComputer()
     return SupervisedTrainer(
-        encoder=encoder, backbone=backbone,
-        policy_head=policy_head, value_head=value_head,
-        loss_fn=loss_fn, lr=1e-3, device=device,
+        encoder=encoder,
+        backbone=backbone,
+        policy_head=policy_head,
+        value_head=value_head,
+        loss_fn=loss_fn,
+        lr=1e-3,
+        device=device,
     )
 
 

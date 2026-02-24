@@ -30,10 +30,7 @@ def graceful_main(
                 return func(*args, **kwargs)
             except KeyboardInterrupt:
                 prefix = f"{script_name}: " if script_name else ""
-                message = (
-                    f"{prefix}Interrupted by user (Ctrl+C). "
-                    "Exiting gracefully."
-                )
+                message = f"{prefix}Interrupted by user (Ctrl+C). Exiting gracefully."
                 active_logger = logger or logging.getLogger(func.__module__)
                 if active_logger.handlers or logging.getLogger().handlers:
                     active_logger.warning(message)
@@ -44,4 +41,3 @@ def graceful_main(
         return _wrapped
 
     return _decorate
-

@@ -64,9 +64,7 @@ def play_game(
 
         # Deduct time
         if board.turn == chess.WHITE:
-            wtime_ms = wtime_ms - elapsed_ms + int(
-                time_control.increment * 1000
-            )
+            wtime_ms = wtime_ms - elapsed_ms + int(time_control.increment * 1000)
             if wtime_ms <= 0:
                 result_str = "0-1"
                 return GameResult(
@@ -76,9 +74,7 @@ def play_game(
                     engine1_color=engine1_color,
                 )
         else:
-            btime_ms = btime_ms - elapsed_ms + int(
-                time_control.increment * 1000
-            )
+            btime_ms = btime_ms - elapsed_ms + int(time_control.increment * 1000)
             if btime_ms <= 0:
                 result_str = "1-0"
                 return GameResult(
@@ -147,9 +143,7 @@ def run_match(
             black_config = config.engine1
             e1_color = "black"
 
-        with UCIEngine(white_config) as white, UCIEngine(
-            black_config
-        ) as black:
+        with UCIEngine(white_config) as white, UCIEngine(black_config) as black:
             white.start()
             black.start()
 
@@ -183,9 +177,7 @@ def run_match(
     return results
 
 
-def _game_outcome(
-    board: chess.Board, max_moves_reached: bool
-) -> tuple[str, str]:
+def _game_outcome(board: chess.Board, max_moves_reached: bool) -> tuple[str, str]:
     """Determine game result string and reason from board state."""
     if board.is_checkmate():
         # The side to move is in checkmate — they lost

@@ -38,10 +38,7 @@ class PhaseOrchestrator:
                 self._phase = 2
                 return True
         elif self._phase == 2:
-            if (
-                metrics.get("diffusion_improvement_pp", 0)
-                > self._config.phase2_gate
-            ):
+            if metrics.get("diffusion_improvement_pp", 0) > self._config.phase2_gate:
                 self._phase = 3
                 return True
         return False
@@ -49,9 +46,7 @@ class PhaseOrchestrator:
     def get_alpha(self, generation: int) -> float:
         if self._phase < 3:
             return 0.0
-        return min(
-            1.0, generation / max(1, self._config.alpha_generations)
-        )
+        return min(1.0, generation / max(1, self._config.alpha_generations))
 
     def mix_policies(
         self, mcts_policy: Tensor, diffusion_policy: Tensor, alpha: float

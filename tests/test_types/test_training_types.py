@@ -46,8 +46,12 @@ class TestTrainingExampleMetadata:
         policy = PolicyTarget(torch.zeros(64, 64))
         value = ValueTarget(win=1.0, draw=0.0, loss=0.0)
         ex = TrainingExample(
-            board=board, policy=policy, value=value,
-            game_id=42, eco_code="B90", piece_count=24,
+            board=board,
+            policy=policy,
+            value=value,
+            game_id=42,
+            eco_code="B90",
+            piece_count=24,
         )
         assert ex.game_id == 42
         assert ex.eco_code == "B90"

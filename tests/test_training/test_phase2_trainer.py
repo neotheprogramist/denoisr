@@ -20,7 +20,11 @@ from denoisr.nn.value_head import ChessValueHead
 from denoisr.nn.world_model import ChessWorldModel
 from denoisr.scripts.train_phase2 import extract_trajectories
 from denoisr.training.loss import ChessLossComputer
-from denoisr.training.phase2_trainer import Phase2Trainer, TrajectoryBatch, evaluate_phase2_gate
+from denoisr.training.phase2_trainer import (
+    Phase2Trainer,
+    TrajectoryBatch,
+    evaluate_phase2_gate,
+)
 
 
 class TestTrajectoryBatch:
@@ -222,7 +226,10 @@ class TestExtractTrajectories:
     def test_returns_trajectory_batch(self, pgn_file: Path) -> None:
         encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
-            pgn_file, encoder, seq_len=3, max_trajectories=100,
+            pgn_file,
+            encoder,
+            seq_len=3,
+            max_trajectories=100,
         )
         assert isinstance(batch, TrajectoryBatch)
         assert batch.boards.shape[1] == 3
@@ -234,32 +241,38 @@ class TestExtractTrajectories:
         assert batch.values.shape[1] == 3
 
     def test_policy_targets_are_one_hot(
-        self, pgn_file: Path,
+        self,
+        pgn_file: Path,
     ) -> None:
         encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
-            pgn_file, encoder, seq_len=3, max_trajectories=100,
+            pgn_file,
+            encoder,
+            seq_len=3,
+            max_trajectories=100,
         )
         for i in range(batch.policies.shape[0]):
             for t in range(batch.policies.shape[1]):
-                assert batch.policies[i, t].sum().item() == (
-                    pytest.approx(1.0)
-                )
+                assert batch.policies[i, t].sum().item() == (pytest.approx(1.0))
 
     def test_values_are_valid_wdl(self, pgn_file: Path) -> None:
         encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
-            pgn_file, encoder, seq_len=3, max_trajectories=100,
+            pgn_file,
+            encoder,
+            seq_len=3,
+            max_trajectories=100,
         )
         for i in range(batch.values.shape[0]):
-            assert batch.values[i].sum().item() == (
-                pytest.approx(1.0)
-            )
+            assert batch.values[i].sum().item() == (pytest.approx(1.0))
 
     def test_rewards_match_result(self, pgn_file: Path) -> None:
         encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
-            pgn_file, encoder, seq_len=3, max_trajectories=100,
+            pgn_file,
+            encoder,
+            seq_len=3,
+            max_trajectories=100,
         )
         # Game result is 1-0, so all rewards are +1 or -1
         for r in batch.rewards.flatten():
@@ -268,15 +281,13 @@ class TestExtractTrajectories:
     def test_extract_includes_exact_fit_window(self, tmp_path: Path) -> None:
         """If len(boards)==seq_len, extractor should still return one trajectory."""
         pgn = tmp_path / "exact_fit.pgn"
-        pgn.write_text(
-            '[Event "ExactFit"]\n'
-            '[Result "1-0"]\n'
-            "\n"
-            "1. e2e4 e7e5 *\n\n"
-        )
+        pgn.write_text('[Event "ExactFit"]\n[Result "1-0"]\n\n1. e2e4 e7e5 *\n\n')
         encoder = ExtendedBoardEncoder()
         batch = extract_trajectories(
-            pgn, encoder, seq_len=3, max_trajectories=10,
+            pgn,
+            encoder,
+            seq_len=3,
+            max_trajectories=10,
         )
         assert batch.boards.shape[0] == 1
 
@@ -284,15 +295,19 @@ class TestExtractTrajectories:
 class TestPhase2Gate:
     def test_returns_three_floats(self, device: torch.device) -> None:
         encoder = ChessEncoder(
-            num_planes=122, d_s=SMALL_D_S,
+            num_planes=122,
+            d_s=SMALL_D_S,
         ).to(device)
         backbone = ChessPolicyBackbone(
-            d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
-            num_layers=SMALL_NUM_LAYERS, ffn_dim=SMALL_FFN_DIM,
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            ffn_dim=SMALL_FFN_DIM,
         ).to(device)
         policy_head = ChessPolicyHead(d_s=SMALL_D_S).to(device)
         diffusion = ChessDiffusionModule(
-            d_s=SMALL_D_S, num_heads=SMALL_NUM_HEADS,
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
             num_layers=SMALL_NUM_LAYERS,
             num_timesteps=SMALL_NUM_TIMESTEPS,
         ).to(device)

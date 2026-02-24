@@ -20,7 +20,6 @@ class DataConfig:
     chunk_examples: int = 0
 
 
-
 @dataclass(frozen=True)
 class ModelSectionConfig:
     d_s: int = 256

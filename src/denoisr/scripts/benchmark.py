@@ -69,9 +69,7 @@ def _log_result(label: str, result: BenchmarkResult) -> None:
         logger.info("SPRT:  %s", result.sprt_result)
 
 
-def _make_on_game(
-    label: str, total_games: int
-) -> callable:
+def _make_on_game(label: str, total_games: int) -> callable:
     def on_game(played: int, wins: int, draws: int, losses: int) -> None:
         from denoisr.engine.elo import compute_elo
 
@@ -79,7 +77,13 @@ def _make_on_game(
         elo_str = f"{elo:+.1f} +/- {err:.1f}" if not math.isinf(elo) else "N/A"
         logger.info(
             "[%s] Game %d/%d: +%d =%d -%d | Elo: %s",
-            label, played, total_games, wins, draws, losses, elo_str,
+            label,
+            played,
+            total_games,
+            wins,
+            draws,
+            losses,
+            elo_str,
         )
 
     return on_game
@@ -92,7 +96,9 @@ def _save_pgn(result: BenchmarkResult, pgn_dir: Path, label: str) -> None:
         write_pgn(game, sub)
     combined = pgn_dir / f"{label}_all.pgn"
     write_combined_pgn(result.completed_games, combined)
-    logger.info("PGN saved: %s/ (%d games) + %s", sub, len(result.completed_games), combined)
+    logger.info(
+        "PGN saved: %s/ (%d games) + %s", sub, len(result.completed_games), combined
+    )
 
 
 def _run_and_log_analysis(
@@ -103,7 +109,12 @@ def _run_and_log_analysis(
     concurrency: int,
 ) -> AnalysisResult:
     """Run ACPL analysis on a benchmark result and log summary."""
-    logger.info("Analyzing %s (%d games, depth %d)...", label, len(result.completed_games), depth)
+    logger.info(
+        "Analyzing %s (%d games, depth %d)...",
+        label,
+        len(result.completed_games),
+        depth,
+    )
     analysis = run_analysis(
         result.completed_games,
         stockfish_cmd=stockfish_cmd,
@@ -132,8 +143,7 @@ def _log_comparison(
         f"{_format_score(baseline):>16s}",
         f"  {'Elo vs opponent':18s} {_format_elo(result):>16s}   "
         f"{_format_elo(baseline):>16s}",
-        f"  {'LOS':18s} {result.los:>15.1f}%   "
-        f"{baseline.los:>15.1f}%",
+        f"  {'LOS':18s} {result.los:>15.1f}%   {baseline.los:>15.1f}%",
     ]
 
     engine_score = result.wins + result.draws * 0.5
@@ -143,24 +153,24 @@ def _log_comparison(
     lines.append(f"  {'Score %':18s} {engine_pct:>15.1f}%   {baseline_pct:>15.1f}%")
 
     if engine_analysis is not None and baseline_analysis is not None:
-        lines.extend([
-            f"  {'ACPL':18s} {engine_analysis.overall_acpl:>15.1f}   "
-            f"{baseline_analysis.overall_acpl:>15.1f}",
-            f"  {'Est. Elo':18s} {engine_analysis.estimated_elo:>15.0f}   "
-            f"{baseline_analysis.estimated_elo:>15.0f}",
-            f"  {'Blunders':18s} {engine_analysis.total_blunders:>15d}   "
-            f"{baseline_analysis.total_blunders:>15d}",
-        ])
+        lines.extend(
+            [
+                f"  {'ACPL':18s} {engine_analysis.overall_acpl:>15.1f}   "
+                f"{baseline_analysis.overall_acpl:>15.1f}",
+                f"  {'Est. Elo':18s} {engine_analysis.estimated_elo:>15.0f}   "
+                f"{baseline_analysis.estimated_elo:>15.0f}",
+                f"  {'Blunders':18s} {engine_analysis.total_blunders:>15d}   "
+                f"{baseline_analysis.total_blunders:>15d}",
+            ]
+        )
 
     if engine_pct > baseline_pct:
         lines.append(
-            f"\n  Engine scores {engine_pct - baseline_pct:.1f}pp better "
-            "than baseline."
+            f"\n  Engine scores {engine_pct - baseline_pct:.1f}pp better than baseline."
         )
     elif baseline_pct > engine_pct:
         lines.append(
-            f"\n  Baseline scores {baseline_pct - engine_pct:.1f}pp better "
-            "than engine."
+            f"\n  Baseline scores {baseline_pct - engine_pct:.1f}pp better than engine."
         )
     else:
         lines.append("\n  Engine and baseline score identically.")
@@ -356,22 +366,34 @@ def main() -> None:
     baseline_msg = " + baseline" if args.baseline_cmd and not args.head_to_head else ""
     logger.info(
         "Benchmark: %d games, %d workers, TC %s%s%s%s%s%s",
-        config.games, config.concurrency, args.time_control,
-        elo_msg, skill_msg, sprt_msg, mode_msg, baseline_msg,
+        config.games,
+        config.concurrency,
+        args.time_control,
+        elo_msg,
+        skill_msg,
+        sprt_msg,
+        mode_msg,
+        baseline_msg,
     )
 
     # --- Resolve analysis settings ---
     pgn_dir = Path(args.pgn_out) if args.pgn_out else None
     analysis_concurrency = args.analysis_concurrency or args.concurrency
-    stockfish_for_analysis = args.opponent_cmd or shutil.which("stockfish") or "stockfish"
+    stockfish_for_analysis = (
+        args.opponent_cmd or shutil.which("stockfish") or "stockfish"
+    )
 
     sep = "=" * 60
     if args.head_to_head:
         # --- Head-to-head: engine vs baseline directly ---
-        logger.info("\n%s\n  Engine:   %s\n  Baseline: %s\n%s", sep, args.engine_cmd, args.baseline_cmd, sep)
-        result = run_benchmark(
-            config, on_game=_make_on_game("h2h", config.games)
+        logger.info(
+            "\n%s\n  Engine:   %s\n  Baseline: %s\n%s",
+            sep,
+            args.engine_cmd,
+            args.baseline_cmd,
+            sep,
         )
+        result = run_benchmark(config, on_game=_make_on_game("h2h", config.games))
         _log_result("Engine vs Baseline", result)
 
         if pgn_dir is not None:
@@ -379,24 +401,23 @@ def main() -> None:
 
         if args.analyze:
             _run_and_log_analysis(
-                result, "Engine (h2h)", stockfish_for_analysis,
-                args.analysis_depth, analysis_concurrency,
+                result,
+                "Engine (h2h)",
+                stockfish_for_analysis,
+                args.analysis_depth,
+                analysis_concurrency,
             )
     else:
         # --- Run primary benchmark ---
         logger.info("\n%s\n  Engine: %s\n%s", sep, args.engine_cmd, sep)
-        result = run_benchmark(
-            config, on_game=_make_on_game("engine", config.games)
-        )
+        result = run_benchmark(config, on_game=_make_on_game("engine", config.games))
 
         # --- Run baseline benchmark ---
         baseline_result: BenchmarkResult | None = None
         if args.baseline_cmd:
             baseline_cmd_exe, baseline_args = _split_cmd(args.baseline_cmd)
             if args.baseline_args:
-                baseline_args = baseline_args + tuple(
-                    shlex.split(args.baseline_args)
-                )
+                baseline_args = baseline_args + tuple(shlex.split(args.baseline_args))
 
             baseline_config = BenchmarkConfig(
                 engine_cmd=baseline_cmd_exe,
@@ -421,13 +442,19 @@ def main() -> None:
         baseline_analysis: AnalysisResult | None = None
         if args.analyze:
             engine_analysis = _run_and_log_analysis(
-                result, "Engine", stockfish_for_analysis,
-                args.analysis_depth, analysis_concurrency,
+                result,
+                "Engine",
+                stockfish_for_analysis,
+                args.analysis_depth,
+                analysis_concurrency,
             )
             if baseline_result is not None:
                 baseline_analysis = _run_and_log_analysis(
-                    baseline_result, "Baseline", stockfish_for_analysis,
-                    args.analysis_depth, analysis_concurrency,
+                    baseline_result,
+                    "Baseline",
+                    stockfish_for_analysis,
+                    args.analysis_depth,
+                    analysis_concurrency,
                 )
 
         # --- Results ---
@@ -435,9 +462,7 @@ def main() -> None:
 
         if baseline_result is not None:
             _log_result("Baseline", baseline_result)
-            _log_comparison(
-                result, baseline_result, engine_analysis, baseline_analysis
-            )
+            _log_comparison(result, baseline_result, engine_analysis, baseline_analysis)
 
 
 if __name__ == "__main__":

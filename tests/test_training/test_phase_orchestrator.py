@@ -9,32 +9,20 @@ class TestPhaseOrchestrator:
     def orchestrator(self) -> PhaseOrchestrator:
         return PhaseOrchestrator(PhaseConfig())
 
-    def test_starts_at_phase_1(
-        self, orchestrator: PhaseOrchestrator
-    ) -> None:
+    def test_starts_at_phase_1(self, orchestrator: PhaseOrchestrator) -> None:
         assert orchestrator.current_phase == 1
 
-    def test_phase_1_to_2_gate(
-        self, orchestrator: PhaseOrchestrator
-    ) -> None:
-        assert not orchestrator.check_gate(
-            {"top1_accuracy": 0.25}
-        )
-        assert orchestrator.check_gate(
-            {"top1_accuracy": 0.35}
-        )
+    def test_phase_1_to_2_gate(self, orchestrator: PhaseOrchestrator) -> None:
+        assert not orchestrator.check_gate({"top1_accuracy": 0.25})
+        assert orchestrator.check_gate({"top1_accuracy": 0.35})
         assert orchestrator.current_phase == 2
 
     def test_phase_2_to_3_gate(self) -> None:
         o = PhaseOrchestrator(PhaseConfig())
         o.check_gate({"top1_accuracy": 0.35})
         assert o.current_phase == 2
-        assert not o.check_gate(
-            {"diffusion_improvement_pp": 3.0}
-        )
-        assert o.check_gate(
-            {"diffusion_improvement_pp": 6.0}
-        )
+        assert not o.check_gate({"diffusion_improvement_pp": 3.0})
+        assert o.check_gate({"diffusion_improvement_pp": 6.0})
         assert o.current_phase == 3
 
     def test_alpha_mixing(self) -> None:

@@ -1,6 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import torch
 from torch import Tensor
@@ -22,6 +22,7 @@ class _Node:
         "value_sum",
         "children",
         "state",
+        "board",
         "to_play",
         "reward_from_parent",
     )
@@ -30,6 +31,7 @@ class _Node:
         self,
         prior: float,
         state: Tensor | None = None,
+        board: Any | None = None,
         to_play: int = 1,
         reward_from_parent: float = 0.0,
     ) -> None:
@@ -38,6 +40,7 @@ class _Node:
         self.value_sum = 0.0
         self.children: dict[tuple[int, int], "_Node"] = {}
         self.state = state
+        self.board = board
         self.to_play = to_play
         self.reward_from_parent = reward_from_parent
 
@@ -49,16 +52,15 @@ class _Node:
 
     def ucb_score(self, parent_visits: int, c_puct: float) -> float:
         exploration = (
-            c_puct
-            * self.prior
-            * math.sqrt(parent_visits)
-            / (1 + self.visit_count)
+            c_puct * self.prior * math.sqrt(parent_visits) / (1 + self.visit_count)
         )
         return self.q_value + exploration
 
 
 PolicyValueFn = Callable[[Tensor], tuple[Tensor, Tensor]]
 WorldModelFn = Callable[[Tensor, int, int], tuple[Tensor, float]]
+LegalMaskFn = Callable[[Any], Tensor]
+TransitionFn = Callable[[Any, int, int], Any]
 
 
 class MCTS:
@@ -74,18 +76,29 @@ class MCTS:
         policy_value_fn: PolicyValueFn,
         world_model_fn: WorldModelFn,
         config: MCTSConfig,
+        legal_mask_fn: LegalMaskFn | None = None,
+        transition_fn: TransitionFn | None = None,
     ) -> None:
         self._pv = policy_value_fn
         self._wm = world_model_fn
         self._config = config
+        self._legal_mask_fn = legal_mask_fn
+        self._transition_fn = transition_fn
 
     def search(
         self,
         root_state: Tensor,
         legal_mask: Tensor,
         root_to_play: int = 1,
+        root_board: Any | None = None,
     ) -> Tensor:
-        root = _Node(prior=0.0, state=root_state, to_play=root_to_play)
+        legal_mask = legal_mask.to(dtype=torch.bool, device=root_state.device)
+        root = _Node(
+            prior=0.0,
+            state=root_state,
+            board=root_board,
+            to_play=root_to_play,
+        )
 
         policy_logits, _ = self._pv(root_state)
         # Treat policy head output as logits; normalize only over legal moves.
@@ -99,9 +112,7 @@ class MCTS:
         legal_indices = legal_mask.nonzero(as_tuple=False)
         if len(legal_indices) > 0 and self._config.dirichlet_epsilon > 0:
             noise = torch.distributions.Dirichlet(
-                torch.full(
-                    (len(legal_indices),), self._config.dirichlet_alpha
-                )
+                torch.full((len(legal_indices),), self._config.dirichlet_alpha)
             ).sample()
             eps = self._config.dirichlet_epsilon
             for idx, (f, t) in enumerate(legal_indices.tolist()):
@@ -117,7 +128,7 @@ class MCTS:
         for _ in range(self._config.num_simulations):
             self._simulate(root)
 
-        visit_dist = torch.zeros(64, 64)
+        visit_dist = torch.zeros(64, 64, device=legal_mask.device)
         for (f, t), child in root.children.items():
             visit_dist[f, t] = child.visit_count
 
@@ -155,22 +166,51 @@ class MCTS:
             state, reward = self._wm(parent.state, f, t)
             node.state = state
             node.reward_from_parent = reward
+            if (
+                node.board is None
+                and parent.board is not None
+                and self._transition_fn is not None
+            ):
+                node.board = self._transition_fn(parent.board, f, t)
 
         if node.state is not None:
             policy_logits, value = self._pv(node.state)
-            policy = torch.softmax(policy_logits.reshape(-1), dim=0).reshape(64, 64)
+            legal_indices: list[tuple[int, int]]
+            if node.board is not None and self._legal_mask_fn is not None:
+                legal_mask = self._legal_mask_fn(node.board).to(
+                    device=policy_logits.device, dtype=torch.bool
+                )
+                masked_logits = policy_logits.masked_fill(~legal_mask, float("-inf"))
+                if legal_mask.any():
+                    policy = torch.softmax(masked_logits.reshape(-1), dim=0).reshape(
+                        64, 64
+                    )
+                    legal_indices = [
+                        (int(f), int(t))
+                        for f, t in legal_mask.nonzero(as_tuple=False).tolist()
+                    ]
+                else:
+                    policy = torch.zeros_like(policy_logits)
+                    legal_indices = []
+            else:
+                policy = torch.softmax(policy_logits.reshape(-1), dim=0).reshape(64, 64)
+                legal_indices = [
+                    (fi, ti)
+                    for fi in range(64)
+                    for ti in range(64)
+                    if policy[fi, ti].item() > 1e-8
+                ]
             # Convert white-centric value into side-to-move perspective.
             leaf_value = node.to_play * (value[0] - value[2]).item()
 
             if not node.children:
-                for fi in range(64):
-                    for ti in range(64):
-                        p = policy[fi, ti].item()
-                        if p > 1e-8:
-                            node.children[(fi, ti)] = _Node(
-                                prior=p,
-                                to_play=-node.to_play,
-                            )
+                for fi, ti in legal_indices:
+                    p = policy[fi, ti].item()
+                    if p > 1e-8:
+                        node.children[(fi, ti)] = _Node(
+                            prior=p,
+                            to_play=-node.to_play,
+                        )
         else:
             leaf_value = 0.0
 

@@ -12,9 +12,7 @@ class TestSimplePGNStreamer:
     def streamer(self) -> SimplePGNStreamer:
         return SimplePGNStreamer()
 
-    def test_streams_correct_count(
-        self, streamer: SimplePGNStreamer
-    ) -> None:
+    def test_streams_correct_count(self, streamer: SimplePGNStreamer) -> None:
         games = list(streamer.stream(FIXTURES / "sample_games.pgn"))
         assert len(games) == 3
 
@@ -42,17 +40,13 @@ class TestSimplePGNStreamer:
                 assert 0 <= action.from_square < 64
                 assert 0 <= action.to_square < 64
 
-    def test_empty_file(
-        self, streamer: SimplePGNStreamer, tmp_path: Path
-    ) -> None:
+    def test_empty_file(self, streamer: SimplePGNStreamer, tmp_path: Path) -> None:
         empty = tmp_path / "empty.pgn"
         empty.write_text("")
         games = list(streamer.stream(empty))
         assert len(games) == 0
 
-    def test_elo_extraction(
-        self, streamer: SimplePGNStreamer, tmp_path: Path
-    ) -> None:
+    def test_elo_extraction(self, streamer: SimplePGNStreamer, tmp_path: Path) -> None:
         pgn = tmp_path / "elo.pgn"
         pgn.write_text(
             '[Event "Test"]\n'
@@ -73,12 +67,7 @@ class TestSimplePGNStreamer:
         self, streamer: SimplePGNStreamer, tmp_path: Path
     ) -> None:
         pgn = tmp_path / "no_elo.pgn"
-        pgn.write_text(
-            '[Event "Test"]\n'
-            '[Result "1-0"]\n'
-            "\n"
-            "1. e4 e5 1-0\n\n"
-        )
+        pgn.write_text('[Event "Test"]\n[Result "1-0"]\n\n1. e4 e5 1-0\n\n')
         games = list(streamer.stream(pgn))
         assert games[0].white_elo is None
         assert games[0].black_elo is None

@@ -73,8 +73,10 @@ def extract_trajectories(
     all_rewards: list[torch.Tensor] = []
 
     pbar = tqdm(
-        total=max_trajectories, desc="Extracting trajectories",
-        unit="traj", smoothing=0.3,
+        total=max_trajectories,
+        desc="Extracting trajectories",
+        unit="traj",
+        smoothing=0.3,
     )
 
     for record in streamer.stream(pgn_path):
@@ -110,7 +112,8 @@ def extract_trajectories(
             from_sqs.append(action.from_square)
             to_sqs.append(action.to_square)
             move = chess.Move(
-                action.from_square, action.to_square,
+                action.from_square,
+                action.to_square,
                 action.promotion,
             )
             board.push(move)
@@ -171,9 +174,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Phase 2: World model + diffusion bootstrapping"
     )
-    parser.add_argument(
-        "--checkpoint", required=True, help="Phase 1 checkpoint path"
-    )
+    parser.add_argument("--checkpoint", required=True, help="Phase 1 checkpoint path")
     parser.add_argument(
         "--pgn", required=True, help="PGN file for trajectory extraction"
     )
@@ -184,7 +185,9 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--output", type=str, default="outputs/phase2.pt")
     parser.add_argument(
-        "--run-name", type=str, default=None,
+        "--run-name",
+        type=str,
+        default=None,
         help="TensorBoard run name (default: timestamp)",
     )
     add_model_args(parser)
@@ -202,7 +205,9 @@ def main() -> None:
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
     cfg = resolve_gradient_checkpointing(cfg, args, device)
     log.info(
-        "checkpoint loaded  d_s=%d  layers=%d", cfg.d_s, cfg.num_layers,
+        "checkpoint loaded  d_s=%d  layers=%d",
+        cfg.d_s,
+        cfg.num_layers,
     )
 
     encoder = build_encoder(cfg).to(device)
@@ -223,9 +228,7 @@ def main() -> None:
 
     encoder = maybe_compile(encoder, device, compile_mode=tcfg.compile_mode)
     backbone = maybe_compile(backbone, device, compile_mode=tcfg.compile_mode)
-    diffusion_mod = maybe_compile(
-        diffusion_mod, device, compile_mode=tcfg.compile_mode
-    )
+    diffusion_mod = maybe_compile(diffusion_mod, device, compile_mode=tcfg.compile_mode)
 
     loss_fn = ChessLossComputer(
         policy_weight=tcfg.policy_weight,
@@ -277,8 +280,10 @@ def main() -> None:
     # --- Extract enriched trajectories ---
     board_encoder = build_board_encoder(cfg)
     trajectory_data = extract_trajectories(
-        Path(args.pgn), board_encoder,
-        args.seq_len, args.max_trajectories,
+        Path(args.pgn),
+        board_encoder,
+        args.seq_len,
+        args.max_trajectories,
     )
     N = trajectory_data.boards.shape[0]
     log.info("trajectories=%d  seq_len=%d", N, args.seq_len)
@@ -298,7 +303,9 @@ def main() -> None:
     )
     worker_count = resolve_dataloader_workers(tcfg.workers)
     loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True,
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
         num_workers=worker_count,
         pin_memory=(device.type == "cuda"),
         persistent_workers=True,
@@ -354,8 +361,9 @@ def main() -> None:
 
             pbar = tqdm(
                 loader,
-                desc=f"Epoch {epoch+1}/{args.epochs}",
-                leave=False, smoothing=0.3,
+                desc=f"Epoch {epoch + 1}/{args.epochs}",
+                leave=False,
+                smoothing=0.3,
                 disable=not use_tqdm,
             )
             data_start = time.monotonic()
@@ -409,9 +417,7 @@ def main() -> None:
 
             samples_per_sec = num_samples / max(epoch_duration, 1e-9)
             current_lr = trainer.optimizer.param_groups[0]["lr"]
-            avg_breakdown = {
-                k: v / max(num_batches, 1) for k, v in loss_sums.items()
-            }
+            avg_breakdown = {k: v / max(num_batches, 1) for k, v in loss_sums.items()}
 
             # Build resource dict in the format log_epoch_line expects
             raw_res = monitor.summarize()
@@ -423,21 +429,13 @@ def main() -> None:
                     "ram_mb": f"{raw_res['ram_mb_avg']:.0f}",
                 }
                 if "gpu_util_avg" in raw_res:
-                    resource_metrics["gpu_util"] = (
-                        f"{raw_res['gpu_util_avg']:.0f}%"
-                    )
+                    resource_metrics["gpu_util"] = f"{raw_res['gpu_util_avg']:.0f}%"
                 if "gpu_mem_mb_avg" in raw_res:
-                    resource_metrics["gpu_mem_mb"] = (
-                        f"{raw_res['gpu_mem_mb_avg']:.0f}"
-                    )
+                    resource_metrics["gpu_mem_mb"] = f"{raw_res['gpu_mem_mb_avg']:.0f}"
                 if "gpu_temp_avg" in raw_res:
-                    resource_metrics["gpu_temp"] = (
-                        f"{raw_res['gpu_temp_avg']:.0f}"
-                    )
+                    resource_metrics["gpu_temp"] = f"{raw_res['gpu_temp_avg']:.0f}"
                 if "gpu_power_avg" in raw_res:
-                    resource_metrics["gpu_power"] = (
-                        f"{raw_res['gpu_power_avg']:.0f}"
-                    )
+                    resource_metrics["gpu_power"] = f"{raw_res['gpu_power_avg']:.0f}"
 
             logger.log_epoch_line(
                 epoch=epoch,
@@ -464,15 +462,18 @@ def main() -> None:
 
             # Per-param-group LR (extra detail beyond log_epoch_line)
             logger._writer.add_scalar("lr/backbone", current_lr, epoch)
-            logger._writer.add_scalar("lr/heads", trainer.optimizer.param_groups[1]["lr"], epoch)
+            logger._writer.add_scalar(
+                "lr/heads", trainer.optimizer.param_groups[1]["lr"], epoch
+            )
 
             # Plateau detection
             grad_norm_avg = (
-                sum(step_grad_norms) / len(step_grad_norms)
-                if step_grad_norms else 0.0
+                sum(step_grad_norms) / len(step_grad_norms) if step_grad_norms else 0.0
             )
             plateau_detector.update(
-                epoch, grad_norm_avg, avg_loss,
+                epoch,
+                grad_norm_avg,
+                avg_loss,
                 trainer.optimizer.param_groups[0]["lr"],
             )
 
@@ -483,7 +484,8 @@ def main() -> None:
                     for name, sd in model_ema.state_dicts().items():
                         ema_kwargs[f"ema_{name}"] = sd
                 save_checkpoint(
-                    Path(args.output), cfg,
+                    Path(args.output),
+                    cfg,
                     encoder=encoder.state_dict(),
                     backbone=backbone.state_dict(),
                     policy_head=policy_head.state_dict(),
@@ -496,20 +498,13 @@ def main() -> None:
 
         # --- Phase 2 gate ---
         log.info(
-            "Phase 2 gate on holdout (%d samples)...", n_holdout,
+            "Phase 2 gate on holdout (%d samples)...",
+            n_holdout,
         )
-        holdout_boards = trajectory_data.boards[
-            n_train:, 0
-        ].to(device)
-        holdout_legal = trajectory_data.legal_masks[
-            n_train:, 0
-        ].to(device)
-        holdout_from = trajectory_data.actions_from[
-            n_train:, 0
-        ].to(device)
-        holdout_to = trajectory_data.actions_to[
-            n_train:, 0
-        ].to(device)
+        holdout_boards = trajectory_data.boards[n_train:, 0].to(device)
+        holdout_legal = trajectory_data.legal_masks[n_train:, 0].to(device)
+        holdout_from = trajectory_data.actions_from[n_train:, 0].to(device)
+        holdout_to = trajectory_data.actions_to[n_train:, 0].to(device)
 
         single_acc, diff_acc, delta = evaluate_phase2_gate(
             encoder=encoder,
@@ -526,8 +521,10 @@ def main() -> None:
         log.info(
             "Phase 2 gate: single=%.1f%%  diffusion=%.1f%%  "
             "delta=%.1fpp  threshold=%.1fpp",
-            single_acc * 100, diff_acc * 100,
-            delta, tcfg.phase2_gate,
+            single_acc * 100,
+            diff_acc * 100,
+            delta,
+            tcfg.phase2_gate,
         )
         if model_ema is not None:
             with model_ema.apply():
@@ -544,20 +541,23 @@ def main() -> None:
                     legal_mask=holdout_legal,
                 )
             log.info(
-                "Phase 2 gate (EMA): single=%.1f%%  diffusion=%.1f%%  "
-                "delta=%.1fpp",
-                ema_single * 100, ema_diff * 100, ema_delta,
+                "Phase 2 gate (EMA): single=%.1f%%  diffusion=%.1f%%  delta=%.1fpp",
+                ema_single * 100,
+                ema_diff * 100,
+                ema_delta,
             )
         if delta > tcfg.phase2_gate:
             log.info(
                 "Phase 2 gate PASSED (delta %.1fpp > %.1fpp)",
-                delta, tcfg.phase2_gate,
+                delta,
+                tcfg.phase2_gate,
             )
         else:
             log.warning(
                 "Phase 2 gate NOT PASSED (delta %.1fpp <= %.1fpp)."
                 " Checkpoint saved -- user decides.",
-                delta, tcfg.phase2_gate,
+                delta,
+                tcfg.phase2_gate,
             )
 
 

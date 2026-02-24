@@ -75,7 +75,9 @@ class ChessLossComputer:
         has_legal = legal_mask.any(dim=-1, keepdim=True)
         masked_logits = pred_flat.masked_fill(~legal_mask, float("-inf"))
         # Guard all-zero rows: replace all-inf rows with zeros to avoid NaN
-        masked_logits = masked_logits.masked_fill(~has_legal.expand_as(masked_logits), 0.0)
+        masked_logits = masked_logits.masked_fill(
+            ~has_legal.expand_as(masked_logits), 0.0
+        )
         log_probs = F.log_softmax(masked_logits, dim=-1)
         # Replace -inf/NaN at illegal positions with 0 to avoid 0 * -inf = NaN
         log_probs = log_probs.masked_fill(~legal_mask, 0.0)
@@ -83,7 +85,7 @@ class ChessLossComputer:
 
         if self._illegal_penalty_weight > 0:
             illegal_logits = pred_flat.masked_fill(legal_mask, 0.0)
-            illegal_penalty = (illegal_logits ** 2).mean()
+            illegal_penalty = (illegal_logits**2).mean()
 
         pred_log = F.log_softmax(pred_value, dim=-1)
         value_loss = -(target_value * pred_log).sum(dim=-1).mean()
@@ -127,9 +129,7 @@ class ChessLossComputer:
             if mean_norm > 0:
                 for name in self._ema_norms:
                     ratio = mean_norm / max(self._ema_norms[name], 1e-8)
-                    self._coefficients[name] = (
-                        self._base_weights.get(name, 1.0) * ratio
-                    )
+                    self._coefficients[name] = self._base_weights.get(name, 1.0) * ratio
 
     def get_coefficients(self) -> dict[str, float]:
         return dict(self._coefficients)

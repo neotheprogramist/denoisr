@@ -12,13 +12,9 @@ class TimeControl:
 
     def __post_init__(self) -> None:
         if self.base_seconds < 0:
-            raise ValueError(
-                f"base_seconds must be >= 0, got {self.base_seconds}"
-            )
+            raise ValueError(f"base_seconds must be >= 0, got {self.base_seconds}")
         if self.increment < 0:
-            raise ValueError(
-                f"increment must be >= 0, got {self.increment}"
-            )
+            raise ValueError(f"increment must be >= 0, got {self.increment}")
 
 
 @dataclass(frozen=True)
@@ -43,8 +39,7 @@ class GameResult:
             )
         if self.engine1_color not in {"white", "black"}:
             raise ValueError(
-                f"engine1_color must be 'white' or 'black', "
-                f"got {self.engine1_color!r}"
+                f"engine1_color must be 'white' or 'black', got {self.engine1_color!r}"
             )
 
 

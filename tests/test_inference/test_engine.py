@@ -34,16 +34,12 @@ class TestChessEngine:
             device=device,
         )
 
-    def test_select_move_returns_legal_move(
-        self, engine: ChessEngine
-    ) -> None:
+    def test_select_move_returns_legal_move(self, engine: ChessEngine) -> None:
         board = chess.Board()
         move = engine.select_move(board)
         assert move in board.legal_moves
 
-    def test_select_move_various_positions(
-        self, engine: ChessEngine
-    ) -> None:
+    def test_select_move_various_positions(self, engine: ChessEngine) -> None:
         board = chess.Board()
         for uci in ("e2e4", "e7e5", "g1f3"):
             board.push_uci(uci)

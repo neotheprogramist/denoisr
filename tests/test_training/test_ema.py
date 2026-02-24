@@ -38,9 +38,7 @@ class TestModelEMA:
             )
 
         # After context: back to 100.0
-        assert torch.allclose(
-            model.weight.data, torch.full_like(model.weight, 100.0)
-        )
+        assert torch.allclose(model.weight.data, torch.full_like(model.weight, 100.0))
 
     def test_ema_multiple_modules(self) -> None:
         """EMA works with multiple modules."""
@@ -99,9 +97,7 @@ class TestModelEMA:
         for _ in range(50):
             ema.update()
 
-        assert torch.allclose(
-            ema.state_dicts()["model"]["weight"], initial_weight
-        )
+        assert torch.allclose(ema.state_dicts()["model"]["weight"], initial_weight)
 
     def test_ema_steps_increment(self) -> None:
         """Internal step counter increments on each update."""

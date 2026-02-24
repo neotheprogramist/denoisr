@@ -63,9 +63,7 @@ class TestSupervisedTrainerAMP:
         assert loss > 0
         assert "policy" in breakdown
 
-    def test_breakdown_includes_grad_norm(
-        self, trainer: SupervisedTrainer
-    ) -> None:
+    def test_breakdown_includes_grad_norm(self, trainer: SupervisedTrainer) -> None:
         """Training breakdown should include gradient norm."""
         batch = _make_batch(4)
         _, breakdown = trainer.train_step(batch)

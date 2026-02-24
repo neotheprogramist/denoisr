@@ -31,15 +31,21 @@ def _remap_sequential_keys(
 def _remap_all_keys(weights: dict[str, object], num_layers: int) -> None:
     """Remap all PyTorch Sequential keys to MLX flat attribute names."""
     _remap_sequential_keys(
-        weights, "encoder", "global_embed",
+        weights,
+        "encoder",
+        "global_embed",
         [(0, "global_embed_0"), (2, "global_embed_2")],
     )
     _remap_sequential_keys(
-        weights, "backbone.smolgen", "compress",
+        weights,
+        "backbone.smolgen",
+        "compress",
         [(0, "compress_0")],
     )
     for i in range(num_layers):
         _remap_sequential_keys(
-            weights, f"backbone.layers.{i}", "ffn",
+            weights,
+            f"backbone.layers.{i}",
+            "ffn",
             [(0, "ffn_0"), (2, "ffn_2")],
         )

@@ -26,9 +26,7 @@ from conftest import (
 class TestFullPipeline:
     """Verify all optimizations work together end-to-end."""
 
-    def test_compiled_amp_checkpointed_training(
-        self, device: torch.device
-    ) -> None:
+    def test_compiled_amp_checkpointed_training(self, device: torch.device) -> None:
         """Full pipeline: compile + AMP + gradient checkpointing + DataLoader."""
         encoder = maybe_compile(
             ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device), device
@@ -43,12 +41,8 @@ class TestFullPipeline:
             ).to(device),
             device,
         )
-        policy_head = maybe_compile(
-            ChessPolicyHead(d_s=SMALL_D_S).to(device), device
-        )
-        value_head = maybe_compile(
-            ChessValueHead(d_s=SMALL_D_S).to(device), device
-        )
+        policy_head = maybe_compile(ChessPolicyHead(d_s=SMALL_D_S).to(device), device)
+        value_head = maybe_compile(ChessValueHead(d_s=SMALL_D_S).to(device), device)
 
         loss_fn = ChessLossComputer()
         trainer = SupervisedTrainer(

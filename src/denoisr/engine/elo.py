@@ -21,9 +21,7 @@ def compute_elo(wins: int, draws: int, losses: int) -> tuple[float, float]:
     elo_diff = -400.0 * math.log10(1.0 / score - 1.0)
 
     variance = (
-        wins * (1.0 - score) ** 2
-        + draws * (0.5 - score) ** 2
-        + losses * score**2
+        wins * (1.0 - score) ** 2 + draws * (0.5 - score) ** 2 + losses * score**2
     ) / total**2
 
     derivative = 400.0 / (score * (1.0 - score) * math.log(10))
@@ -32,9 +30,7 @@ def compute_elo(wins: int, draws: int, losses: int) -> tuple[float, float]:
     return (elo_diff, error_95)
 
 
-def likelihood_of_superiority(
-    wins: int, draws: int, losses: int
-) -> float:
+def likelihood_of_superiority(wins: int, draws: int, losses: int) -> float:
     """Compute LOS (likelihood of superiority) as a percentage."""
     total = wins + draws + losses
     if total == 0:
@@ -48,9 +44,7 @@ def likelihood_of_superiority(
         return 100.0
 
     variance = (
-        wins * (1.0 - score) ** 2
-        + draws * (0.5 - score) ** 2
-        + losses * score**2
+        wins * (1.0 - score) ** 2 + draws * (0.5 - score) ** 2 + losses * score**2
     ) / total**2
 
     if variance <= 0.0:
@@ -86,8 +80,7 @@ def sprt_test(
     p1 = 1.0 / (1.0 + 10.0 ** (-elo1 / 400.0))
 
     llr = total * (
-        score * math.log(p1 / p0)
-        + (1.0 - score) * math.log((1.0 - p1) / (1.0 - p0))
+        score * math.log(p1 / p0) + (1.0 - score) * math.log((1.0 - p1) / (1.0 - p0))
     )
 
     if llr >= upper:

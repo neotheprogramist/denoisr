@@ -191,7 +191,9 @@ def test_generate_data_calls_generate(tmp_path: Path) -> None:
     )
     state = PipelineState()
 
-    with patch("denoisr.scripts.generate_data.generate_to_file", return_value=100) as mock_gen:
+    with patch(
+        "denoisr.scripts.generate_data.generate_to_file", return_value=100
+    ) as mock_gen:
         with patch("shutil.which", return_value="/usr/bin/stockfish"):
             step_generate_data(cfg, state)
             mock_gen.assert_called_once()

@@ -20,9 +20,7 @@ class ChessDataset(Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
     def __len__(self) -> int:
         return len(self._examples)
 
-    def __getitem__(
-        self, idx: int
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         ex = self._examples[idx]
         value = torch.tensor(
             [ex.value.win, ex.value.draw, ex.value.loss],
@@ -51,7 +49,5 @@ def generate_examples_from_game(
 
         yield TrainingExample(board=board_tensor, policy=policy, value=value)
 
-        move = chess.Move(
-            action.from_square, action.to_square, action.promotion
-        )
+        move = chess.Move(action.from_square, action.to_square, action.promotion)
         board.push(move)

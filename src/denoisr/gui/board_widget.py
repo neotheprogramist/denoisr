@@ -34,9 +34,7 @@ PIECE_SYMBOLS: dict[tuple[int, bool], str] = {
 }
 
 
-def square_to_file_rank(
-    square: int, flipped: bool
-) -> tuple[int, int]:
+def square_to_file_rank(square: int, flipped: bool) -> tuple[int, int]:
     """Convert chess square (0-63) to (file, rank) in display coordinates.
 
     file=0 is left column, rank=0 is top row.
@@ -50,18 +48,14 @@ def square_to_file_rank(
     return (f, 7 - r)
 
 
-def file_rank_to_pixel(
-    file: int, rank: int, square_size: int
-) -> tuple[int, int]:
+def file_rank_to_pixel(file: int, rank: int, square_size: int) -> tuple[int, int]:
     """Convert display (file, rank) to pixel center coordinates."""
     x = file * square_size + square_size // 2
     y = rank * square_size + square_size // 2
     return (x, y)
 
 
-def pixel_to_file_rank(
-    x: int, y: int, square_size: int
-) -> tuple[int, int] | None:
+def pixel_to_file_rank(x: int, y: int, square_size: int) -> tuple[int, int] | None:
     """Convert pixel coordinates to display (file, rank). None if outside."""
     f = x // square_size
     r = y // square_size
@@ -70,9 +64,7 @@ def pixel_to_file_rank(
     return None
 
 
-def _file_rank_to_square(
-    file: int, rank: int, flipped: bool
-) -> int:
+def _file_rank_to_square(file: int, rank: int, flipped: bool) -> int:
     """Convert display (file, rank) back to chess square index."""
     if flipped:
         return chess.square(7 - file, rank)
@@ -82,14 +74,10 @@ def _file_rank_to_square(
 class BoardWidget(tk.Canvas):
     """Interactive chess board rendered on a Tkinter Canvas."""
 
-    def __init__(
-        self, parent: tk.Widget, square_size: int = 60
-    ) -> None:
+    def __init__(self, parent: tk.Widget, square_size: int = 60) -> None:
         self._sq = square_size
         size = square_size * 8
-        super().__init__(
-            parent, width=size, height=size, highlightthickness=0
-        )
+        super().__init__(parent, width=size, height=size, highlightthickness=0)
 
         self._board = chess.Board()
         self._flipped = False
@@ -114,9 +102,7 @@ class BoardWidget(tk.Canvas):
             self._selected_square = None
             self._draw()
 
-    def set_on_move(
-        self, callback: Callable[[chess.Move], None]
-    ) -> None:
+    def set_on_move(self, callback: Callable[[chess.Move], None]) -> None:
         """Register callback when human makes a move."""
         self._on_move_cb = callback
 
@@ -171,10 +157,7 @@ class BoardWidget(tk.Canvas):
             else:
                 # Deselect or reselect
                 new_piece = self._board.piece_at(clicked_sq)
-                if (
-                    new_piece is not None
-                    and new_piece.color == self._board.turn
-                ):
+                if new_piece is not None and new_piece.color == self._board.turn:
                     self._selected_square = clicked_sq
                 else:
                     self._selected_square = None
@@ -201,9 +184,9 @@ class BoardWidget(tk.Canvas):
                 result[0] = p
                 dialog.destroy()
 
-            tk.Button(
-                dialog, text=label, width=4, command=choose
-            ).pack(side=tk.LEFT, padx=2, pady=4)
+            tk.Button(dialog, text=label, width=4, command=choose).pack(
+                side=tk.LEFT, padx=2, pady=4
+            )
 
         dialog.wait_window()
         return result[0]
@@ -223,24 +206,18 @@ class BoardWidget(tk.Canvas):
 
                 # Last move highlight
                 if self._last_move is not None:
-                    sq_here = _file_rank_to_square(
-                        f, r, self._flipped
-                    )
+                    sq_here = _file_rank_to_square(f, r, self._flipped)
                     if sq_here in (
                         self._last_move.from_square,
                         self._last_move.to_square,
                     ):
                         color = LAST_MOVE_COLOR
 
-                self.create_rectangle(
-                    x0, y0, x0 + sq, y0 + sq, fill=color, outline=""
-                )
+                self.create_rectangle(x0, y0, x0 + sq, y0 + sq, fill=color, outline="")
 
         # Selected square highlight
         if self._selected_square is not None:
-            sf, sr = square_to_file_rank(
-                self._selected_square, self._flipped
-            )
+            sf, sr = square_to_file_rank(self._selected_square, self._flipped)
             self.create_rectangle(
                 sf * sq,
                 sr * sq,
@@ -253,9 +230,7 @@ class BoardWidget(tk.Canvas):
             # Legal move indicators
             for move in self._board.legal_moves:
                 if move.from_square == self._selected_square:
-                    tf, tr = square_to_file_rank(
-                        move.to_square, self._flipped
-                    )
+                    tf, tr = square_to_file_rank(move.to_square, self._flipped)
                     cx, cy = file_rank_to_pixel(tf, tr, sq)
                     radius = sq // 6
                     self.create_oval(
@@ -273,9 +248,7 @@ class BoardWidget(tk.Canvas):
             piece = self._board.piece_at(square)
             if piece is None:
                 continue
-            symbol = PIECE_SYMBOLS.get(
-                (piece.piece_type, piece.color)
-            )
+            symbol = PIECE_SYMBOLS.get((piece.piece_type, piece.color))
             if symbol is None:
                 continue
             df, dr = square_to_file_rank(square, self._flipped)

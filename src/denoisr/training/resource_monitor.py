@@ -20,7 +20,7 @@ def _try_init_nvml() -> bool:
 
         pynvml.nvmlInit()
         return True
-    except (ImportError, OSError):
+    except ImportError, OSError:
         return False
 
 
@@ -30,7 +30,7 @@ def _get_nvml_handle() -> object | None:
         import pynvml
 
         return pynvml.nvmlDeviceGetHandleByIndex(0)
-    except (ImportError, OSError):
+    except ImportError, OSError:
         return None
 
 
@@ -77,14 +77,10 @@ class ResourceMonitor:
     def sample(self) -> None:
         """Take a snapshot of all available resource metrics."""
         self._cpu_samples.append(self._process.cpu_percent())
-        self._ram_samples.append(
-            self._process.memory_info().rss / (1024 * 1024)
-        )
+        self._ram_samples.append(self._process.memory_info().rss / (1024 * 1024))
 
         if self._has_cuda:
-            self._gpu_mem_samples.append(
-                torch.cuda.memory_allocated() / (1024 * 1024)
-            )
+            self._gpu_mem_samples.append(torch.cuda.memory_allocated() / (1024 * 1024))
 
         if self._has_nvml and self._nvml_handle is not None:
             self._sample_nvml()
@@ -104,7 +100,7 @@ class ResourceMonitor:
 
             power = pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle)
             self._gpu_power_samples.append(power / 1000.0)  # mW -> W
-        except (ImportError, OSError, RuntimeError):
+        except ImportError, OSError, RuntimeError:
             pass
 
     def summarize(self) -> dict[str, float]:

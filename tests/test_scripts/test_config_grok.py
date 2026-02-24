@@ -1,6 +1,10 @@
 import argparse
 
-from denoisr.scripts.config import TrainingConfig, add_training_args, training_config_from_args
+from denoisr.scripts.config import (
+    TrainingConfig,
+    add_training_args,
+    training_config_from_args,
+)
 
 
 class TestGrokConfig:

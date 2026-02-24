@@ -63,7 +63,8 @@ def test_runner_creates_state_file(tmp_path: Path) -> None:
     # State file does not exist until run() or _save_state() is called,
     # but run() calls _save_state() at the start, so call run with mocks.
     patchers = _patch_all_steps()
-    mocks = {k: p.start() for k, p in patchers.items()}
+    for p in patchers.values():
+        p.start()
     try:
         runner.run()
     finally:
@@ -118,9 +119,7 @@ def test_runner_only_runs_selected_steps(tmp_path: Path) -> None:
 
 def test_runner_default_only_includes_all_steps() -> None:
     """ALL_STEPS contains the five canonical step names."""
-    assert ALL_STEPS == frozenset(
-        {"fetch", "init", "phase1", "phase2", "phase3"}
-    )
+    assert ALL_STEPS == frozenset({"fetch", "init", "phase1", "phase2", "phase3"})
 
 
 # -- Resume from saved state -----------------------------------------------

@@ -16,7 +16,9 @@ if TYPE_CHECKING:
     from denoisr.evaluation.benchmark import CompletedGame
 
 
-def _build_pgn_game(game: CompletedGame, event: str = "Denoisr Benchmark") -> chess.pgn.Game:
+def _build_pgn_game(
+    game: CompletedGame, event: str = "Denoisr Benchmark"
+) -> chess.pgn.Game:
     """Convert a CompletedGame to a chess.pgn.Game with proper headers."""
     pgn_game = chess.pgn.Game()
 
@@ -48,7 +50,9 @@ def _build_pgn_game(game: CompletedGame, event: str = "Denoisr Benchmark") -> ch
     return pgn_game
 
 
-def write_pgn(game: CompletedGame, directory: Path, event: str = "Denoisr Benchmark") -> Path:
+def write_pgn(
+    game: CompletedGame, directory: Path, event: str = "Denoisr Benchmark"
+) -> Path:
     """Write a single game as a PGN file. Returns the path written."""
     directory.mkdir(parents=True, exist_ok=True)
     pgn_game = _build_pgn_game(game, event=event)
