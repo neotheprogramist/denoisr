@@ -192,12 +192,14 @@ def test_generate_data_calls_generate(tmp_path: Path) -> None:
     state = PipelineState()
 
     with patch("denoisr.scripts.generate_data.generate_to_file", return_value=100) as mock_gen:
-        step_generate_data(cfg, state)
-        mock_gen.assert_called_once()
-        kwargs = mock_gen.call_args.kwargs
-        assert kwargs["max_examples"] == 123
-        assert kwargs["scratch_dir"] == Path(tmp_path / "scratch")
-        assert kwargs["chunk_examples"] == 2048
+        with patch("shutil.which", return_value="/usr/bin/stockfish"):
+            step_generate_data(cfg, state)
+            mock_gen.assert_called_once()
+            kwargs = mock_gen.call_args.kwargs
+            assert kwargs["max_examples"] == 123
+            assert kwargs["stockfish_path"] == "/usr/bin/stockfish"
+            assert kwargs["scratch_dir"] == Path(tmp_path / "scratch")
+            assert kwargs["chunk_examples"] == 2048
 
     assert state.last_data != ""
     assert state.updated_at != ""
@@ -218,6 +220,23 @@ def test_generate_data_skips_when_exists(tmp_path: Path) -> None:
         mock_gen.assert_not_called()
 
     assert state.last_data == str(data_path)
+
+
+def test_generate_data_fails_fast_when_stockfish_missing(tmp_path: Path) -> None:
+    """Missing Stockfish should raise a clear error before worker startup."""
+    cfg = _make_cfg(tmp_path)
+    state = PipelineState()
+    pgn_path = Path(cfg.data.pgn_path)
+    pgn_path.parent.mkdir(parents=True, exist_ok=True)
+    pgn_path.write_text("fake pgn")
+
+    with (
+        patch("denoisr.scripts.generate_data.generate_to_file") as mock_gen,
+        patch("shutil.which", return_value=None),
+    ):
+        with pytest.raises(FileNotFoundError, match="Stockfish not found in PATH"):
+            step_generate_data(cfg, state)
+        mock_gen.assert_not_called()
 
 
 # -- step_train_phase1 -----------------------------------------------------

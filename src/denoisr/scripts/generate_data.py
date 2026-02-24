@@ -327,6 +327,10 @@ def generate_to_file(
         raise ValueError("max_examples must be >= 1")
     if num_workers < 1:
         raise ValueError("num_workers must be >= 1")
+    if not stockfish_path.strip():
+        raise ValueError(
+            "stockfish_path must be a non-empty executable path or command"
+        )
     if chunk_examples < 0:
         raise ValueError("chunk_examples must be >= 0")
 

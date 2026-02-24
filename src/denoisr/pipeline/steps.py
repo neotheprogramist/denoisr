@@ -10,6 +10,7 @@ and mutate *state* in place to record progress.
 """
 
 import logging
+import os
 import subprocess
 import shutil
 import signal
@@ -178,7 +179,26 @@ def step_generate_data(
         state.updated_at = datetime.now(timezone.utc).isoformat()
         return
 
-    stockfish_path = cfg.data.stockfish_path or shutil.which("stockfish") or ""
+    stockfish_cfg = cfg.data.stockfish_path.strip()
+    if stockfish_cfg:
+        stockfish_path = stockfish_cfg
+        stockfish_resolved = shutil.which(stockfish_path)
+        if stockfish_resolved is not None:
+            stockfish_path = stockfish_resolved
+        elif not (Path(stockfish_path).exists() and os.access(stockfish_path, os.X_OK)):
+            raise FileNotFoundError(
+                "Configured Stockfish binary is not executable: "
+                f"{stockfish_path}. Set [data].stockfish_path to a valid "
+                "path or leave it empty to auto-detect from PATH."
+            )
+    else:
+        detected = shutil.which("stockfish")
+        if not detected:
+            raise FileNotFoundError(
+                "Stockfish not found in PATH. Set [data].stockfish_path in "
+                "pipeline.toml to an absolute Stockfish binary path."
+            )
+        stockfish_path = detected
 
     from denoisr.scripts.config import resolve_workers
 
