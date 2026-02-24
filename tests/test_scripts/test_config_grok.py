@@ -12,6 +12,10 @@ class TestGrokConfig:
         cfg = TrainingConfig()
         assert cfg.grokfast is True
 
+    def test_default_compile_mode_on(self) -> None:
+        cfg = TrainingConfig()
+        assert cfg.compile_mode == "on"
+
     def test_grok_fields_exist(self) -> None:
         cfg = TrainingConfig(
             grok_tracking=True,
@@ -40,3 +44,10 @@ class TestGrokConfig:
         cfg = training_config_from_args(args)
         assert cfg.grok_tracking is True
         assert cfg.grok_erank_freq == 500
+
+    def test_training_config_from_args_includes_compile_mode(self) -> None:
+        parser = argparse.ArgumentParser()
+        add_training_args(parser)
+        args = parser.parse_args(["--compile", "off"])
+        cfg = training_config_from_args(args)
+        assert cfg.compile_mode == "off"

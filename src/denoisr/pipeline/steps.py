@@ -274,6 +274,7 @@ def step_train_phase1(
         "--batch-size", str(cfg.phase1.batch_size),
         "--warmup-epochs", str(cfg.phase1.warmup_epochs),
         "--weight-decay", str(cfg.phase1.weight_decay),
+        "--compile", str(cfg.phase1.compile),
         "--tqdm",
         "--output", str(output_ckpt),
     ]
@@ -324,6 +325,7 @@ def step_train_phase2(cfg: PipelineConfig, state: PipelineState) -> None:
         "--batch-size", str(cfg.phase2.batch_size),
         "--epochs", str(cfg.phase2.epochs),
         "--lr", str(cfg.phase2.lr),
+        "--compile", str(cfg.phase2.compile),
         "--tqdm",
         "--output", str(output_ckpt),
     ]

@@ -36,6 +36,7 @@ class Phase1Config:
     batch_size: int = 1024
     warmup_epochs: int = 5
     weight_decay: float = 1e-4
+    compile: str = "on"
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class Phase2Config:
     batch_size: int = 1024
     seq_len: int = 10
     max_trajectories: int = 50_000
+    compile: str = "on"
 
 
 @dataclass(frozen=True)

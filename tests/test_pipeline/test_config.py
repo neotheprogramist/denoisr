@@ -11,6 +11,8 @@ def test_load_minimal_config(tmp_path: Path) -> None:
     assert cfg.data.stockfish_depth == 10
     assert cfg.data.chunk_examples == 0
     assert cfg.phase1.lr == 3e-4
+    assert cfg.phase1.compile == "on"
+    assert cfg.phase2.compile == "on"
 
 
 def test_load_partial_config(tmp_path: Path) -> None:
@@ -34,15 +36,21 @@ chunk_examples = 4096
 [model]
 d_s = 512
 
+[phase1]
+compile = "off"
+
 [phase2]
 epochs = 300
+compile = "on"
 """)
     cfg = load_config(cfg_path)
     assert cfg.data.stockfish_depth == 15
     assert cfg.data.max_examples == 500_000
     assert cfg.data.chunk_examples == 4096
     assert cfg.model.d_s == 512
+    assert cfg.phase1.compile == "off"
     assert cfg.phase2.epochs == 300
+    assert cfg.phase2.compile == "on"
     # Defaults preserved
     assert cfg.phase1.lr == 3e-4
     assert cfg.output.dir == "outputs/"

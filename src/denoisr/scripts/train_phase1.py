@@ -621,10 +621,10 @@ def main() -> None:
     policy_head.load_state_dict(state["policy_head"])
     value_head.load_state_dict(state["value_head"])
 
-    encoder = maybe_compile(encoder, device)
-    backbone = maybe_compile(backbone, device)
-    policy_head = maybe_compile(policy_head, device)
-    value_head = maybe_compile(value_head, device)
+    encoder = maybe_compile(encoder, device, compile_mode=tcfg.compile_mode)
+    backbone = maybe_compile(backbone, device, compile_mode=tcfg.compile_mode)
+    policy_head = maybe_compile(policy_head, device, compile_mode=tcfg.compile_mode)
+    value_head = maybe_compile(value_head, device, compile_mode=tcfg.compile_mode)
 
     # --- Load pre-generated data (mmap + shard-index split to bound RAM) ---
     data_plan = _build_tensor_data_plan(

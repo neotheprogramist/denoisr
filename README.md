@@ -104,6 +104,7 @@ num_timesteps = 100
 lr = 3e-4
 batch_size = 1024
 warmup_epochs = 5
+compile = "on"
 
 [phase2]
 epochs = 200
@@ -111,6 +112,7 @@ lr = 3e-4
 batch_size = 1024
 seq_len = 10
 max_trajectories = 50_000
+compile = "on"
 
 [phase3]
 generations = 1000
@@ -518,6 +520,7 @@ These control how the model learns. Safe to change between runs without architec
 | `--encoder-lr-multiplier` | `1.0`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                             |
 | `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
 | `--warmup-epochs`         | `5`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
+| `--compile`               | `on`    | CUDA `torch.compile` policy: `on` (require), `auto` (safe fallback), `off` (disable)                                                                                |
 | `--num-workers`           | `2`     | DataLoader worker processes. Set 0 for debugging, 2-4 for training                                                                                                  |
 | `--warm-restarts`         | off     | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                            |
 | `--threat-weight`         | `0.1`   | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                                      |
@@ -774,7 +777,7 @@ outputs/pgn/
 | `--games`                | `100`                    | Number of games to play                    |
 | `--time-control`         | `10+0.1`                 | Base+increment seconds                     |
 | `--openings`             | bundled 50-position book | Path to EPD opening book                   |
-| `--concurrency`          | `64`                    | Parallel game workers                      |
+| `--concurrency`          | `64`                     | Parallel game workers                      |
 | `--sprt-elo0`            | (none)                   | SPRT null hypothesis Elo difference        |
 | `--sprt-elo1`            | (none)                   | SPRT alternative hypothesis Elo difference |
 | `--pgn-out`              | (none)                   | Directory to save PGN files                |

@@ -221,9 +221,11 @@ def main() -> None:
     consistency = build_consistency(cfg).to(device)
     schedule = build_schedule(cfg).to(device)
 
-    encoder = maybe_compile(encoder, device)
-    backbone = maybe_compile(backbone, device)
-    diffusion_mod = maybe_compile(diffusion_mod, device)
+    encoder = maybe_compile(encoder, device, compile_mode=tcfg.compile_mode)
+    backbone = maybe_compile(backbone, device, compile_mode=tcfg.compile_mode)
+    diffusion_mod = maybe_compile(
+        diffusion_mod, device, compile_mode=tcfg.compile_mode
+    )
 
     loss_fn = ChessLossComputer(
         policy_weight=tcfg.policy_weight,

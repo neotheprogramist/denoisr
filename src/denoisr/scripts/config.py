@@ -8,10 +8,12 @@ All tunable hyperparameters live here in two frozen dataclasses:
 import argparse
 import logging
 import os
+import subprocess
 from argparse import ArgumentParser, Namespace
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 import torch
 from torch import nn
@@ -27,6 +29,7 @@ from denoisr.nn.world_model import ChessWorldModel
 
 log = logging.getLogger(__name__)
 DEFAULT_AUTO_WORKERS = 64
+CompileMode = Literal["auto", "on", "off"]
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +201,12 @@ class TrainingConfig:
     # Set to 1 for debugging (single-process).
     workers: int = 0
 
+    # CUDA torch.compile policy:
+    # - on: require torch.compile support (default)
+    # - auto: enable on CUDA only when Triton ptxas is executable (safe fallback)
+    # - off: always run eager mode
+    compile_mode: CompileMode = "on"
+
     # -- Phase gates --------------------------------------------------------
 
     # Top-1 policy accuracy threshold to advance from Phase 1 to Phase 2.
@@ -323,10 +332,91 @@ def detect_device() -> torch.device:
 _M = TypeVar("_M", bound=nn.Module)
 
 
-def maybe_compile(module: _M, device: torch.device) -> _M:
-    """Compile module with torch.compile on CUDA, return as-is otherwise."""
-    if device.type == "cuda":
+def _resolve_triton_ptxas_path() -> Path | None:
+    """Resolve Triton's bundled ptxas path (or TRITON_PTXAS_PATH override)."""
+    override = os.environ.get("TRITON_PTXAS_PATH")
+    if override:
+        return Path(override)
+
+    try:
+        import triton.backends.nvidia.bin as triton_nvidia_bin  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001
+        return None
+
+    bin_file = getattr(triton_nvidia_bin, "__file__", None)
+    if not isinstance(bin_file, str):
+        return None
+    return Path(bin_file).resolve().parent / "ptxas"
+
+
+@lru_cache(maxsize=1)
+def _probe_cuda_compile_support() -> tuple[bool, str]:
+    """Check whether CUDA torch.compile prerequisites are executable."""
+    ptxas_path = _resolve_triton_ptxas_path()
+    if ptxas_path is None:
+        return False, (
+            "Triton ptxas binary not found; install CUDA Triton or set TRITON_PTXAS_PATH."
+        )
+    if not ptxas_path.exists():
+        return False, f"Triton ptxas path does not exist: {ptxas_path}"
+    if not os.access(ptxas_path, os.X_OK):
+        return False, (
+            f"Triton ptxas is not executable: {ptxas_path} "
+            "(fix with chmod +x or reinstall triton)."
+        )
+    try:
+        subprocess.run(
+            [str(ptxas_path), "--version"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError as exc:
+        return False, (
+            f"Triton ptxas probe failed with exit code {exc.returncode}: {ptxas_path}"
+        )
+    except PermissionError:
+        return False, f"Triton ptxas cannot be executed (permission denied): {ptxas_path}"
+    except OSError as exc:
+        return False, f"Triton ptxas execution failed: {exc}"
+
+    return True, f"ptxas={ptxas_path}"
+
+
+def maybe_compile(
+    module: _M,
+    device: torch.device,
+    *,
+    compile_mode: CompileMode = "on",
+) -> _M:
+    """Compile module on CUDA with policy control and safe fallback."""
+    if compile_mode not in ("auto", "on", "off"):
+        raise ValueError(f"Invalid compile_mode={compile_mode!r}; expected auto/on/off")
+    if compile_mode == "off":
+        return module
+    if device.type != "cuda":
+        # torch.compile acceleration is CUDA-only in this project.
+        return module
+    if not torch.cuda.is_available():
+        msg = "CUDA device selected but torch.cuda.is_available() is False."
+        if compile_mode == "on":
+            raise RuntimeError(msg)
+        log.warning("%s Falling back to eager mode.", msg)
+        return module
+
+    supported, detail = _probe_cuda_compile_support()
+    if not supported:
+        if compile_mode == "on":
+            raise RuntimeError(detail)
+        log.warning("%s Falling back to eager mode.", detail)
+        return module
+
+    try:
         return torch.compile(module)  # type: ignore[return-value]
+    except Exception as exc:  # noqa: BLE001
+        if compile_mode == "on":
+            raise RuntimeError(f"torch.compile failed on CUDA: {exc}") from exc
+        log.warning("torch.compile failed on CUDA (%s). Falling back to eager mode.", exc)
     return module
 
 
@@ -509,6 +599,16 @@ def add_training_args(parser: ArgumentParser) -> None:
         help="DataLoader worker processes (0 = auto: 64)",
     )
     g.add_argument(
+        "--compile",
+        dest="compile_mode",
+        choices=("auto", "on", "off"),
+        default="on",
+        help=(
+            "CUDA torch.compile mode: on (require compile), auto (safe fallback), "
+            "off (disable compile)."
+        ),
+    )
+    g.add_argument(
         "--tqdm", action="store_true", default=False,
         help="show tqdm progress bars (default: off, structured log lines instead)",
     )
@@ -617,6 +717,7 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         curriculum_initial_fraction=args.curriculum_initial_fraction,
         curriculum_growth=args.curriculum_growth,
         workers=args.workers,
+        compile_mode=args.compile_mode,
         phase1_gate=args.phase1_gate,
         phase2_gate=args.phase2_gate,
         grok_tracking=args.grok_tracking,

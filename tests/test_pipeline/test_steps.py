@@ -260,6 +260,8 @@ def test_train_phase1_updates_state(tmp_path: Path) -> None:
     def _fake_run(cmd: list[str], check: bool) -> None:
         assert check
         assert "denoisr.scripts.train_phase1" in cmd
+        compile_idx = cmd.index("--compile")
+        assert cmd[compile_idx + 1] == "on"
         (output_dir / "phase1.pt").write_bytes(b"phase1")
 
     with patch("subprocess.run", side_effect=_fake_run) as mock_run:
@@ -292,6 +294,8 @@ def test_train_phase2_updates_state(tmp_path: Path) -> None:
     def _fake_run(cmd: list[str], check: bool) -> None:
         assert check
         assert "denoisr.scripts.train_phase2" in cmd
+        compile_idx = cmd.index("--compile")
+        assert cmd[compile_idx + 1] == "on"
         (output_dir / "phase2.pt").write_bytes(b"phase2")
 
     with patch("subprocess.run", side_effect=_fake_run) as mock_run:
