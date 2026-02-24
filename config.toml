@@ -59,12 +59,12 @@ num_timesteps = 100
 # ---------------------------------------------------------------------------
 [phase1]
 
+epochs = 100
 lr = 3e-4
 batch_size = 1024
+holdout_frac = 0.05
 warmup_epochs = 5
 weight_decay = 1e-4
-# torch.compile mode: on (require), auto (safe fallback), off (disable)
-compile = "on"
 
 # ---------------------------------------------------------------------------
 # Phase 2 — Diffusion world model bootstrapping
@@ -80,8 +80,6 @@ seq_len = 10
 
 # Maximum game trajectories to extract from PGN
 max_trajectories = 50_000
-# torch.compile mode: on (require), auto (safe fallback), off (disable)
-compile = "on"
 
 # ---------------------------------------------------------------------------
 # Phase 3 — RL self-play with MCTS
@@ -90,7 +88,19 @@ compile = "on"
 
 generations = 1000
 games_per_gen = 100
+reanalyse_per_gen = 50
 mcts_sims = 800
+buffer_capacity = 100_000
+alpha_generations = 50
+lr = 1e-4
+train_batch_size = 256
+diffusion_steps = 10
+aux_updates_per_gen = 1
+aux_batch_size = 64
+aux_seq_len = 10
+self_play_workers = 0
+reanalyse_workers = 0
+save_every = 10
 
 # ---------------------------------------------------------------------------
 # Output

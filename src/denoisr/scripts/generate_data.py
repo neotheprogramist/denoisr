@@ -17,7 +17,6 @@ import atexit
 import logging
 import multiprocessing
 import os
-import argparse
 import random
 import shutil
 import sys
@@ -38,6 +37,12 @@ from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.data.stockfish_oracle import StockfishOracle
 from denoisr.scripts.config import resolve_workers
 from denoisr.scripts.interrupts import graceful_main
+from denoisr.scripts.runtime import (
+    add_env_argument,
+    build_parser,
+    configure_logging,
+    load_env_file,
+)
 
 log = logging.getLogger(__name__)
 
@@ -491,65 +496,99 @@ def generate_to_file(
 
 @graceful_main("denoisr-generate-data", logger=log)
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    parser = argparse.ArgumentParser(
-        description="Generate training data from PGN games with Stockfish evaluation"
+    load_env_file()
+    log_path = configure_logging()
+    parser = build_parser(
+        "Generate training data from PGN games with Stockfish evaluation"
     )
-    parser.add_argument("--pgn", required=True, help="Path to .pgn or .pgn.zst file")
-    parser.add_argument(
+    add_env_argument(
+        parser,
+        "--pgn",
+        env_var="DENOISR_PGN_PATH",
+        help="Path to .pgn or .pgn.zst file",
+    )
+    add_env_argument(
+        parser,
         "--stockfish",
+        env_var="DENOISR_STOCKFISH_PATH",
         default=None,
+        required=False,
         help="Path to Stockfish binary (auto-detected from PATH if omitted)",
     )
-    parser.add_argument("--stockfish-depth", type=int, default=10)
-    parser.add_argument("--max-examples", type=int, default=1_000_000)
-    parser.add_argument(
+    add_env_argument(
+        parser,
+        "--stockfish-depth",
+        env_var="DENOISR_STOCKFISH_DEPTH",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--max-examples",
+        env_var="DENOISR_MAX_EXAMPLES",
+        type=int,
+    )
+    add_env_argument(
+        parser,
         "--workers",
+        env_var="DENOISR_WORKERS",
         type=int,
-        default=0,
-        help="Worker processes (0 = auto: 64)",
+        help="Worker processes",
     )
-    parser.add_argument("--output", type=str, default="outputs/training_data.pt")
-    parser.add_argument(
+    add_env_argument(
+        parser,
+        "--output",
+        env_var="DENOISR_DATA_OUTPUT",
+        type=str,
+    )
+    add_env_argument(
+        parser,
         "--policy-temperature",
+        env_var="DENOISR_POLICY_TEMPERATURE",
         type=float,
-        default=80.0,
-        help="Softmax temperature for policy targets (default: 80.0)",
+        help="Softmax temperature for policy targets",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--label-smoothing",
+        env_var="DENOISR_LABEL_SMOOTHING",
         type=float,
-        default=0.02,
-        help="Label smoothing epsilon (default: 0.02)",
+        help="Label smoothing epsilon",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--chunksize",
+        env_var="DENOISR_CHUNKSIZE",
         type=int,
-        default=64,
-        help="imap_unordered chunksize for worker batching (default: 64)",
+        help="imap_unordered chunksize for worker batching",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--chunk-examples",
+        env_var="DENOISR_CHUNK_EXAMPLES",
         type=int,
-        default=0,
         help=(
             "Save data in shard files with this many examples per chunk "
             "(0 = single-file output)"
         ),
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--scratch-dir",
+        env_var="DENOISR_SCRATCH_DIR",
         type=str,
-        default="outputs/scratch",
-        help=("Directory for temporary memmap files (default: outputs/scratch)"),
+        help="Directory for temporary memmap files",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--seed",
+        env_var="DENOISR_SEED",
         type=int,
         default=None,
+        required=False,
         help="Random seed for reproducible sampling (default: None = random)",
     )
     args = parser.parse_args()
+    log.info("logging to %s", log_path)
 
     stockfish_path = args.stockfish or shutil.which("stockfish")
     if stockfish_path is None:

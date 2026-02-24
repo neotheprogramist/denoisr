@@ -2,28 +2,43 @@
 
 from __future__ import annotations
 
-import argparse
+import logging
 
 from denoisr.scripts.interrupts import graceful_main
+from denoisr.scripts.runtime import (
+    add_env_argument,
+    build_parser,
+    configure_logging,
+    load_env_file,
+)
+
+log = logging.getLogger(__name__)
 
 
 @graceful_main("denoisr-gui")
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Denoisr Chess GUI")
-    parser.add_argument(
+    load_env_file()
+    parser = build_parser("Denoisr Chess GUI")
+    add_env_argument(
+        parser,
         "--checkpoint",
+        env_var="DENOISR_GUI_CHECKPOINT",
         type=str,
+        required=False,
         default="",
         help="Path to model checkpoint (pre-fills the GUI field)",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--mode",
+        env_var="DENOISR_GUI_MODE",
         type=str,
         choices=["single", "diffusion"],
-        default="single",
         help="Engine inference mode",
     )
     args = parser.parse_args()
+    log_path = configure_logging()
+    log.info("logging to %s", log_path)
 
     from denoisr.gui.app import DenoisrApp
 

@@ -26,6 +26,7 @@ from denoisr.evaluation.benchmark import (
 )
 from denoisr.evaluation.pgn_writer import write_combined_pgn, write_pgn
 from denoisr.scripts.interrupts import graceful_main
+from denoisr.scripts.runtime import configure_logging, load_env_file
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,7 @@ def _log_comparison(
 
 @graceful_main("denoisr-benchmark", logger=logger)
 def main() -> None:
+    load_env_file()
     parser = argparse.ArgumentParser(
         description="Benchmark Denoisr against a reference engine"
     )
@@ -281,11 +283,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    log_path = configure_logging()
+    logger.info("logging to %s", log_path)
 
     # --- Validate flags ---
     if args.head_to_head and not args.baseline_cmd:

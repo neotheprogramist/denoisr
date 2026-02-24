@@ -6,7 +6,6 @@ model plays random-looking moves — compare with a trained model
 to see how much training improves play.
 """
 
-import argparse
 import logging
 from pathlib import Path
 
@@ -23,22 +22,31 @@ from denoisr.scripts.config import (
     save_checkpoint,
 )
 from denoisr.scripts.interrupts import graceful_main
+from denoisr.scripts.runtime import (
+    add_env_argument,
+    build_parser,
+    configure_logging,
+    load_env_file,
+)
 
 log = logging.getLogger(__name__)
 
 
 @graceful_main("denoisr-init", logger=log)
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    parser = argparse.ArgumentParser(description="Initialize a random model checkpoint")
-    parser.add_argument(
+    load_env_file()
+    log_path = configure_logging()
+    parser = build_parser("Initialize a random model checkpoint")
+    add_env_argument(
+        parser,
         "--output",
+        env_var="DENOISR_INIT_OUTPUT",
         type=str,
-        default="outputs/random_model.pt",
         help="Output checkpoint path",
     )
     add_model_args(parser)
     args = parser.parse_args()
+    log.info("logging to %s", log_path)
 
     cfg = config_from_args(args)
     log.info("Initializing random model: d_s=%d, layers=%d", cfg.d_s, cfg.num_layers)

@@ -1,12 +1,17 @@
 """Unified training pipeline: PGN -> Phase 3 in one command."""
 
-import argparse
 import logging
 from pathlib import Path
 
 from denoisr.pipeline.config import load_config
 from denoisr.pipeline.runner import PipelineRunner
 from denoisr.scripts.interrupts import graceful_main
+from denoisr.scripts.runtime import (
+    add_env_argument,
+    build_parser,
+    configure_logging,
+    load_env_file,
+)
 
 log = logging.getLogger(__name__)
 
@@ -14,28 +19,34 @@ log = logging.getLogger(__name__)
 @graceful_main("denoisr-train", logger=log)
 def main() -> None:
     """Parse CLI arguments and run the full Denoisr training pipeline."""
-    parser = argparse.ArgumentParser(
-        description="Run the full Denoisr training pipeline from a TOML config"
-    )
-    parser.add_argument(
+    load_env_file()
+    parser = build_parser("Run the full Denoisr training pipeline from a TOML config")
+    add_env_argument(
+        parser,
         "--config",
+        env_var="DENOISR_CONFIG",
         type=str,
-        default="pipeline.toml",
-        help="Path to pipeline TOML config (default: pipeline.toml)",
+        default="config.toml",
+        help="Path to training TOML config",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--restart",
         action="store_true",
+        env_var="DENOISR_RESTART",
         help="Ignore saved state and start fresh",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--only",
         type=str,
-        default=None,
+        env_var="DENOISR_ONLY",
+        required=False,
         help=("Comma-separated list of steps to run (fetch,init,phase1,phase2,phase3)"),
     )
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    log_path = configure_logging()
+    log.info("logging to %s", log_path)
 
     cfg = load_config(Path(args.config))
     only = frozenset(args.only.split(",")) if args.only else None

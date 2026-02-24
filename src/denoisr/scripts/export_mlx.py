@@ -1,6 +1,5 @@
 """Export PyTorch checkpoint to safetensors for MLX inference."""
 
-import argparse
 import json
 import logging
 import sys
@@ -11,6 +10,12 @@ from safetensors.torch import save_file
 
 from denoisr.scripts.config import load_checkpoint
 from denoisr.scripts.interrupts import graceful_main
+from denoisr.scripts.runtime import (
+    add_env_argument,
+    build_parser,
+    configure_logging,
+    load_env_file,
+)
 
 log = logging.getLogger(__name__)
 
@@ -43,21 +48,23 @@ def export_weights(checkpoint_path: Path, output_path: Path) -> None:
 @graceful_main("denoisr-export-mlx", logger=log)
 def main() -> None:
     """CLI entry point for denoisr-export-mlx."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    parser = argparse.ArgumentParser(
-        description="Export PyTorch checkpoint to safetensors for MLX inference",
-    )
-    parser.add_argument(
+    load_env_file()
+    log_path = configure_logging()
+    parser = build_parser("Export PyTorch checkpoint to safetensors for MLX inference")
+    add_env_argument(
+        parser,
         "--checkpoint",
-        required=True,
+        env_var="DENOISR_EXPORT_CHECKPOINT",
         help="PyTorch checkpoint path",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--output",
-        default="outputs/model.safetensors",
+        env_var="DENOISR_EXPORT_OUTPUT",
         help="Output safetensors path",
     )
     args = parser.parse_args()
+    log.info("logging to %s", log_path)
 
     checkpoint_path = Path(args.checkpoint)
     if not checkpoint_path.exists():

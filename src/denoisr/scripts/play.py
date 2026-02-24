@@ -13,11 +13,17 @@ Supports two inference modes:
 
 from __future__ import annotations
 
-import argparse
+import logging
 from typing import TYPE_CHECKING
 
 from denoisr.inference.uci import run_uci_loop
 from denoisr.scripts.interrupts import graceful_main
+from denoisr.scripts.runtime import (
+    add_env_argument,
+    build_parser,
+    configure_logging,
+    load_env_file,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,23 +31,36 @@ if TYPE_CHECKING:
     import chess
 
 
+log = logging.getLogger(__name__)
+
+
 @graceful_main("denoisr-play")
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Denoisr UCI chess engine")
-    parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint")
-    parser.add_argument(
+    load_env_file()
+    parser = build_parser("Denoisr UCI chess engine")
+    add_env_argument(
+        parser,
+        "--checkpoint",
+        env_var="DENOISR_PLAY_CHECKPOINT",
+        help="Path to model checkpoint",
+    )
+    add_env_argument(
+        parser,
         "--mode",
+        env_var="DENOISR_PLAY_MODE",
         choices=["single", "diffusion"],
-        default="single",
         help="Inference mode",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--denoising-steps",
+        env_var="DENOISR_PLAY_DENOISING_STEPS",
         type=int,
-        default=20,
         help="Denoising steps for diffusion mode (more = stronger, slower)",
     )
     args = parser.parse_args()
+    log_path = configure_logging()
+    log.info("logging to %s", log_path)
 
     # Mutable container — populated by load_model() on first 'isready'.
     _engine_fn: list[Callable[[chess.Board], chess.Move]] = []
@@ -64,6 +83,7 @@ def main() -> None:
 
         device = detect_device()
         cfg, state = load_checkpoint(Path(args.checkpoint), device)
+        log.info("loaded checkpoint=%s mode=%s device=%s", args.checkpoint, args.mode, device)
 
         encoder = build_encoder(cfg).to(device)
         backbone = build_backbone(cfg).to(device)

@@ -196,7 +196,7 @@ def step_generate_data(
         if not detected:
             raise FileNotFoundError(
                 "Stockfish not found in PATH. Set [data].stockfish_path in "
-                "pipeline.toml to an absolute Stockfish binary path."
+                "config.toml to an absolute Stockfish binary path."
             )
         stockfish_path = detected
 
@@ -269,6 +269,10 @@ def step_train_phase1(
         str(init_ckpt),
         "--data",
         str(data_path),
+        "--holdout-frac",
+        str(cfg.phase1.holdout_frac),
+        "--epochs",
+        str(cfg.phase1.epochs),
         "--lr",
         str(cfg.phase1.lr),
         "--batch-size",
@@ -277,8 +281,6 @@ def step_train_phase1(
         str(cfg.phase1.warmup_epochs),
         "--weight-decay",
         str(cfg.phase1.weight_decay),
-        "--compile",
-        str(cfg.phase1.compile),
         "--tqdm",
         "--output",
         str(output_ckpt),
@@ -337,8 +339,6 @@ def step_train_phase2(cfg: PipelineConfig, state: PipelineState) -> None:
         str(cfg.phase2.epochs),
         "--lr",
         str(cfg.phase2.lr),
-        "--compile",
-        str(cfg.phase2.compile),
         "--tqdm",
         "--output",
         str(output_ckpt),
@@ -385,14 +385,38 @@ def step_train_phase3(cfg: PipelineConfig, state: PipelineState) -> None:
         str(cfg.phase3.generations),
         "--games-per-gen",
         str(cfg.phase3.games_per_gen),
+        "--reanalyse-per-gen",
+        str(cfg.phase3.reanalyse_per_gen),
         "--mcts-sims",
         str(cfg.phase3.mcts_sims),
+        "--buffer-capacity",
+        str(cfg.phase3.buffer_capacity),
+        "--alpha-generations",
+        str(cfg.phase3.alpha_generations),
+        "--lr",
+        str(cfg.phase3.lr),
+        "--train-batch-size",
+        str(cfg.phase3.train_batch_size),
+        "--diffusion-steps",
+        str(cfg.phase3.diffusion_steps),
+        "--aux-updates-per-gen",
+        str(cfg.phase3.aux_updates_per_gen),
+        "--aux-batch-size",
+        str(cfg.phase3.aux_batch_size),
+        "--aux-seq-len",
+        str(cfg.phase3.aux_seq_len),
+        "--self-play-workers",
+        str(cfg.phase3.self_play_workers),
+        "--reanalyse-workers",
+        str(cfg.phase3.reanalyse_workers),
         "--save-every",
-        "1",
+        str(cfg.phase3.save_every),
         "--tqdm",
         "--output",
         str(output_ckpt),
     ]
+    if cfg.phase3.aux_lr is not None:
+        args.extend(["--aux-lr", str(cfg.phase3.aux_lr)])
 
     _run_python_module("denoisr.scripts.train_phase3", args)
     if not output_ckpt.exists():

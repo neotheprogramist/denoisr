@@ -22,7 +22,6 @@ from tqdm import tqdm
 from denoisr.game.chess_game import ChessGame
 from denoisr.nn.diffusion import DPMSolverPP
 from denoisr.scripts.config import (
-    add_model_args,
     add_phase3_args,
     add_training_args,
     build_backbone,
@@ -41,6 +40,12 @@ from denoisr.scripts.config import (
     save_checkpoint,
 )
 from denoisr.scripts.interrupts import graceful_main
+from denoisr.scripts.runtime import (
+    add_env_argument,
+    build_parser,
+    configure_logging,
+    load_env_file,
+)
 from denoisr.training.phase_orchestrator import PhaseConfig, PhaseOrchestrator
 from denoisr.training.phase2_trainer import Phase2Trainer, TrajectoryBatch
 from denoisr.training.reanalyse import ReanalyseActor
@@ -151,68 +156,138 @@ def _records_to_trajectory_batch(
     )
 
 
-@graceful_main("denoisr-train-phase3", logger=log)
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Phase 3: RL self-play")
-    parser.add_argument("--checkpoint", required=True, help="Phase 2 checkpoint path")
-    parser.add_argument("--generations", type=int, default=1000)
-    parser.add_argument("--games-per-gen", type=int, default=100)
-    parser.add_argument("--reanalyse-per-gen", type=int, default=50)
-    parser.add_argument("--mcts-sims", type=int, default=800)
-    parser.add_argument("--buffer-capacity", type=int, default=100_000)
-    parser.add_argument("--alpha-generations", type=int, default=50)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--train-batch-size", type=int, default=256)
-    parser.add_argument(
-        "--diffusion-steps",
+def build_cli_parser() -> argparse.ArgumentParser:
+    parser = build_parser("Phase 3: RL self-play")
+    add_env_argument(
+        parser,
+        "--checkpoint",
+        env_var="DENOISR_PHASE3_CHECKPOINT",
+        help="Phase 2 checkpoint path",
+    )
+    add_env_argument(
+        parser,
+        "--generations",
+        env_var="DENOISR_PHASE3_GENERATIONS",
         type=int,
-        default=10,
+    )
+    add_env_argument(
+        parser,
+        "--games-per-gen",
+        env_var="DENOISR_PHASE3_GAMES_PER_GEN",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--reanalyse-per-gen",
+        env_var="DENOISR_PHASE3_REANALYSE_PER_GEN",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--mcts-sims",
+        env_var="DENOISR_PHASE3_MCTS_SIMS",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--buffer-capacity",
+        env_var="DENOISR_PHASE3_BUFFER_CAPACITY",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--alpha-generations",
+        env_var="DENOISR_PHASE3_ALPHA_GENERATIONS",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--lr",
+        env_var="DENOISR_PHASE3_LR",
+        type=float,
+    )
+    add_env_argument(
+        parser,
+        "--train-batch-size",
+        env_var="DENOISR_PHASE3_TRAIN_BATCH_SIZE",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--diffusion-steps",
+        env_var="DENOISR_PHASE3_DIFFUSION_STEPS",
+        type=int,
         help="Denoising steps used to form diffusion policy targets during Phase 3",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--aux-updates-per-gen",
+        env_var="DENOISR_PHASE3_AUX_UPDATES_PER_GEN",
         type=int,
-        default=1,
         help="Number of auxiliary Phase 2 trajectory updates per generation",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--aux-batch-size",
+        env_var="DENOISR_PHASE3_AUX_BATCH_SIZE",
         type=int,
-        default=64,
         help="Batch size for auxiliary trajectory updates",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--aux-seq-len",
+        env_var="DENOISR_PHASE3_AUX_SEQ_LEN",
         type=int,
-        default=10,
         help="Trajectory sequence length for auxiliary updates",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--aux-lr",
+        env_var="DENOISR_PHASE3_AUX_LR",
         type=float,
         default=None,
+        required=False,
         help="Learning rate for auxiliary trajectory updates (default: --lr)",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--self-play-workers",
+        env_var="DENOISR_PHASE3_SELF_PLAY_WORKERS",
         type=int,
-        default=0,
-        help="Parallel self-play workers (0 = auto: min(8, --workers/auto))",
+        help="Parallel self-play workers",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--reanalyse-workers",
+        env_var="DENOISR_PHASE3_REANALYSE_WORKERS",
         type=int,
-        default=0,
-        help="Parallel reanalyse workers (0 = auto: min(8, --workers/auto))",
+        help="Parallel reanalyse workers",
     )
-    parser.add_argument("--output", type=str, default="outputs/phase3.pt")
-    parser.add_argument("--save-every", type=int, default=10)
-    add_model_args(parser)
+    add_env_argument(
+        parser,
+        "--output",
+        env_var="DENOISR_PHASE3_OUTPUT",
+        type=str,
+    )
+    add_env_argument(
+        parser,
+        "--save-every",
+        env_var="DENOISR_PHASE3_SAVE_EVERY",
+        type=int,
+    )
     add_training_args(parser)
     add_phase3_args(parser)
+    return parser
+
+
+@graceful_main("denoisr-train-phase3", logger=log)
+def main() -> None:
+    load_env_file()
+    parser = build_cli_parser()
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    log_path = configure_logging()
+    log.info("logging to %s", log_path)
 
     device = detect_device()
     tcfg = full_training_config_from_args(args)

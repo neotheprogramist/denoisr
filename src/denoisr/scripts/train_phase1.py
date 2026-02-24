@@ -6,7 +6,6 @@ Pipeline:
 Gate to Phase 2: policy top-1 accuracy > 30% on held-out positions.
 """
 
-import argparse
 import math
 import logging
 import random
@@ -23,7 +22,6 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from denoisr.scripts.config import (
-    add_model_args,
     add_training_args,
     build_backbone,
     build_encoder,
@@ -33,11 +31,16 @@ from denoisr.scripts.config import (
     load_checkpoint,
     maybe_compile,
     resolve_dataloader_workers,
-    resolve_gradient_checkpointing,
     save_checkpoint,
     training_config_from_args,
 )
 from denoisr.scripts.interrupts import graceful_main
+from denoisr.scripts.runtime import (
+    add_env_argument,
+    build_parser,
+    configure_logging,
+    load_env_file,
+)
 from denoisr.training.dataset import ChessDataset
 from denoisr.training.ema import ModelEMA
 from denoisr.training.grok_tracker import GrokTracker
@@ -561,36 +564,64 @@ def measure_accuracy(
 
 @graceful_main("denoisr-train-phase1", logger=log)
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Phase 1: Supervised training")
-    parser.add_argument(
+    load_env_file()
+    parser = build_parser("Phase 1: Supervised training")
+    add_env_argument(
+        parser,
         "--checkpoint",
-        required=True,
+        env_var="DENOISR_PHASE1_CHECKPOINT",
         help="Checkpoint to load (create with denoisr-init)",
     )
-    parser.add_argument(
+    add_env_argument(
+        parser,
         "--data",
-        required=True,
+        env_var="DENOISR_PHASE1_DATA",
         help="Path to training data .pt file (create with denoisr-generate-data)",
     )
-    parser.add_argument("--holdout-frac", type=float, default=0.05)
-    parser.add_argument("--batch-size", type=int, default=1024)
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--output", type=str, default="outputs/phase1.pt")
-    parser.add_argument(
+    add_env_argument(
+        parser,
+        "--holdout-frac",
+        env_var="DENOISR_PHASE1_HOLDOUT_FRAC",
+        type=float,
+    )
+    add_env_argument(
+        parser,
+        "--batch-size",
+        env_var="DENOISR_PHASE1_BATCH_SIZE",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--epochs",
+        env_var="DENOISR_PHASE1_EPOCHS",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--lr",
+        env_var="DENOISR_PHASE1_LR",
+        type=float,
+    )
+    add_env_argument(
+        parser,
+        "--output",
+        env_var="DENOISR_PHASE1_OUTPUT",
+        type=str,
+    )
+    add_env_argument(
+        parser,
         "--run-name",
+        env_var="DENOISR_RUN_NAME",
         type=str,
         default=None,
+        required=False,
         help="TensorBoard run name (default: timestamp)",
     )
-    add_model_args(parser)
     add_training_args(parser)
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(message)s",
-    )
+    log_path = configure_logging()
+    log.info("logging to %s", log_path)
 
     device = detect_device()
     tcfg = training_config_from_args(args)
@@ -599,7 +630,6 @@ def main() -> None:
 
     # --- Load checkpoint ---
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
-    cfg = resolve_gradient_checkpointing(cfg, args, device)
     log.info(
         "checkpoint loaded  d_s=%d  heads=%d  layers=%d",
         cfg.d_s,
@@ -617,10 +647,10 @@ def main() -> None:
     policy_head.load_state_dict(state["policy_head"])
     value_head.load_state_dict(state["value_head"])
 
-    encoder = maybe_compile(encoder, device, compile_mode=tcfg.compile_mode)
-    backbone = maybe_compile(backbone, device, compile_mode=tcfg.compile_mode)
-    policy_head = maybe_compile(policy_head, device, compile_mode=tcfg.compile_mode)
-    value_head = maybe_compile(value_head, device, compile_mode=tcfg.compile_mode)
+    encoder = maybe_compile(encoder, device)
+    backbone = maybe_compile(backbone, device)
+    policy_head = maybe_compile(policy_head, device)
+    value_head = maybe_compile(value_head, device)
 
     # --- Load pre-generated data (mmap + shard-index split to bound RAM) ---
     data_plan = _build_tensor_data_plan(

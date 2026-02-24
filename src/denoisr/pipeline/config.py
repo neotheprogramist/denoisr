@@ -31,11 +31,12 @@ class ModelSectionConfig:
 
 @dataclass(frozen=True)
 class Phase1Config:
+    epochs: int = 100
     lr: float = 3e-4
     batch_size: int = 1024
+    holdout_frac: float = 0.05
     warmup_epochs: int = 5
     weight_decay: float = 1e-4
-    compile: str = "on"
 
 
 @dataclass(frozen=True)
@@ -45,14 +46,26 @@ class Phase2Config:
     batch_size: int = 1024
     seq_len: int = 10
     max_trajectories: int = 50_000
-    compile: str = "on"
 
 
 @dataclass(frozen=True)
 class Phase3Config:
     generations: int = 1000
     games_per_gen: int = 100
+    reanalyse_per_gen: int = 50
     mcts_sims: int = 800
+    buffer_capacity: int = 100_000
+    alpha_generations: int = 50
+    lr: float = 1e-4
+    train_batch_size: int = 256
+    diffusion_steps: int = 10
+    aux_updates_per_gen: int = 1
+    aux_batch_size: int = 64
+    aux_seq_len: int = 10
+    aux_lr: float | None = None
+    self_play_workers: int = 0
+    reanalyse_workers: int = 0
+    save_every: int = 10
 
 
 @dataclass(frozen=True)

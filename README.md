@@ -83,7 +83,11 @@ The simplest way to train is the unified pipeline command. It handles data downl
 uv run denoisr-train
 ```
 
-A default `pipeline.toml` is included in the repo. All sections are optional -- defaults are shown:
+A `.env.example` with recommended values is included. The CLI loads `.env`
+automatically and uses env-backed arguments with fail-fast validation when required
+inputs are missing.
+
+A default `config.toml` is included in the repo. All sections are optional -- defaults are shown:
 
 ```toml
 [data]
@@ -91,7 +95,6 @@ pgn_url = "https://database.lichess.org/standard/lichess_db_standard_rated_2025-
 pgn_path = "data/lichess.pgn.zst"
 stockfish_depth = 10
 max_examples = 2_000_000
-tactical_fraction = 0.25
 
 [model]
 d_s = 256
@@ -101,10 +104,11 @@ ffn_dim = 1024
 num_timesteps = 100
 
 [phase1]
+epochs = 100
 lr = 3e-4
 batch_size = 1024
+holdout_frac = 0.05
 warmup_epochs = 5
-compile = "on"
 
 [phase2]
 epochs = 200
@@ -112,11 +116,11 @@ lr = 3e-4
 batch_size = 1024
 seq_len = 10
 max_trajectories = 50_000
-compile = "on"
 
 [phase3]
 generations = 1000
 games_per_gen = 100
+reanalyse_per_gen = 50
 mcts_sims = 800
 
 [output]
@@ -140,7 +144,7 @@ uv run denoisr-train --only fetch,init
 
 | Flag        | Default         | Description                                                     |
 | ----------- | --------------- | --------------------------------------------------------------- |
-| `--config`  | `pipeline.toml` | Path to pipeline TOML config                                    |
+| `--config`  | `config.toml`   | Path to pipeline TOML config                                    |
 | `--restart` | off             | Ignore saved state and start fresh                              |
 | `--only`    | (all steps)     | Comma-separated steps to run: `fetch,init,phase1,phase2,phase3` |
 
@@ -204,7 +208,6 @@ Done: 1000000 examples generated.
 | `--workers`            | `64`                       | Worker processes (each runs its own Stockfish)                   |
 | `--policy-temperature` | `80`                       | Softmax temperature for policy targets                           |
 | `--label-smoothing`    | `0.02`                     | Label smoothing epsilon for policy targets                       |
-| `--tactical-fraction`  | `0.25`                     | Target fraction of tactical positions (hanging pieces, endgames) |
 | `--seed`               | (none)                     | Random seed for reproducible sampling                            |
 | `--chunksize`          | `64`                       | `imap_unordered` chunksize for worker batching                   |
 | `--output`             | `outputs/training_data.pt` | Output path for generated data                                   |
@@ -520,7 +523,6 @@ These control how the model learns. Safe to change between runs without architec
 | `--encoder-lr-multiplier` | `1.0`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                             |
 | `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
 | `--warmup-epochs`         | `5`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
-| `--compile`               | `on`    | CUDA `torch.compile` policy: `on` (require), `auto` (safe fallback), `off` (disable)                                                                                |
 | `--num-workers`           | `2`     | DataLoader worker processes. Set 0 for debugging, 2-4 for training                                                                                                  |
 | `--warm-restarts`         | off     | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                            |
 | `--threat-weight`         | `0.1`   | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                                      |

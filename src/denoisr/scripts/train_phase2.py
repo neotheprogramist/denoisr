@@ -7,7 +7,6 @@ with all 6 loss terms active.
 Gate to Phase 3: diffusion-conditioned accuracy > single-step by >5pp.
 """
 
-import argparse
 import logging
 import math
 import time
@@ -21,7 +20,6 @@ from tqdm import tqdm
 from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.data.pgn_streamer import SimplePGNStreamer
 from denoisr.scripts.config import (
-    add_model_args,
     add_training_args,
     build_backbone,
     build_board_encoder,
@@ -36,11 +34,16 @@ from denoisr.scripts.config import (
     load_checkpoint,
     maybe_compile,
     resolve_dataloader_workers,
-    resolve_gradient_checkpointing,
     save_checkpoint,
     training_config_from_args,
 )
 from denoisr.scripts.interrupts import graceful_main
+from denoisr.scripts.runtime import (
+    add_env_argument,
+    build_parser,
+    configure_logging,
+    load_env_file,
+)
 from denoisr.training.ema import ModelEMA
 from denoisr.training.logger import TrainingLogger
 from denoisr.training.loss import ChessLossComputer
@@ -171,30 +174,70 @@ def extract_trajectories(
 
 @graceful_main("denoisr-train-phase2", logger=log)
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Phase 2: World model + diffusion bootstrapping"
+    load_env_file()
+    parser = build_parser("Phase 2: World model + diffusion bootstrapping")
+    add_env_argument(
+        parser,
+        "--checkpoint",
+        env_var="DENOISR_PHASE2_CHECKPOINT",
+        help="Phase 1 checkpoint path",
     )
-    parser.add_argument("--checkpoint", required=True, help="Phase 1 checkpoint path")
-    parser.add_argument(
-        "--pgn", required=True, help="PGN file for trajectory extraction"
+    add_env_argument(
+        parser,
+        "--pgn",
+        env_var="DENOISR_PHASE2_PGN",
+        help="PGN file for trajectory extraction",
     )
-    parser.add_argument("--seq-len", type=int, default=10)
-    parser.add_argument("--max-trajectories", type=int, default=50_000)
-    parser.add_argument("--batch-size", type=int, default=1024)
-    parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--output", type=str, default="outputs/phase2.pt")
-    parser.add_argument(
+    add_env_argument(
+        parser,
+        "--seq-len",
+        env_var="DENOISR_PHASE2_SEQ_LEN",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--max-trajectories",
+        env_var="DENOISR_PHASE2_MAX_TRAJECTORIES",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--batch-size",
+        env_var="DENOISR_PHASE2_BATCH_SIZE",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--epochs",
+        env_var="DENOISR_PHASE2_EPOCHS",
+        type=int,
+    )
+    add_env_argument(
+        parser,
+        "--lr",
+        env_var="DENOISR_PHASE2_LR",
+        type=float,
+    )
+    add_env_argument(
+        parser,
+        "--output",
+        env_var="DENOISR_PHASE2_OUTPUT",
+        type=str,
+    )
+    add_env_argument(
+        parser,
         "--run-name",
+        env_var="DENOISR_RUN_NAME",
         type=str,
         default=None,
+        required=False,
         help="TensorBoard run name (default: timestamp)",
     )
-    add_model_args(parser)
     add_training_args(parser)
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    log_path = configure_logging()
+    log.info("logging to %s", log_path)
 
     device = detect_device()
     tcfg = training_config_from_args(args)
@@ -203,7 +246,6 @@ def main() -> None:
 
     # --- Load Phase 1 ---
     cfg, state = load_checkpoint(Path(args.checkpoint), device)
-    cfg = resolve_gradient_checkpointing(cfg, args, device)
     log.info(
         "checkpoint loaded  d_s=%d  layers=%d",
         cfg.d_s,
@@ -226,9 +268,9 @@ def main() -> None:
     consistency = build_consistency(cfg).to(device)
     schedule = build_schedule(cfg).to(device)
 
-    encoder = maybe_compile(encoder, device, compile_mode=tcfg.compile_mode)
-    backbone = maybe_compile(backbone, device, compile_mode=tcfg.compile_mode)
-    diffusion_mod = maybe_compile(diffusion_mod, device, compile_mode=tcfg.compile_mode)
+    encoder = maybe_compile(encoder, device)
+    backbone = maybe_compile(backbone, device)
+    diffusion_mod = maybe_compile(diffusion_mod, device)
 
     loss_fn = ChessLossComputer(
         policy_weight=tcfg.policy_weight,
