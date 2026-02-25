@@ -245,6 +245,7 @@ def step_generate_data(
         num_workers=workers,
         chunksize=cfg.data.chunksize,
         chunk_examples=cfg.data.chunk_examples,
+        use_tqdm=False,
     )
 
     _update_state(state, last_data=data_path)

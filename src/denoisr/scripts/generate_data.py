@@ -15,6 +15,7 @@ The main() entry point uses generate_to_file() which always writes chunked
 output (single code path).
 """
 
+import argparse
 import atexit
 import logging
 import multiprocessing
@@ -160,6 +161,30 @@ def _stream_positions(
 _CHUNK_FORMAT = "chunked_v1"
 
 
+@dataclass
+class _TenStepProgressTracker:
+    """Emit at most 10 INFO progress logs at 10% milestones."""
+
+    total: int
+    next_step: int = 1
+
+    def maybe_log(self, completed: int) -> None:
+        if completed < 0:
+            raise ValueError("completed must be >= 0")
+        while self.next_step <= 10 and (completed * 10) >= (
+            self.total * self.next_step
+        ):
+            pct = self.next_step * 10
+            log.info(
+                "Generation progress step %d/10 (%d%%): %d/%d examples",
+                self.next_step,
+                pct,
+                completed,
+                self.total,
+            )
+            self.next_step += 1
+
+
 def _estimate_chunk_buffer_gib(num_examples: int, num_planes: int) -> float:
     bytes_per_example = ((num_planes * 8 * 8) + (64 * 64) + 3) * 4
     return (num_examples * bytes_per_example) / (1024 * 1024 * 1024)
@@ -205,6 +230,7 @@ def _generate_to_file_chunked(
     label_smoothing: float,
     chunksize: int,
     chunk_examples: int,
+    use_tqdm: bool,
 ) -> int:
     """Generate data directly to on-disk chunk files + manifest."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -225,6 +251,8 @@ def _generate_to_file_chunked(
     total_written = 0
     chunk_idx = 0
     fill = 0
+    processed = 0
+    progress_tracker = _TenStepProgressTracker(total=max_examples)
 
     def flush_chunk() -> None:
         nonlocal fill, chunk_idx, total_written, eco_codes_buf
@@ -266,6 +294,7 @@ def _generate_to_file_chunked(
             desc="Evaluating positions",
             unit="pos",
             smoothing=0.1,
+            disable=not use_tqdm,
         ):
             boards_buf[fill] = board_np
             policies_buf[fill] = policy_np
@@ -274,6 +303,8 @@ def _generate_to_file_chunked(
             piece_counts_buf[fill] = pc
             eco_codes_buf[fill] = eco
             fill += 1
+            processed += 1
+            progress_tracker.maybe_log(processed)
             if fill >= chunk_examples:
                 flush_chunk()
         flush_chunk()
@@ -306,6 +337,7 @@ def generate_to_file(
     chunksize: int = 1_024,
     seed: int | None = None,
     chunk_examples: int = 1_000_000,
+    use_tqdm: bool = False,
 ) -> int:
     """Generate chunked training data and write a manifest."""
     if seed is not None:
@@ -344,6 +376,7 @@ def generate_to_file(
         label_smoothing=label_smoothing,
         chunksize=chunksize,
         chunk_examples=chunk_examples,
+        use_tqdm=use_tqdm,
     )
 
 
@@ -430,6 +463,15 @@ def main() -> None:
         required=False,
         help="Random seed for reproducible sampling (default: None = random)",
     )
+    add_env_argument(
+        parser,
+        "--tqdm",
+        env_var="DENOISR_TQDM",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        required=False,
+        help="show tqdm progress bars",
+    )
     args = parser.parse_args()
     log.info("logging to %s", log_path)
 
@@ -452,6 +494,7 @@ def main() -> None:
         chunksize=args.chunksize,
         seed=args.seed,
         chunk_examples=args.chunk_examples,
+        use_tqdm=args.tqdm,
     )
     log.info("Done: %d examples generated.", count)
 

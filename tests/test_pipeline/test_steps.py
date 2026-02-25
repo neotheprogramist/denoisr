@@ -276,6 +276,7 @@ def test_generate_data_calls_generate(tmp_path: Path) -> None:
             assert kwargs["stockfish_path"] == "/usr/bin/stockfish"
             assert kwargs["chunksize"] == 512
             assert kwargs["chunk_examples"] == 2048
+            assert kwargs["use_tqdm"] is False
 
     assert state.last_data != ""
     assert state.updated_at != ""

@@ -152,12 +152,16 @@ Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to o
 
 Generation stops after writing `--max-examples` streamed positions from the PGN.
 Defaults below reflect the recommended `.env.example` profile.
+Use `--tqdm` for an interactive progress bar; otherwise logs are emitted every 10%.
 
 **What you'll see:**
 
 ```
 Chunked generation: max_examples=4000000 workers=64 chunk_examples=1000000 (~44.36 GiB chunk buffers)
-Evaluating positions: 45%|████████▌          | 1800000/4000000 [58:12<70:00, 523pos/s]
+Generation progress step 1/10 (10%): 400000/4000000 examples
+Generation progress step 2/10 (20%): 800000/4000000 examples
+...
+Generation progress step 10/10 (100%): 4000000/4000000 examples
 Wrote chunk 0 (1000000 examples): outputs/training_data_chunks/chunk_000000.pt
 Wrote chunk 1 (1000000 examples): outputs/training_data_chunks/chunk_000001.pt
 Saved chunked manifest with 4000000 examples across 4 chunks to outputs/training_data.pt
@@ -176,6 +180,7 @@ Done: 4000000 examples generated.
 | `--seed`               | (none)                     | Random seed for reproducible sampling          |
 | `--chunksize`          | `1024`                     | `imap_unordered` chunksize for worker batching |
 | `--chunk-examples`     | `1000000`                  | Examples per output shard                      |
+| `--tqdm`               | off                        | Show tqdm progress bar (disabled by default)   |
 | `--output`             | `outputs/training_data.pt` | Output path for generated data                 |
 
 #### Step 4: Phase 1 -- Supervised learning
