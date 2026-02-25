@@ -119,8 +119,8 @@ class TrainingConfig:
 
     # Number of initial epochs with linearly increasing LR (0 → target).
     # Prevents destructively large parameter updates when weights are
-    # still random. 5 epochs compensates for higher peak LR (3e-4).
-    warmup_epochs: int = 5
+    # still random. 10 epochs is safer for large-batch training.
+    warmup_epochs: int = 10
 
     # Enable cosine annealing with warm restarts (T_0=20, T_mult=2) instead
     # of plain CosineAnnealingLR. Periodically resets LR to help escape local
@@ -317,6 +317,11 @@ def detect_device() -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     if torch.cuda.is_available():
+        # Favor throughput for fixed-shape training workloads.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")
         return torch.device("cuda")
     return torch.device("cpu")
 

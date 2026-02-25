@@ -562,9 +562,10 @@ def main() -> None:
                 else:
                     results["draws"] += 1
                 sp_pbar.update(1)
-                sp_pbar.set_postfix(
-                    W=results["wins"], D=results["draws"], L=results["losses"]
-                )
+                if use_tqdm:
+                    sp_pbar.set_postfix(
+                        W=results["wins"], D=results["draws"], L=results["losses"]
+                    )
         else:
             with ThreadPoolExecutor(max_workers=self_play_workers) as executor:
                 futures = [
@@ -582,11 +583,12 @@ def main() -> None:
                     else:
                         results["draws"] += 1
                     sp_pbar.update(1)
-                    sp_pbar.set_postfix(
-                        W=results["wins"],
-                        D=results["draws"],
-                        L=results["losses"],
-                    )
+                    if use_tqdm:
+                        sp_pbar.set_postfix(
+                            W=results["wins"],
+                            D=results["draws"],
+                            L=results["losses"],
+                        )
         sp_pbar.close()
 
         # 2. Auxiliary trajectory updates (keeps world model + diffusion learning in Phase 3)
@@ -655,7 +657,8 @@ def main() -> None:
                     reanalyse_count += len(examples)
                     reanalysed_examples.extend(examples)
                     ra_pbar.update(1)
-                    ra_pbar.set_postfix(examples=reanalyse_count)
+                    if use_tqdm:
+                        ra_pbar.set_postfix(examples=reanalyse_count)
             else:
                 with ThreadPoolExecutor(max_workers=reanalyse_workers) as executor:
                     futures = [
@@ -667,7 +670,8 @@ def main() -> None:
                         reanalyse_count += len(examples)
                         reanalysed_examples.extend(examples)
                         ra_pbar.update(1)
-                        ra_pbar.set_postfix(examples=reanalyse_count)
+                        if use_tqdm:
+                            ra_pbar.set_postfix(examples=reanalyse_count)
             ra_pbar.close()
 
         # 4. Train on replay buffer batch
@@ -684,15 +688,16 @@ def main() -> None:
             trainer.scheduler_step()
             avg_train_loss = train_loss_sum / max(train_batches, 1)
 
-        gen_pbar.set_postfix(
-            buf=len(buffer),
-            alpha=f"{alpha:.2f}",
-            aux=f"{avg_aux_loss:.3f}" if aux_batches > 0 else "n/a",
-            train=f"{avg_train_loss:.3f}" if train_batches > 0 else "n/a",
-            W=results["wins"],
-            D=results["draws"],
-            L=results["losses"],
-        )
+        if use_tqdm:
+            gen_pbar.set_postfix(
+                buf=len(buffer),
+                alpha=f"{alpha:.2f}",
+                aux=f"{avg_aux_loss:.3f}" if aux_batches > 0 else "n/a",
+                train=f"{avg_train_loss:.3f}" if train_batches > 0 else "n/a",
+                W=results["wins"],
+                D=results["draws"],
+                L=results["losses"],
+            )
         log.info(
             "gen %d/%d buffer=%d alpha=%.2f temp=%.3f W/D/L=%d/%d/%d aux_batches=%d aux_loss=%.4f reanalysed=%d train_batches=%d train_loss=%.4f",
             gen + 1,

@@ -27,7 +27,7 @@ def _make_cfg(tmp_path: Path) -> PipelineConfig:
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
             pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
-            stockfish_path="stockfish",
+            stockfish_path="",
             stockfish_depth=1,
             max_examples=10,
             workers=1,

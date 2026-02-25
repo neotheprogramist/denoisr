@@ -49,6 +49,7 @@ from denoisr.training.logger import TrainingLogger
 from denoisr.training.loss import ChessLossComputer
 from denoisr.training.resource_monitor import ResourceMonitor
 from denoisr.training.plateau_detector import PlateauDetector
+from denoisr.training.prefetch import DevicePrefetcher
 from denoisr.training.supervised_trainer import SupervisedTrainer
 from denoisr.types import TrainingExample
 from denoisr.types.board import BoardTensor
@@ -760,7 +761,6 @@ def main() -> None:
             num_loss_batches = 0
             epoch_start = time.monotonic()
             monitor.reset()
-            step_losses: list[float] = []
             step_grad_norms: list[float] = []
             policy_loss_sum = 0.0
             value_loss_sum = 0.0
@@ -768,7 +768,6 @@ def main() -> None:
             value_loss_count = 0
             overflow_count = 0
             data_time = 0.0
-            compute_time = 0.0
 
             shard_order = torch.randperm(len(data_plan.shards)).tolist()
             for shard_pos, shard_idx in enumerate(shard_order, start=1):
@@ -784,22 +783,36 @@ def main() -> None:
                     num_planes=cfg.num_planes,
                     augment=True,
                 )
+                loader_kwargs: dict[str, Any] = {
+                    "batch_size": bs,
+                    "shuffle": True,
+                    "num_workers": worker_count,
+                    "pin_memory": pin_memory,
+                }
+                if worker_count > 0:
+                    loader_kwargs["persistent_workers"] = True
+                    loader_kwargs["prefetch_factor"] = 4
                 train_loader: DataLoader[
                     tuple[torch.Tensor, torch.Tensor, torch.Tensor]
                 ] = DataLoader(
                     train_dataset,
-                    batch_size=bs,
-                    shuffle=True,
-                    num_workers=worker_count,
-                    pin_memory=pin_memory,
-                    persistent_workers=False,
+                    **loader_kwargs,
                 )
+                batch_iter: (
+                    DevicePrefetcher[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+                    | DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+                )
+                if device.type == "cuda":
+                    batch_iter = DevicePrefetcher(train_loader, device)
+                else:
+                    batch_iter = train_loader
                 pbar = tqdm(
-                    train_loader,
+                    batch_iter,
                     desc=(
                         f"Epoch {epoch_num}/{args.epochs} "
                         f"[shard {shard_pos}/{len(shard_order)}]"
                     ),
+                    total=len(train_loader),
                     leave=False,
                     smoothing=0.3,
                     disable=not use_tqdm,
@@ -808,26 +821,17 @@ def main() -> None:
                 for boards_batch, policies_batch, values_batch in pbar:
                     data_time += time.monotonic() - data_start
 
-                    compute_start = time.monotonic()
                     loss, breakdown = trainer.train_step_tensors(
                         boards_batch, policies_batch, values_batch
                     )
                     if model_ema is not None:
                         model_ema.update()
-                    compute_time += time.monotonic() - compute_start
 
-                    logger.log_train_step(global_step, loss, breakdown)
-                    if "batch_top1" in breakdown:
-                        logger._writer.add_scalar(
-                            "accuracy/batch_top1", breakdown["batch_top1"], global_step
-                        )
                     if grok_tracker is not None:
-                        grok_metrics = grok_tracker.step(
+                        _ = grok_tracker.step(
                             global_step, breakdown, breakdown.get("grad_norm", 0.0)
                         )
-                        logger.log_grok_metrics(global_step, grok_metrics)
                     if math.isfinite(loss):
-                        step_losses.append(loss)
                         epoch_loss += loss
                         num_loss_batches += 1
                     policy_loss = float(breakdown.get("policy", 0.0))
@@ -843,15 +847,15 @@ def main() -> None:
                     else:
                         step_grad_norms.append(breakdown.get("grad_norm", 0.0))
                     if global_step % 100 == 0:
-                        logger.log_gpu(global_step)
                         monitor.sample()
                     global_step += 1
                     num_batches += 1
-                    pbar.set_postfix(
-                        loss=f"{loss:.4f}",
-                        policy=f"{breakdown['policy']:.4f}",
-                        value=f"{breakdown['value']:.4f}",
-                    )
+                    if use_tqdm:
+                        pbar.set_postfix(
+                            loss=f"{loss:.4f}",
+                            policy=f"{breakdown['policy']:.4f}",
+                            value=f"{breakdown['value']:.4f}",
+                        )
                     data_start = time.monotonic()
                 pbar.close()
                 del train_loader, train_dataset, boards, policies, values
@@ -882,7 +886,6 @@ def main() -> None:
                     top1 * 100,
                 )
             current_lr = trainer.optimizer.param_groups[0]["lr"]
-            head_lr = trainer.optimizer.param_groups[2]["lr"]
             avg_policy_loss = policy_loss_sum / max(policy_loss_count, 1)
             avg_value_loss = value_loss_sum / max(value_loss_count, 1)
             overflow_frac = overflow_count / max(num_batches, 1)
@@ -949,7 +952,6 @@ def main() -> None:
                     "pol": avg_policy_loss,
                     "val": avg_value_loss,
                 },
-                step_losses=step_losses,
                 accuracy={"top1": top1 * 100, "top5": top5 * 100},
                 lr=current_lr,
                 grad_norms=step_grad_norms,
@@ -960,8 +962,6 @@ def main() -> None:
                 overflows=overflow_count,
                 phase="phase1",
             )
-            logger._writer.add_scalar("lr/encoder", current_lr, epoch)
-            logger._writer.add_scalar("lr/head", head_lr, epoch)
             log.info(
                 (
                     "Epoch %d/%d summary: loss=%.4f pol=%.4f val=%.4f "

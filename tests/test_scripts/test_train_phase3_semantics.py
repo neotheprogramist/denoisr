@@ -9,7 +9,7 @@ def _set_required_training_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "DENOISR_TRAIN_WEIGHT_DECAY": "0.0001",
         "DENOISR_TRAIN_ENCODER_LR_MULTIPLIER": "1.0",
         "DENOISR_TRAIN_MIN_LR": "0.000001",
-        "DENOISR_TRAIN_WARMUP_EPOCHS": "5",
+        "DENOISR_TRAIN_WARMUP_EPOCHS": "10",
         "DENOISR_TRAIN_WARM_RESTARTS": "1",
         "DENOISR_TRAIN_THREAT_WEIGHT": "0.1",
         "DENOISR_TRAIN_POLICY_WEIGHT": "2.0",

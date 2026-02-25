@@ -186,7 +186,7 @@ The network learns basic chess from the pre-generated training data:
 uv run denoisr-train-phase1 \
     --checkpoint outputs/random_model.pt \
     --data outputs/training_data.pt \
-    --epochs 80 \
+    --epochs 100 \
     --output outputs/phase1.pt
 ```
 
@@ -195,22 +195,22 @@ uv run denoisr-train-phase1 \
 ```
 Loaded checkpoint: d_s=256, heads=8, layers=15
 Loaded 100000 training examples from outputs/training_data.pt
-Epoch 12/80:  68%|█████████████▌      | 1088/1600 [00:45<00:21] loss=2.1234 policy=1.8901 value=0.2333
-Epoch 12/80: avg_loss=2.0891 top1_accuracy=28.5%
+Epoch 12/100:  68%|█████████████▌      | 1088/1600 [00:45<00:21] loss=2.1234 policy=1.8901 value=0.2333
+Epoch 12/100: avg_loss=2.0891 top1_accuracy=28.5%
 ```
 
 Training automatically stops when top-1 accuracy exceeds **50%** (Phase 1 gate).
 
-| Flag             | Default             | Description                                                                    |
-| ---------------- | ------------------- | ------------------------------------------------------------------------------ |
-| `--checkpoint`   | (required)          | Checkpoint to load (create with `denoisr-init`)                                |
-| `--data`         | (required)          | Training data `.pt` file (create with `denoisr-generate-data`)                 |
-| `--holdout-frac` | `0.05`              | Fraction for accuracy evaluation                                               |
-| `--batch-size`   | `512`               | Batch size                                                                     |
-| `--epochs`       | `80`                | Maximum epochs                                                                 |
-| `--lr`           | `3e-4`              | Learning rate                                                                  |
-| `--output`       | `outputs/phase1.pt` | Checkpoint path                                                                |
-| `--run-name`     | auto timestamp      | Run label added to structured log events (see [Training logs](#training-logs)) |
+| Flag             | Default             | Description                                                            |
+| ---------------- | ------------------- | ---------------------------------------------------------------------- |
+| `--checkpoint`   | (required)          | Checkpoint to load (create with `denoisr-init`)                        |
+| `--data`         | (required)          | Training data `.pt` file (create with `denoisr-generate-data`)         |
+| `--holdout-frac` | `0.05`              | Fraction for accuracy evaluation                                       |
+| `--batch-size`   | `512`               | Batch size                                                             |
+| `--epochs`       | `100`               | Maximum epochs                                                         |
+| `--lr`           | `3e-4`              | Learning rate                                                          |
+| `--output`       | `outputs/phase1.pt` | Checkpoint path                                                        |
+| `--run-name`     | auto timestamp      | Run label added to training logs (see [Training logs](#training-logs)) |
 
 Plus all [training optimization](#training-optimization-trainingconfig) flags.
 
@@ -223,7 +223,7 @@ uv run denoisr-train-phase2 \
     --checkpoint outputs/phase1.pt \
     --pgn data/lichess_db_standard_rated_2025-01.pgn.zst \
     --max-trajectories 30000 \
-    --epochs 120 \
+    --epochs 100 \
     --output outputs/phase2.pt
 ```
 
@@ -231,8 +231,8 @@ uv run denoisr-train-phase2 \
 
 ```
 Extracting trajectories: 72%|██████████████▍     | 21600/30000 [02:15<00:52, 267traj/s]
-Epoch 45/120:  55%|███████████         | 860/1562 [00:32<00:26] loss=0.0234
-Epoch 45/120: total_loss=0.0218 curriculum_steps=32
+Epoch 45/100:  55%|███████████         | 860/1562 [00:32<00:26] loss=0.0234
+Epoch 45/100: total_loss=0.0218 curriculum_steps=32
 ```
 
 Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 percentage points.
@@ -244,10 +244,10 @@ Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 pe
 | `--seq-len`          | `10`                | Board states per trajectory (9 future states for diffusion) |
 | `--max-trajectories` | `30000`             | Trajectories to extract                                     |
 | `--batch-size`       | `128`               | Batch size                                                  |
-| `--epochs`           | `120`               | Training epochs                                             |
+| `--epochs`           | `100`               | Training epochs                                             |
 | `--lr`               | `3e-4`              | Learning rate                                               |
 | `--output`           | `outputs/phase2.pt` | Checkpoint path                                             |
-| `--run-name`         | auto timestamp      | Run label added to structured log events                    |
+| `--run-name`         | auto timestamp      | Run label added to training logs                            |
 
 Plus all [training optimization](#training-optimization-trainingconfig) and [diffusion curriculum](#diffusion-curriculum) flags.
 
@@ -288,15 +288,15 @@ Plus all [training optimization](#training-optimization-trainingconfig) and [Pha
 
 ### Training logs
 
-Phase 1 and Phase 2 write metrics and scalar events to a single file: `logs/denoisr.log`.
+Phase 1 and Phase 2 write human-readable metrics to a single file: `logs/denoisr.log`.
 
-`--run-name` is still useful: it tags each structured event with a run label so you can filter mixed logs from multiple experiments. Without `--run-name`, a timestamp like `2026-02-20_14-30-15` is generated automatically.
+`--run-name` is still useful: it tags log lines with a run label so you can filter mixed logs from multiple experiments. Without `--run-name`, a timestamp like `2026-02-20_14-30-15` is generated automatically.
 
 #### What gets logged
 
 - Human-readable epoch summaries (single compact line per epoch)
-- Structured scalar events (`EVENT {...}` JSON lines) for losses, accuracy, LR, resource metrics, and grokking metrics
-- Structured hyperparameter events (`EVENT {...}` with `kind="hparams"`)
+- Human-readable hyperparameter summary at startup (`HPARAMS ...`)
+- Human-readable grokking summaries and warnings (`GROK-EPOCH ...`, `GROKKING ...`)
 - Regular script logs from all modules, all in the same file, with timestamps
 
 #### Read logs directly
@@ -307,9 +307,6 @@ tail -f logs/denoisr.log
 
 # Show only epoch summary lines
 rg "denoisr.metrics" logs/denoisr.log
-
-# Show only structured scalar/hparams events
-rg " EVENT " logs/denoisr.log
 ```
 
 #### Agent-friendly mode (default)
@@ -431,18 +428,18 @@ These control the neural network structure. Changing them creates a new architec
 
 These control how the model learns. Safe to change between runs without architectural incompatibility.
 
-| Flag                      | Default | What it controls                                                                                                                                                 |
-| ------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--lr`                    | `3e-4`  | Base learning rate for task heads (policy, value). The single most impactful hyperparameter                                                                      |
-| `--max-grad-norm`         | `5.0`   | Gradient clipping L2 threshold. Prevents instability from large gradient spikes. Check `gradients/norm` event lines — if frequently clipped, consider increasing |
-| `--weight-decay`          | `1e-4`  | AdamW L2 regularization. Increase to 1e-2 for small datasets, decrease to 0 if underfitting                                                                      |
-| `--encoder-lr-multiplier` | `1.0`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                          |
-| `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                     |
-| `--warmup-epochs`         | `5`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                              |
-| `--workers`               | `0`     | DataLoader worker processes (`0` = auto)                                                                                                                         |
-| `--warm-restarts`         | on      | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                         |
-| `--threat-weight`         | `0.1`   | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                                   |
-| `--tqdm`                  | off     | Show tqdm progress bars. Off by default for agent-friendly structured log output                                                                                 |
+| Flag                      | Default | What it controls                                                                                                                                        |
+| ------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--lr`                    | `3e-4`  | Base learning rate for task heads (policy, value). The single most impactful hyperparameter                                                             |
+| `--max-grad-norm`         | `5.0`   | Gradient clipping L2 threshold. Prevents instability from large gradient spikes. Check epoch summary lines and overflow warnings if instability appears |
+| `--weight-decay`          | `1e-4`  | AdamW L2 regularization. Increase to 1e-2 for small datasets, decrease to 0 if underfitting                                                             |
+| `--encoder-lr-multiplier` | `1.0`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                 |
+| `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                            |
+| `--warmup-epochs`         | `10`    | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                     |
+| `--workers`               | `0`     | DataLoader worker processes (`0` = auto)                                                                                                                |
+| `--warm-restarts`         | on      | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                |
+| `--threat-weight`         | `0.1`   | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                          |
+| `--tqdm`                  | off     | Show tqdm progress bars. Off by default for agent-friendly log output                                                                                   |
 
 #### Loss weights
 

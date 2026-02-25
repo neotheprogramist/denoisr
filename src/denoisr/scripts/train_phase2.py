@@ -48,6 +48,7 @@ from denoisr.training.ema import ModelEMA
 from denoisr.training.logger import TrainingLogger
 from denoisr.training.loss import ChessLossComputer
 from denoisr.training.plateau_detector import PlateauDetector
+from denoisr.training.prefetch import DevicePrefetcher
 from denoisr.training.phase2_trainer import (
     Phase2Trainer,
     TrajectoryBatch,
@@ -347,14 +348,16 @@ def main() -> None:
         trajectory_data.rewards[:n_train],
     )
     worker_count = resolve_dataloader_workers(tcfg.workers)
-    loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=worker_count,
-        pin_memory=(device.type == "cuda"),
-        persistent_workers=True,
-    )
+    loader_kwargs: dict[str, object] = {
+        "batch_size": args.batch_size,
+        "shuffle": True,
+        "num_workers": worker_count,
+        "pin_memory": (device.type == "cuda"),
+    }
+    if worker_count > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 4
+    loader = DataLoader(train_dataset, **loader_kwargs)
     log.info(
         "phase2 dataloader config: workers=%d  batch_size=%d",
         worker_count,
@@ -392,7 +395,6 @@ def main() -> None:
             num_batches = 0
             epoch_start = time.monotonic()
             monitor.reset()
-            step_losses: list[float] = []
             step_grad_norms: list[float] = []
             overflow_count = 0
             loss_sums = {
@@ -404,11 +406,20 @@ def main() -> None:
                 "reward": 0.0,
             }
             data_time = 0.0
-            compute_time = 0.0
+
+            batch_iter: (
+                DevicePrefetcher[tuple[torch.Tensor, ...]]
+                | DataLoader[tuple[torch.Tensor, ...]]
+            )
+            if device.type == "cuda":
+                batch_iter = DevicePrefetcher(loader, device)
+            else:
+                batch_iter = loader
 
             pbar = tqdm(
-                loader,
+                batch_iter,
                 desc=f"Epoch {epoch_num}/{args.epochs}",
+                total=len(loader),
                 leave=False,
                 smoothing=0.3,
                 disable=not use_tqdm,
@@ -427,14 +438,10 @@ def main() -> None:
                     rewards=rews.to(device, non_blocking=True),
                 )
 
-                compute_start = time.monotonic()
                 loss, breakdown = trainer.train_step(batch)
                 if model_ema is not None:
                     model_ema.update()
-                compute_time += time.monotonic() - compute_start
 
-                logger.log_train_step(global_step, loss, breakdown)
-                step_losses.append(loss)
                 for key in loss_sums:
                     loss_sums[key] += float(breakdown.get(key, 0.0))
                 grad_norm = breakdown.get("grad_norm", 0.0)
@@ -443,17 +450,17 @@ def main() -> None:
                 else:
                     step_grad_norms.append(grad_norm)
                 if global_step % 100 == 0:
-                    logger.log_gpu(global_step)
                     monitor.sample()
                 global_step += 1
                 epoch_loss += loss
                 num_batches += 1
-                pbar.set_postfix(
-                    loss=f"{loss:.4f}",
-                    policy=f"{breakdown.get('policy', 0):.4f}",
-                    value=f"{breakdown.get('value', 0):.4f}",
-                    diff=f"{breakdown.get('diffusion', 0):.4f}",
-                )
+                if use_tqdm:
+                    pbar.set_postfix(
+                        loss=f"{loss:.4f}",
+                        policy=f"{breakdown.get('policy', 0):.4f}",
+                        value=f"{breakdown.get('value', 0):.4f}",
+                        diff=f"{breakdown.get('diffusion', 0):.4f}",
+                    )
                 data_start = time.monotonic()
             pbar.close()
 
@@ -496,7 +503,6 @@ def main() -> None:
                     "state": avg_breakdown["state"],
                     "rew": avg_breakdown["reward"],
                 },
-                step_losses=step_losses,
                 lr=current_lr,
                 grad_norms=step_grad_norms,
                 samples_per_sec=samples_per_sec,
@@ -525,12 +531,6 @@ def main() -> None:
                 samples_per_sec,
                 data_time / max(epoch_duration, 1e-9) * 100.0,
                 overflow_count,
-            )
-
-            # Per-param-group LR (extra detail beyond log_epoch_line)
-            logger._writer.add_scalar("lr/backbone", current_lr, epoch)
-            logger._writer.add_scalar(
-                "lr/heads", trainer.optimizer.param_groups[1]["lr"], epoch
             )
 
             # Plateau detection

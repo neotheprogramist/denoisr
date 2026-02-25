@@ -134,7 +134,9 @@ class TestGrokTrackerStateMachine:
         assert tracker.state == GrokState.BASELINE
         tracker.close()
 
-    def test_onset_detected_on_weight_norm_decrease(self, device: torch.device) -> None:
+    def test_onset_detected_on_confirmed_dual_signal(
+        self, device: torch.device
+    ) -> None:
         encoder, backbone, policy_head, value_head = _build_small_model(device)
         tracker = GrokTracker(
             encoder=encoder,
@@ -143,8 +145,11 @@ class TestGrokTrackerStateMachine:
             value_head=value_head,
             onset_threshold=0.95,
         )
-        # Simulate weight norm history: first 50 at 10.0, last 50 at 9.0
+        # Simulate dual onset signal:
+        # - weight norm history: first 50 at 10.0, last 50 at 9.0
+        # - effective rank history: first 5 at 20.0, last 5 at 16.0
         tracker._weight_norm_history = [10.0] * 50 + [9.0] * 50
+        tracker._erank_history = [20.0] * 5 + [16.0] * 5
         tracker._check_step_transitions(global_step=100)
         assert tracker.state == GrokState.ONSET_DETECTED
         tracker.close()

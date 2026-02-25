@@ -34,7 +34,7 @@ def _make_cfg(tmp_path: Path) -> PipelineConfig:
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
             pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
-            stockfish_path="stockfish",
+            stockfish_path="",
             stockfish_depth=1,
             max_examples=10,
             workers=1,
@@ -211,7 +211,7 @@ def test_generate_data_calls_generate(tmp_path: Path) -> None:
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
             pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
-            stockfish_path="stockfish",
+            stockfish_path="",
             stockfish_depth=10,
             max_examples=123,
             workers=4,

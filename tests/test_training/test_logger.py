@@ -1,6 +1,5 @@
-"""Tests for TrainingLogger structured log integration."""
+"""Tests for TrainingLogger human-readable log integration."""
 
-import json
 import logging
 import pathlib
 
@@ -30,16 +29,6 @@ def _read_log(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _event_payloads(path: pathlib.Path) -> list[dict[str, object]]:
-    payloads: list[dict[str, object]] = []
-    marker = "EVENT "
-    for line in _read_log(path).splitlines():
-        if marker not in line:
-            continue
-        payloads.append(json.loads(line.split(marker, 1)[1]))
-    return payloads
-
-
 class TestTrainingLogger:
     def test_does_not_create_run_directory(
         self, tmp_path: pathlib.Path, log_path: pathlib.Path
@@ -59,21 +48,6 @@ class TestTrainingLogger:
         logger.close()
         assert len(run_name) == 19  # YYYY-MM-DD_HH-MM-SS
         assert log_path.exists()
-
-    def test_log_train_step_writes_scalar_events(
-        self, tmp_path: pathlib.Path, log_path: pathlib.Path
-    ) -> None:
-        logger = TrainingLogger(log_dir=tmp_path, run_name="test")
-        breakdown = {"policy": 1.5, "value": 0.8, "total": 2.3, "grad_norm": 0.42}
-        logger.log_train_step(step=0, loss=2.3, breakdown=breakdown)
-        logger.close()
-
-        events = _event_payloads(log_path)
-        scalar_tags = {e["tag"] for e in events if e.get("kind") == "scalar"}
-        assert "loss/total" in scalar_tags
-        assert "loss/policy" in scalar_tags
-        assert "loss/value" in scalar_tags
-        assert "gradients/norm" in scalar_tags
 
     def test_log_epoch_line_phase1(
         self, tmp_path: pathlib.Path, log_path: pathlib.Path
@@ -213,15 +187,7 @@ class TestTrainingLogger:
         text = _read_log(log_path)
         assert "gnorm=" not in text
 
-    def test_log_gpu_no_error_on_cpu(
-        self, tmp_path: pathlib.Path, log_path: pathlib.Path
-    ) -> None:
-        logger = TrainingLogger(log_dir=tmp_path, run_name="test")
-        logger.log_gpu(step=0)
-        logger.close()
-        assert log_path.exists()
-
-    def test_log_hparams_emits_event(
+    def test_log_hparams_writes_human_line(
         self, tmp_path: pathlib.Path, log_path: pathlib.Path
     ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
@@ -229,12 +195,11 @@ class TestTrainingLogger:
         metrics = {"best_top1": 0.35}
         logger.log_hparams(hparams, metrics)
         logger.close()
-        events = _event_payloads(log_path)
-        hparam_events = [e for e in events if e.get("kind") == "hparams"]
-        assert len(hparam_events) == 1
-        payload = hparam_events[0]
-        assert payload["hparams"] == hparams
-        assert payload["metrics"] == metrics
+        text = _read_log(log_path)
+        assert "HPARAMS" in text
+        assert "batch_size=64" in text
+        assert "d_s=256" in text
+        assert "lr=0.0001" in text
 
     def test_log_epoch_summary_emits_via_logging(
         self,
@@ -265,13 +230,13 @@ class TestTrainingLogger:
         self, tmp_path: pathlib.Path, log_path: pathlib.Path
     ) -> None:
         with TrainingLogger(log_dir=tmp_path, run_name="ctx") as logger:
-            logger.log_train_step(step=0, loss=1.0, breakdown={"total": 1.0})
+            logger.log_epoch_summary({"epoch": "0", "loss": "1.0"})
         assert not (tmp_path / "ctx").exists()
-        assert "loss/total" in _read_log(log_path)
+        assert "epoch=0" in _read_log(log_path)
 
 
 class TestGrokLogging:
-    def test_log_grok_metrics_writes_scalar_events(
+    def test_step_level_grok_metrics_do_not_bloat_logs(
         self, tmp_path: pathlib.Path, log_path: pathlib.Path
     ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
@@ -282,14 +247,28 @@ class TestGrokLogging:
         }
         logger.log_grok_metrics(step=100, metrics=metrics)
         logger.close()
+        text = _read_log(log_path)
+        assert "GROK-EPOCH" not in text
 
-        events = _event_payloads(log_path)
-        scalar_tags = {e["tag"] for e in events if e.get("kind") == "scalar"}
-        assert "grok/weight_norm_total" in scalar_tags
-        assert "grok/erank/layer_0" in scalar_tags
-        assert "grok/state" in scalar_tags
+    def test_epoch_level_grok_metrics_write_summary_and_warning(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
+        logger = TrainingLogger(log_dir=tmp_path, run_name="test")
+        metrics = {
+            "grok/holdout/random/accuracy": 0.26,
+            "grok/holdout/game_level/accuracy": 0.22,
+            "grok/loss_gap": -0.15,
+            "grok/state": 1.0,
+        }
+        logger.log_grok_metrics(step=12, metrics=metrics)
+        logger.close()
+        text = _read_log(log_path)
+        assert "GROK-EPOCH" in text
+        assert "state=ONSET_DETECTED" in text
+        assert "random_acc=26.00%" in text
+        assert "GROKKING state entered" in text
 
-    def test_log_grok_state_transition_writes_text(
+    def test_log_grok_state_transition_writes_warning(
         self, tmp_path: pathlib.Path, log_path: pathlib.Path
     ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
@@ -301,5 +280,5 @@ class TestGrokLogging:
         )
         logger.close()
         text = _read_log(log_path)
-        assert "GROKKING" in text
+        assert "GROKKING transition" in text
         assert "ONSET_DETECTED" in text

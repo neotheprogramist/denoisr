@@ -63,6 +63,9 @@ class GrokTracker:
         self._holdout_accuracy_history: list[float] = []
         self._erank_history: list[float] = []
         self._train_saturation_step: int | None = None
+        self._onset_signal_streak = 0
+        self._transition_signal_streak = 0
+        self._grok_confirm_streak = 0
 
         # Adaptive frequency multiplier
         self._freq_multiplier = 1
@@ -247,30 +250,59 @@ class GrokTracker:
     def _check_step_transitions(self, global_step: int) -> None:
         if self._state >= GrokState.ONSET_DETECTED:
             return
-        # Check weight norm sustained decrease
+        # Robust onset requires corroborating signals or repeated weak signals.
+        weight_signal = False
+        weight_drop_pct = 0.0
         history = self._weight_norm_history
         if len(history) >= 100:
             recent = sum(history[-50:]) / 50
             earlier = sum(history[-100:-50]) / 50
-            if earlier > 0 and recent < self._onset_threshold * earlier:
-                self._transition_to(
-                    GrokState.ONSET_DETECTED,
-                    global_step,
-                    f"weight_norm decreased {(1 - recent / earlier) * 100:.1f}%"
-                    " (50-step window)",
-                )
+            if earlier > 0:
+                weight_drop_pct = (1 - recent / earlier) * 100.0
+                weight_signal = recent < self._onset_threshold * earlier
 
-        # Check effective rank drop
+        erank_signal = False
+        erank_drop_pct = 0.0
         if len(self._erank_history) >= 10:
             recent_er = sum(self._erank_history[-5:]) / 5
             earlier_er = sum(self._erank_history[-10:-5]) / 5
-            if earlier_er > 0 and recent_er < 0.9 * earlier_er:
+            if earlier_er > 0:
+                erank_drop_pct = (1 - recent_er / earlier_er) * 100.0
+                erank_signal = recent_er < 0.9 * earlier_er
+
+        if weight_signal and erank_signal:
+            self._onset_signal_streak = 0
+            self._transition_to(
+                GrokState.ONSET_DETECTED,
+                global_step,
+                (
+                    "confirmed by dual signal: "
+                    f"weight_norm drop={weight_drop_pct:.1f}% and "
+                    f"effective_rank drop={erank_drop_pct:.1f}%"
+                ),
+            )
+            return
+
+        if weight_signal or erank_signal:
+            self._onset_signal_streak += 1
+            if self._onset_signal_streak >= 3:
+                trigger = (
+                    "repeated onset evidence: "
+                    + (
+                        f"weight_norm drop={weight_drop_pct:.1f}%"
+                        if weight_signal
+                        else f"effective_rank drop={erank_drop_pct:.1f}%"
+                    )
+                    + " for 3 checks"
+                )
+                self._onset_signal_streak = 0
                 self._transition_to(
                     GrokState.ONSET_DETECTED,
                     global_step,
-                    f"effective_rank decreased"
-                    f" {(1 - recent_er / earlier_er) * 100:.1f}%",
+                    trigger,
                 )
+            return
+        self._onset_signal_streak = 0
 
     def _check_epoch_transitions(
         self,
@@ -279,39 +311,70 @@ class GrokTracker:
     ) -> None:
         acc_history = self._holdout_accuracy_history
 
+        random_acc = acc_history[-1] if acc_history else 0.0
+        non_random_accs = [
+            acc for split, (acc, _loss) in holdout_metrics.items() if split != "random"
+        ]
+        non_random_mean = (
+            sum(non_random_accs) / len(non_random_accs) if non_random_accs else random_acc
+        )
+
         # ONSET -> TRANSITIONING
         if self._state == GrokState.ONSET_DETECTED and len(acc_history) >= 20:
             recent = sum(acc_history[-10:]) / 10
             earlier = sum(acc_history[-20:-10]) / 10
-            if recent - earlier > 0.05:  # >5pp improvement
+            transition_signal = (recent - earlier > 0.05) and (random_acc >= 0.15)
+            if transition_signal:
+                self._transition_signal_streak += 1
+            else:
+                self._transition_signal_streak = 0
+            if self._transition_signal_streak >= 2:
+                self._transition_signal_streak = 0
                 self._transition_to(
                     GrokState.TRANSITIONING,
                     epoch,
                     f"holdout accuracy improved"
-                    f" {(recent - earlier) * 100:.1f}pp over 20 epochs",
+                    f" {(recent - earlier) * 100:.1f}pp over 20 epochs "
+                    f"(2-epoch confirmation, random={random_acc * 100:.1f}%)",
                 )
 
         # TRANSITIONING -> GROKKED
         if self._state == GrokState.TRANSITIONING and acc_history:
-            if acc_history[-1] > 0.25:
+            grok_signal = random_acc > 0.25 and non_random_mean > 0.18
+            if grok_signal:
+                self._grok_confirm_streak += 1
+            else:
+                self._grok_confirm_streak = 0
+            if self._grok_confirm_streak >= 3:
+                self._grok_confirm_streak = 0
                 grok_gap = epoch - (self._train_saturation_step or 0)
                 self._transition_to(
                     GrokState.GROKKED,
                     epoch,
-                    f"holdout accuracy {acc_history[-1] * 100:.1f}%"
-                    f" > 25% threshold, gap={grok_gap} epochs",
+                    (
+                        f"confirmed for 3 epochs: random={random_acc * 100:.1f}% "
+                        f"non_random_mean={non_random_mean * 100:.1f}% "
+                        f"(gap={grok_gap} epochs)"
+                    ),
                 )
 
         # BASELINE -> ONSET via holdout accuracy jump
         if self._state == GrokState.BASELINE and len(acc_history) >= 10:
             recent = sum(acc_history[-5:]) / 5
             earlier = sum(acc_history[-10:-5]) / 5
-            if recent - earlier > 0.02:  # >2pp improvement
+            onset_signal = (recent - earlier > 0.03) and (random_acc >= 0.12)
+            if onset_signal:
+                self._onset_signal_streak += 1
+            else:
+                self._onset_signal_streak = 0
+            if self._onset_signal_streak >= 2:
+                self._onset_signal_streak = 0
                 self._transition_to(
                     GrokState.ONSET_DETECTED,
                     epoch,
                     f"holdout accuracy improved"
-                    f" {(recent - earlier) * 100:.1f}pp over 10 epochs",
+                    f" {(recent - earlier) * 100:.1f}pp over 10 epochs "
+                    f"(2-epoch confirmation)",
                 )
 
     def _transition_to(
@@ -323,8 +386,11 @@ class GrokTracker:
         # Adaptive frequency
         if new_state == GrokState.ONSET_DETECTED:
             self._freq_multiplier = 5
+            self._transition_signal_streak = 0
+            self._grok_confirm_streak = 0
         elif new_state == GrokState.TRANSITIONING:
             self._freq_multiplier = 10
+            self._grok_confirm_streak = 0
 
         log.warning("GROKKING %s (step/epoch %d)", new_state.name, step_or_epoch)
         log.warning("  Trigger: %s", trigger)
