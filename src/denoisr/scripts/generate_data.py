@@ -19,6 +19,7 @@ import argparse
 import atexit
 import logging
 import multiprocessing
+import os
 import random
 import shutil
 import sys
@@ -159,6 +160,12 @@ def _stream_positions(
 
 
 _CHUNK_FORMAT = "chunked_v1"
+_GIB = float(1024 * 1024 * 1024)
+_DEFAULT_MAX_RAM_GIB = 64.0
+_CHUNK_BUFFER_RAM_FRACTION = 0.40
+_WORKER_BASELINE_RAM_GIB = 0.20
+_RUNTIME_RESERVE_RAM_GIB = 4.0
+_INFLIGHT_RESULT_FACTOR = 2.0
 
 
 @dataclass
@@ -187,7 +194,66 @@ class _TenStepProgressTracker:
 
 def _estimate_chunk_buffer_gib(num_examples: int, num_planes: int) -> float:
     bytes_per_example = ((num_planes * 8 * 8) + (64 * 64) + 3) * 4
-    return (num_examples * bytes_per_example) / (1024 * 1024 * 1024)
+    return (num_examples * bytes_per_example) / _GIB
+
+
+def _plan_chunk_examples_for_memory(
+    *,
+    requested_chunk_examples: int,
+    max_ram_gib: float,
+    num_planes: int,
+    num_workers: int,
+    chunksize: int,
+) -> tuple[int, float]:
+    """Return RAM-safe chunk_examples and estimated peak RSS in GiB."""
+    if max_ram_gib <= 0:
+        raise ValueError("max_ram_gib must be > 0")
+    if requested_chunk_examples < 1:
+        raise ValueError("requested_chunk_examples must be >= 1")
+    if num_workers < 1:
+        raise ValueError("num_workers must be >= 1")
+    if chunksize < 1:
+        raise ValueError("chunksize must be >= 1")
+
+    eval_result_bytes = int(((num_planes * 8 * 8) + (64 * 64) + 3) * 4)
+    buffer_example_bytes = eval_result_bytes + 8 + 4  # game_ids + piece_counts
+
+    max_ram_bytes = int(max_ram_gib * _GIB)
+    worker_bytes = int(num_workers * _WORKER_BASELINE_RAM_GIB * _GIB)
+    inflight_bytes = int(
+        num_workers * chunksize * eval_result_bytes * _INFLIGHT_RESULT_FACTOR
+    )
+    reserve_bytes = int(_RUNTIME_RESERVE_RAM_GIB * _GIB)
+
+    non_chunk_bytes = worker_bytes + inflight_bytes + reserve_bytes
+    available_chunk_bytes = max_ram_bytes - non_chunk_bytes
+    if available_chunk_bytes <= 0:
+        raise ValueError(
+            "RAM budget is too low for generation overheads: "
+            f"max_ram_gib={max_ram_gib:.1f}, workers={num_workers}, "
+            f"chunksize={chunksize}"
+        )
+
+    chunk_fraction_cap_bytes = int(max_ram_bytes * _CHUNK_BUFFER_RAM_FRACTION)
+    chunk_budget_bytes = min(available_chunk_bytes, chunk_fraction_cap_bytes)
+    safe_chunk_examples = max(1, chunk_budget_bytes // buffer_example_bytes)
+    effective_chunk_examples = min(requested_chunk_examples, safe_chunk_examples)
+    est_peak_gib = (
+        non_chunk_bytes + (effective_chunk_examples * buffer_example_bytes)
+    ) / _GIB
+    return effective_chunk_examples, est_peak_gib
+
+
+def _resolve_max_ram_gib(max_ram_gib: float | None) -> float:
+    if max_ram_gib is not None:
+        return max_ram_gib
+    raw = os.environ.get("DENOISR_MAX_RAM_GIB", "").strip()
+    if not raw:
+        return _DEFAULT_MAX_RAM_GIB
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid DENOISR_MAX_RAM_GIB={raw!r}") from exc
 
 
 def _write_chunk_file(
@@ -204,12 +270,20 @@ def _write_chunk_file(
 ) -> Path:
     """Write one chunk file and return its path."""
     chunk_path = chunk_dir / f"chunk_{chunk_idx:06d}.pt"
+
+    def _to_chunk_tensor(arr: npt.NDArray[Any]) -> torch.Tensor:
+        if count >= arr.shape[0]:
+            # Full chunk: avoid extra allocation and serialize directly.
+            return torch.from_numpy(arr)
+        # Tail chunk: copy to avoid serializing the full backing storage.
+        return torch.from_numpy(arr[:count].copy())
+
     payload: dict[str, Any] = {
-        "boards": torch.from_numpy(boards_buf[:count].copy()),
-        "policies": torch.from_numpy(policies_buf[:count].copy()),
-        "values": torch.from_numpy(values_buf[:count].copy()),
-        "game_ids": torch.from_numpy(game_ids_buf[:count].copy()),
-        "piece_counts": torch.from_numpy(piece_counts_buf[:count].copy()),
+        "boards": _to_chunk_tensor(boards_buf),
+        "policies": _to_chunk_tensor(policies_buf),
+        "values": _to_chunk_tensor(values_buf),
+        "game_ids": _to_chunk_tensor(game_ids_buf),
+        "piece_counts": _to_chunk_tensor(piece_counts_buf),
     }
     eco_codes = eco_codes_buf[:count]
     if any(eco is not None for eco in eco_codes):
@@ -338,6 +412,7 @@ def generate_to_file(
     seed: int | None = None,
     chunk_examples: int = 1_000_000,
     use_tqdm: bool = False,
+    max_ram_gib: float | None = None,
 ) -> int:
     """Generate chunked training data and write a manifest."""
     if seed is not None:
@@ -355,15 +430,38 @@ def generate_to_file(
         )
     if chunk_examples < 1:
         raise ValueError("chunk_examples must be >= 1")
+    resolved_max_ram_gib = _resolve_max_ram_gib(max_ram_gib)
+    if resolved_max_ram_gib <= 0:
+        raise ValueError("max_ram_gib must be > 0")
 
     num_planes = ExtendedBoardEncoder().num_planes
-    chunk_gib = _estimate_chunk_buffer_gib(chunk_examples, num_planes)
+    effective_chunk_examples, est_peak_gib = _plan_chunk_examples_for_memory(
+        requested_chunk_examples=chunk_examples,
+        max_ram_gib=resolved_max_ram_gib,
+        num_planes=num_planes,
+        num_workers=num_workers,
+        chunksize=chunksize,
+    )
+    if effective_chunk_examples < chunk_examples:
+        log.warning(
+            "Reducing chunk_examples from %d to %d to fit RAM budget %.1f GiB "
+            "(estimated peak %.2f GiB)",
+            chunk_examples,
+            effective_chunk_examples,
+            resolved_max_ram_gib,
+            est_peak_gib,
+        )
+    chunk_gib = _estimate_chunk_buffer_gib(effective_chunk_examples, num_planes)
     log.info(
-        "Chunked generation: max_examples=%d workers=%d chunk_examples=%d (~%.2f GiB chunk buffers)",
+        "Chunked generation: max_examples=%d workers=%d chunksize=%d "
+        "chunk_examples=%d (~%.2f GiB chunk buffers, est_peak=%.2f/%.2f GiB)",
         max_examples,
         num_workers,
-        chunk_examples,
+        chunksize,
+        effective_chunk_examples,
         chunk_gib,
+        est_peak_gib,
+        resolved_max_ram_gib,
     )
     return _generate_to_file_chunked(
         pgn_path=pgn_path,
@@ -375,7 +473,7 @@ def generate_to_file(
         policy_temperature=policy_temperature,
         label_smoothing=label_smoothing,
         chunksize=chunksize,
-        chunk_examples=chunk_examples,
+        chunk_examples=effective_chunk_examples,
         use_tqdm=use_tqdm,
     )
 
@@ -456,6 +554,15 @@ def main() -> None:
     )
     add_env_argument(
         parser,
+        "--max-ram-gib",
+        env_var="DENOISR_MAX_RAM_GIB",
+        type=float,
+        default=_DEFAULT_MAX_RAM_GIB,
+        required=False,
+        help="RAM budget used to auto-cap chunk size during generation",
+    )
+    add_env_argument(
+        parser,
         "--seed",
         env_var="DENOISR_SEED",
         type=int,
@@ -495,6 +602,7 @@ def main() -> None:
         seed=args.seed,
         chunk_examples=args.chunk_examples,
         use_tqdm=args.tqdm,
+        max_ram_gib=args.max_ram_gib,
     )
     log.info("Done: %d examples generated.", count)
 
