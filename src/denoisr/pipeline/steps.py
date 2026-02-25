@@ -48,8 +48,11 @@ def _run_python_module(module: str, args: list[str]) -> None:
     """Run a project Python module in a subprocess."""
     cmd = [sys.executable, "-m", module, *args]
     log.info("Running: %s", " ".join(cmd))
+    # Keep pipeline child scripts in agent-friendly mode regardless of shell env.
+    env = os.environ.copy()
+    env["DENOISR_TQDM"] = "0"
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, env=env)
     except KeyboardInterrupt:
         log.warning("Interrupted while running module: %s", module)
         raise

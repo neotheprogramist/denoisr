@@ -202,6 +202,19 @@ def test_run_python_module_maps_sigint_exit_to_keyboard_interrupt() -> None:
             _run_python_module("denoisr.scripts.train_phase1", [])
 
 
+def test_run_python_module_forces_tqdm_off() -> None:
+    """Pipeline child scripts should always disable tqdm via env override."""
+
+    def _fake_run(cmd: list[str], check: bool, env: dict[str, str]) -> None:
+        assert check
+        assert cmd[0] != ""
+        assert env["DENOISR_TQDM"] == "0"
+
+    with patch("subprocess.run", side_effect=_fake_run) as mock_run:
+        _run_python_module("denoisr.scripts.train_phase1", ["--epochs", "1"])
+        mock_run.assert_called_once()
+
+
 # -- step_generate_data ----------------------------------------------------
 
 
@@ -334,12 +347,13 @@ def test_train_phase1_updates_state(tmp_path: Path) -> None:
         last_data=str(data_path),
     )
 
-    def _fake_run(cmd: list[str], check: bool) -> None:
+    def _fake_run(cmd: list[str], check: bool, env: dict[str, str]) -> None:
         assert check
         assert "denoisr.scripts.train_phase1" in cmd
         assert "--holdout-frac" in cmd
         assert "--epochs" in cmd
         assert "--tqdm" not in cmd
+        assert env["DENOISR_TQDM"] == "0"
         (output_dir / "phase1.pt").write_bytes(b"phase1")
 
     with patch("subprocess.run", side_effect=_fake_run) as mock_run:
@@ -369,10 +383,11 @@ def test_train_phase2_updates_state(tmp_path: Path) -> None:
         last_checkpoint=str(phase1_ckpt),
     )
 
-    def _fake_run(cmd: list[str], check: bool) -> None:
+    def _fake_run(cmd: list[str], check: bool, env: dict[str, str]) -> None:
         assert check
         assert "denoisr.scripts.train_phase2" in cmd
         assert "--tqdm" not in cmd
+        assert env["DENOISR_TQDM"] == "0"
         (output_dir / "phase2.pt").write_bytes(b"phase2")
 
     with patch("subprocess.run", side_effect=_fake_run) as mock_run:
@@ -399,10 +414,11 @@ def test_train_phase3_updates_state(tmp_path: Path) -> None:
         last_checkpoint=str(phase2_ckpt),
     )
 
-    def _fake_run(cmd: list[str], check: bool) -> None:
+    def _fake_run(cmd: list[str], check: bool, env: dict[str, str]) -> None:
         assert check
         assert "denoisr.scripts.train_phase3" in cmd
         assert "--tqdm" not in cmd
+        assert env["DENOISR_TQDM"] == "0"
         (output_dir / "phase3.pt").write_bytes(b"phase3")
 
     with patch("subprocess.run", side_effect=_fake_run) as mock_run:
@@ -448,10 +464,11 @@ def test_state_persists_full_pipeline_phases(tmp_path: Path) -> None:
     pgn_path.parent.mkdir(parents=True, exist_ok=True)
     pgn_path.write_text("fake pgn")
 
-    def _fake_run(cmd: list[str], check: bool) -> None:
+    def _fake_run(cmd: list[str], check: bool, env: dict[str, str]) -> None:
         assert check
         cmd_str = " ".join(cmd)
         assert "--tqdm" not in cmd
+        assert env["DENOISR_TQDM"] == "0"
         if "denoisr.scripts.train_phase1" in cmd_str:
             (output_dir / "phase1.pt").write_bytes(b"phase1")
             return
