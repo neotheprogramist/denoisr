@@ -303,7 +303,6 @@ def step_train_phase1(
         str(cfg.phase1.warmup_epochs),
         "--weight-decay",
         str(cfg.phase1.weight_decay),
-        "--tqdm",
         "--output",
         str(output_ckpt),
     ]
@@ -365,7 +364,6 @@ def step_train_phase2(cfg: PipelineConfig, state: PipelineState) -> None:
         str(cfg.phase2.epochs),
         "--lr",
         str(cfg.phase2.lr),
-        "--tqdm",
         "--output",
         str(output_ckpt),
     ]
@@ -441,7 +439,6 @@ def step_train_phase3(cfg: PipelineConfig, state: PipelineState) -> None:
         str(cfg.phase3.reanalyse_workers),
         "--save-every",
         str(cfg.phase3.save_every),
-        "--tqdm",
         "--output",
         str(output_ckpt),
     ]

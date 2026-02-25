@@ -576,7 +576,7 @@ def main() -> None:
         type=str,
         default=None,
         required=False,
-        help="TensorBoard run name (default: timestamp)",
+        help="log run label attached to structured event lines (default: timestamp)",
     )
     add_training_args(parser)
     args = parser.parse_args()
@@ -753,6 +753,8 @@ def main() -> None:
         consecutive_overflow_epochs = 0
 
         for epoch in range(args.epochs):
+            epoch_num = epoch + 1
+            log.info("Epoch %d/%d started", epoch_num, args.epochs)
             epoch_loss = 0.0
             num_batches = 0
             num_loss_batches = 0
@@ -795,7 +797,7 @@ def main() -> None:
                 pbar = tqdm(
                     train_loader,
                     desc=(
-                        f"Epoch {epoch + 1}/{args.epochs} "
+                        f"Epoch {epoch_num}/{args.epochs} "
                         f"[shard {shard_pos}/{len(shard_order)}]"
                     ),
                     leave=False,
@@ -863,7 +865,7 @@ def main() -> None:
                 data_plan,
                 device,
                 use_tqdm=use_tqdm,
-                progress_desc=f"Eval random E{epoch + 1}",
+                progress_desc=f"Eval random E{epoch_num}",
             )
             if model_ema is not None:
                 with model_ema.apply():
@@ -872,7 +874,7 @@ def main() -> None:
                         data_plan,
                         device,
                         use_tqdm=use_tqdm,
-                        progress_desc=f"Eval random EMA E{epoch + 1}",
+                        progress_desc=f"Eval random EMA E{epoch_num}",
                     )
                 log.info(
                     "EMA top1=%.2f%% (regular=%.2f%%)",
@@ -940,7 +942,7 @@ def main() -> None:
                     resources["gpu_power"] = f"{resource_metrics['gpu_power_avg']:.0f}"
 
             logger.log_epoch_line(
-                epoch=epoch,
+                epoch=epoch_num,
                 total_epochs=args.epochs,
                 losses={
                     "loss": avg_loss,
@@ -960,6 +962,23 @@ def main() -> None:
             )
             logger._writer.add_scalar("lr/encoder", current_lr, epoch)
             logger._writer.add_scalar("lr/head", head_lr, epoch)
+            log.info(
+                (
+                    "Epoch %d/%d summary: loss=%.4f pol=%.4f val=%.4f "
+                    "top1=%.2f%% top5=%.2f%% lr=%.2e sps=%.0f data=%.1f%% ovf=%d"
+                ),
+                epoch_num,
+                args.epochs,
+                avg_loss,
+                avg_policy_loss,
+                avg_value_loss,
+                top1 * 100,
+                top5 * 100,
+                current_lr,
+                samples_per_sec,
+                data_time / max(epoch_duration, 1e-9) * 100.0,
+                overflow_count,
+            )
 
             # --- Grokking detection: evaluate all holdout splits ---
             if grok_tracker is not None:
@@ -979,7 +998,7 @@ def main() -> None:
                             ],
                             device=device,
                             use_tqdm=use_tqdm,
-                            progress_desc=f"Eval {split_name} E{epoch + 1}",
+                            progress_desc=f"Eval {split_name} E{epoch_num}",
                         )
                     holdout_results[split_name] = (split_top1, avg_loss)
                 grok_epoch_metrics = grok_tracker.epoch(

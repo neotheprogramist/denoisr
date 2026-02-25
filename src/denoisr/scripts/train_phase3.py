@@ -291,6 +291,7 @@ def main() -> None:
 
     device = detect_device()
     tcfg = full_training_config_from_args(args)
+    use_tqdm = args.tqdm
     default_workers = resolve_dataloader_workers(tcfg.workers)
     self_play_workers = _resolve_phase3_workers(args.self_play_workers, default_workers)
     reanalyse_workers = _resolve_phase3_workers(args.reanalyse_workers, default_workers)
@@ -521,7 +522,11 @@ def main() -> None:
 
     # --- Training loop ---
     gen_pbar = tqdm(
-        range(args.generations), desc="Generations", unit="gen", smoothing=0.1
+        range(args.generations),
+        desc="Generations",
+        unit="gen",
+        smoothing=0.1,
+        disable=not use_tqdm,
     )
     for gen in gen_pbar:
         encoder.eval()
@@ -543,6 +548,7 @@ def main() -> None:
             leave=False,
             unit="game",
             smoothing=0.1,
+            disable=not use_tqdm,
         )
         if self_play_workers <= 1:
             for _ in range(args.games_per_gen):
@@ -641,6 +647,7 @@ def main() -> None:
                 leave=False,
                 unit="game",
                 smoothing=0.1,
+                disable=not use_tqdm,
             )
             if reanalyse_workers <= 1:
                 for old_record in old_records:

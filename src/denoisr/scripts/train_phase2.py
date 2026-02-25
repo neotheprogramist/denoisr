@@ -63,6 +63,7 @@ def extract_trajectories(
     encoder: ExtendedBoardEncoder,
     seq_len: int,
     max_trajectories: int,
+    use_tqdm: bool = False,
 ) -> TrajectoryBatch:
     """Extract enriched consecutive board-state trajectories from PGN."""
     streamer = SimplePGNStreamer()
@@ -80,6 +81,7 @@ def extract_trajectories(
         desc="Extracting trajectories",
         unit="traj",
         smoothing=0.3,
+        disable=not use_tqdm,
     )
 
     for record in streamer.stream(pgn_path):
@@ -231,7 +233,7 @@ def main() -> None:
         type=str,
         default=None,
         required=False,
-        help="TensorBoard run name (default: timestamp)",
+        help="log run label attached to structured event lines (default: timestamp)",
     )
     add_training_args(parser)
     args = parser.parse_args()
@@ -326,6 +328,7 @@ def main() -> None:
         board_encoder,
         args.seq_len,
         args.max_trajectories,
+        use_tqdm=use_tqdm,
     )
     N = trajectory_data.boards.shape[0]
     log.info("trajectories=%d  seq_len=%d", N, args.seq_len)
@@ -383,6 +386,8 @@ def main() -> None:
         global_step = 0
 
         for epoch in range(args.epochs):
+            epoch_num = epoch + 1
+            log.info("Epoch %d/%d started", epoch_num, args.epochs)
             epoch_loss = 0.0
             num_batches = 0
             epoch_start = time.monotonic()
@@ -403,7 +408,7 @@ def main() -> None:
 
             pbar = tqdm(
                 loader,
-                desc=f"Epoch {epoch + 1}/{args.epochs}",
+                desc=f"Epoch {epoch_num}/{args.epochs}",
                 leave=False,
                 smoothing=0.3,
                 disable=not use_tqdm,
@@ -480,7 +485,7 @@ def main() -> None:
                     resource_metrics["gpu_power"] = f"{raw_res['gpu_power_avg']:.0f}"
 
             logger.log_epoch_line(
-                epoch=epoch,
+                epoch=epoch_num,
                 total_epochs=args.epochs,
                 losses={
                     "loss": avg_loss,
@@ -500,6 +505,26 @@ def main() -> None:
                 data_pct=data_time / max(epoch_duration, 1e-9) * 100,
                 overflows=overflow_count,
                 phase="phase2",
+            )
+            log.info(
+                (
+                    "Epoch %d/%d summary: loss=%.4f pol=%.4f val=%.4f "
+                    "diff=%.4f cons=%.4f state=%.4f rew=%.4f lr=%.2e "
+                    "sps=%.0f data=%.1f%% ovf=%d"
+                ),
+                epoch_num,
+                args.epochs,
+                avg_loss,
+                avg_breakdown["policy"],
+                avg_breakdown["value"],
+                avg_breakdown["diffusion"],
+                avg_breakdown["consistency"],
+                avg_breakdown["state"],
+                avg_breakdown["reward"],
+                current_lr,
+                samples_per_sec,
+                data_time / max(epoch_duration, 1e-9) * 100.0,
+                overflow_count,
             )
 
             # Per-param-group LR (extra detail beyond log_epoch_line)

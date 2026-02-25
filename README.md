@@ -84,11 +84,11 @@ cp .env.example .env
 uv run denoisr-train
 ```
 
-The CLI auto-loads `.env`. Required settings are fail-fast when missing.
+The CLI auto-loads `.env`. Configuration is env-only and fail-fast: startup aborts immediately if any required parameter is missing or malformed.
 
-Hardware-tuned defaults in `.env.example` target:
+Hardware-tuned values in `.env.example` target:
 
-- RTX 3060 12GB: conservative training batches (`phase1=128`, `phase2=64`, `phase3=128`)
+- RTX 3060 12GB: high-occupancy training batches (`phase1=512`, `phase2=128`, `phase3=128`)
 - Threadripper 3970X (64 threads): full CPU worker utilization (`DENOISR_WORKERS=64`)
 
 The pipeline streams positions from raw PGN, generates Stockfish targets, trains Phase 1, then advances through Phase 2 and Phase 3.
@@ -201,16 +201,16 @@ Epoch 12/80: avg_loss=2.0891 top1_accuracy=28.5%
 
 Training automatically stops when top-1 accuracy exceeds **50%** (Phase 1 gate).
 
-| Flag             | Default             | Description                                                    |
-| ---------------- | ------------------- | -------------------------------------------------------------- |
-| `--checkpoint`   | (required)          | Checkpoint to load (create with `denoisr-init`)                |
-| `--data`         | (required)          | Training data `.pt` file (create with `denoisr-generate-data`) |
-| `--holdout-frac` | `0.05`              | Fraction for accuracy evaluation                               |
-| `--batch-size`   | `128`               | Batch size                                                     |
-| `--epochs`       | `80`                | Maximum epochs                                                 |
-| `--lr`           | `3e-4`              | Learning rate                                                  |
-| `--output`       | `outputs/phase1.pt` | Checkpoint path                                                |
-| `--run-name`     | auto timestamp      | TensorBoard run name (see [Training logs](#training-logs))     |
+| Flag             | Default             | Description                                                                    |
+| ---------------- | ------------------- | ------------------------------------------------------------------------------ |
+| `--checkpoint`   | (required)          | Checkpoint to load (create with `denoisr-init`)                                |
+| `--data`         | (required)          | Training data `.pt` file (create with `denoisr-generate-data`)                 |
+| `--holdout-frac` | `0.05`              | Fraction for accuracy evaluation                                               |
+| `--batch-size`   | `512`               | Batch size                                                                     |
+| `--epochs`       | `80`                | Maximum epochs                                                                 |
+| `--lr`           | `3e-4`              | Learning rate                                                                  |
+| `--output`       | `outputs/phase1.pt` | Checkpoint path                                                                |
+| `--run-name`     | auto timestamp      | Run label added to structured log events (see [Training logs](#training-logs)) |
 
 Plus all [training optimization](#training-optimization-trainingconfig) flags.
 
@@ -243,11 +243,11 @@ Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 pe
 | `--pgn`              | (required)          | PGN file for trajectory extraction                          |
 | `--seq-len`          | `10`                | Board states per trajectory (9 future states for diffusion) |
 | `--max-trajectories` | `30000`             | Trajectories to extract                                     |
-| `--batch-size`       | `64`                | Batch size                                                  |
+| `--batch-size`       | `128`               | Batch size                                                  |
 | `--epochs`           | `120`               | Training epochs                                             |
 | `--lr`               | `3e-4`              | Learning rate                                               |
 | `--output`           | `outputs/phase2.pt` | Checkpoint path                                             |
-| `--run-name`         | auto timestamp      | TensorBoard run name                                        |
+| `--run-name`         | auto timestamp      | Run label added to structured log events                    |
 
 Plus all [training optimization](#training-optimization-trainingconfig) and [diffusion curriculum](#diffusion-curriculum) flags.
 
@@ -288,73 +288,28 @@ Plus all [training optimization](#training-optimization-trainingconfig) and [Pha
 
 ### Training logs
 
-Both Phase 1 and Phase 2 write logs to `logs/<run-name>/` with every training run. Logs include TensorBoard event files for interactive visualization and plain-text files for quick inspection.
+Phase 1 and Phase 2 write metrics and scalar events to a single file: `logs/denoisr.log`.
 
-**Name your runs** with `--run-name` to compare experiments:
-
-```bash
-uv run denoisr-train-phase1 --checkpoint outputs/random_model.pt \
-    --data outputs/training_data.pt --run-name lr1e-4_bs64
-```
-
-Without `--run-name`, a timestamp like `2026-02-20_14-30-15` is generated automatically.
+`--run-name` is still useful: it tags each structured event with a run label so you can filter mixed logs from multiple experiments. Without `--run-name`, a timestamp like `2026-02-20_14-30-15` is generated automatically.
 
 #### What gets logged
 
-| Metric                                                | Frequency       | Phase |
-| ----------------------------------------------------- | --------------- | ----- |
-| `loss/total`, `loss/policy`, `loss/value`             | Every batch     | 1     |
-| `accuracy/batch_top1` (masked policy accuracy)        | Every batch     | 1     |
-| `gradients/norm` (pre-clip L2 norm)                   | Every batch     | 1, 2  |
-| `accuracy/top1`, `accuracy/top5`                      | Every epoch     | 1     |
-| `lr` (learning rate)                                  | Every epoch     | 1     |
-| `diffusion/loss`, `diffusion/curriculum_steps`        | Every epoch     | 2     |
-| `timing/epoch_duration_s`, `timing/samples_per_sec`   | Every epoch     | 1, 2  |
-| `resources/cpu_percent_avg`, `cpu_percent_peak`       | Every epoch     | 1, 2  |
-| `resources/ram_mb_avg`, `ram_mb_peak`                 | Every epoch     | 1, 2  |
-| `resources/gpu_util_avg`, `gpu_util_peak`             | Every epoch     | 1, 2  |
-| `resources/gpu_mem_mb_avg`, `gpu_mem_mb_peak`         | Every epoch     | 1, 2  |
-| `resources/gpu_temp_avg`, `gpu_power_avg`             | Every epoch     | 1, 2  |
-| `dynamics/grad_norm_avg`, `grad_norm_peak`            | Every epoch     | 1, 2  |
-| `dynamics/loss_stddev`                                | Every epoch     | 1, 2  |
-| `pipeline/data_wait_frac`, `compute_frac`             | Every epoch     | 1, 2  |
-| `gpu/memory_allocated_mb`, `gpu/memory_reserved_mb`   | Every 100 steps | 1, 2  |
-| Hyperparameters (lr, batch_size, d_s, num_heads, ...) | Once at start   | 1, 2  |
+- Human-readable epoch summaries (single compact line per epoch)
+- Structured scalar events (`EVENT {...}` JSON lines) for losses, accuracy, LR, resource metrics, and grokking metrics
+- Structured hyperparameter events (`EVENT {...}` with `kind="hparams"`)
+- Regular script logs from all modules, all in the same file, with timestamps
 
-#### Visualize with TensorBoard
+#### Read logs directly
 
 ```bash
-uvx --with 'setuptools<71' tensorboard --logdir logs/
-```
+# Follow live training output
+tail -f logs/denoisr.log
 
-Then open http://localhost:6006 in your browser. The **Scalars** tab shows loss curves, accuracy, and timing. The **HParams** tab lets you compare runs side-by-side.
+# Show only epoch summary lines
+rg "denoisr.metrics" logs/denoisr.log
 
-#### Read text logs directly
-
-Every run also writes human-readable files — no viewer needed:
-
-```bash
-# Hyperparameter config
-cat logs/lr1e-4_bs64/hparams.txt
-
-# Epoch-by-epoch metrics (tab-separated, greppable)
-cat logs/lr1e-4_bs64/metrics.log
-
-# Compare two runs
-diff logs/lr1e-4_bs64/metrics.log logs/lr1e-3_bs256/metrics.log
-
-# Pretty-print as columns
-column -t -s $'\t' logs/lr1e-4_bs64/metrics.log
-```
-
-Example `metrics.log` output:
-
-```
-epoch=0   avg_loss=6.566337   top1=0.0000   top5=0.0000   lr=1.00e-04
-epoch=0   duration_s=3.83     samples_per_sec=496.1
-epoch=0   cpu_avg=45.2%   cpu_peak=98.1%   ram_avg=2341mb   ram_peak=2567mb
-epoch=0   grad_norm_avg=0.342   grad_norm_peak=1.000   loss_std=0.0512
-epoch=0   data_wait_s=0.45   data_wait_frac=0.12   compute_frac=0.88
+# Show only structured scalar/hparams events
+rg " EVENT " logs/denoisr.log
 ```
 
 #### Agent-friendly mode (default)
@@ -376,14 +331,7 @@ uv run denoisr-train-phase1 --checkpoint outputs/random_model.pt \
 
 ```
 logs/
-├── lr1e-4_bs64/
-│   ├── events.out.tfevents.*   # TensorBoard binary
-│   ├── metrics.log             # Human-readable epoch metrics
-│   └── hparams.txt             # Hyperparameter snapshot
-├── lr1e-3_bs256/
-│   └── ...
-└── 2026-02-20_14-30-15/        # Auto-generated when no --run-name
-    └── ...
+└── denoisr.log
 ```
 
 ### Grokking detection (Phase 1)
@@ -408,7 +356,7 @@ When enabled, training automatically:
 4. **Runs a 4-state machine** (BASELINE → ONSET_DETECTED → TRANSITIONING → GROKKED) that increases evaluation frequency 5-10x when grokking signals appear
 5. **Emits console alerts** via `logging.WARNING` when state transitions occur
 
-#### Grokking metrics in TensorBoard
+#### Grokking metrics (structured events)
 
 | Metric                              | Frequency          | What it measures                                                              |
 | ----------------------------------- | ------------------ | ----------------------------------------------------------------------------- |
@@ -483,18 +431,18 @@ These control the neural network structure. Changing them creates a new architec
 
 These control how the model learns. Safe to change between runs without architectural incompatibility.
 
-| Flag                      | Default | What it controls                                                                                                                                                    |
-| ------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--lr`                    | `3e-4`  | Base learning rate for task heads (policy, value). The single most impactful hyperparameter                                                                         |
-| `--max-grad-norm`         | `5.0`   | Gradient clipping L2 threshold. Prevents instability from large gradient spikes. Check `gradients/norm` in TensorBoard — if frequently clipped, consider increasing |
-| `--weight-decay`          | `1e-4`  | AdamW L2 regularization. Increase to 1e-2 for small datasets, decrease to 0 if underfitting                                                                         |
-| `--encoder-lr-multiplier` | `1.0`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                             |
-| `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                        |
-| `--warmup-epochs`         | `5`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                                 |
-| `--workers`               | `0`     | DataLoader worker processes (`0` = auto)                                                                                                                            |
-| `--warm-restarts`         | on      | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                            |
-| `--threat-weight`         | `0.1`   | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                                      |
-| `--tqdm`                  | off     | Show tqdm progress bars. Off by default for agent-friendly structured log output                                                                                    |
+| Flag                      | Default | What it controls                                                                                                                                                 |
+| ------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--lr`                    | `3e-4`  | Base learning rate for task heads (policy, value). The single most impactful hyperparameter                                                                      |
+| `--max-grad-norm`         | `5.0`   | Gradient clipping L2 threshold. Prevents instability from large gradient spikes. Check `gradients/norm` event lines — if frequently clipped, consider increasing |
+| `--weight-decay`          | `1e-4`  | AdamW L2 regularization. Increase to 1e-2 for small datasets, decrease to 0 if underfitting                                                                      |
+| `--encoder-lr-multiplier` | `1.0`   | LR multiplier for encoder/backbone vs heads. Lower values preserve pretrained representations. 1.0 = encoder trains at same LR as heads                          |
+| `--min-lr`                | `1e-6`  | Minimum LR at end of cosine annealing. Should be 10-100× smaller than `--lr`                                                                                     |
+| `--warmup-epochs`         | `5`     | Linear warmup epochs (LR ramps from 0 → target). Prevents destructive early updates                                                                              |
+| `--workers`               | `0`     | DataLoader worker processes (`0` = auto)                                                                                                                         |
+| `--warm-restarts`         | on      | Use cosine annealing with warm restarts (T_0=20, T_mult=2) instead of plain cosine decay                                                                         |
+| `--threat-weight`         | `0.1`   | Weight for threat prediction auxiliary loss (forces intermediate representations to encode attack information)                                                   |
+| `--tqdm`                  | off     | Show tqdm progress bars. Off by default for agent-friendly structured log output                                                                                 |
 
 #### Loss weights
 
@@ -859,6 +807,6 @@ denoisr/
 │   └── scripts/        # CLI entry points for all phases + inference + benchmarking
 ├── tests/              # Test suite mirroring src/ structure
 ├── fixtures/           # Sample PGN files for testing
-├── logs/               # TensorBoard + text training logs (gitignored)
+├── logs/               # Unified training/runtime logs (gitignored)
 └── outputs/            # Training artifacts (gitignored)
 ```

@@ -1,9 +1,11 @@
 """Unified training pipeline: PGN -> Phase 3 in one command."""
 
 import logging
+import os
 
 from denoisr.pipeline.config import load_config
 from denoisr.pipeline.runner import PipelineRunner
+from denoisr.scripts.config import validate_required_env as validate_training_env
 from denoisr.scripts.interrupts import graceful_main
 from denoisr.scripts.runtime import (
     add_env_argument,
@@ -36,11 +38,19 @@ def main() -> None:
         help=("Comma-separated list of steps to run (fetch,init,phase1,phase2,phase3)"),
     )
     args = parser.parse_args()
+    log_file = os.environ.get("DENOISR_LOG_FILE", "").strip()
+    if log_file == "":
+        raise ValueError(
+            "Missing required env var DENOISR_LOG_FILE. "
+            "Set it in .env before running denoisr-train."
+        )
+    validate_training_env(include_phase3=True)
+
     log_path = configure_logging()
     log.info("logging to %s", log_path)
 
     cfg = load_config()
-    log.info("Loaded pipeline settings from defaults + env overrides")
+    log.info("Loaded pipeline settings from strict env validation")
     only = frozenset(args.only.split(",")) if args.only else None
     runner = PipelineRunner(cfg, restart=args.restart, only=only)
     try:

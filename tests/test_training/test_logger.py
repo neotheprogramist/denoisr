@@ -1,5 +1,6 @@
-"""Tests for TrainingLogger TensorBoard integration."""
+"""Tests for TrainingLogger structured log integration."""
 
+import json
 import logging
 import pathlib
 
@@ -8,33 +9,75 @@ import pytest
 from denoisr.training.logger import TrainingLogger
 
 
+@pytest.fixture
+def log_path(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Route root logs to a deterministic per-test file."""
+    path = tmp_path / "denoisr.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[logging.FileHandler(path, encoding="utf-8")],
+        force=True,
+    )
+    yield path
+    logging.shutdown()
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+
+
+def _read_log(path: pathlib.Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _event_payloads(path: pathlib.Path) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    marker = "EVENT "
+    for line in _read_log(path).splitlines():
+        if marker not in line:
+            continue
+        payloads.append(json.loads(line.split(marker, 1)[1]))
+    return payloads
+
+
 class TestTrainingLogger:
-    def test_creates_log_directory(self, tmp_path: pathlib.Path) -> None:
-        """Logger should create run directory inside log_dir."""
+    def test_does_not_create_run_directory(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
+        """Logger should keep everything in denoisr.log (no logs/<run>/ dirs)."""
         logger = TrainingLogger(log_dir=tmp_path, run_name="test_run")
         logger.close()
-        assert (tmp_path / "test_run").is_dir()
+        assert not (tmp_path / "test_run").exists()
+        assert log_path.exists()
 
-    def test_auto_generates_run_name(self, tmp_path: pathlib.Path) -> None:
-        """Without run_name, logger should create a timestamped directory."""
+    def test_auto_generates_timestamp_run_name(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
+        """Without run_name, logger should still create a timestamp label."""
         logger = TrainingLogger(log_dir=tmp_path)
+        run_name = logger._run_name
         logger.close()
-        dirs = list(tmp_path.iterdir())
-        assert len(dirs) == 1
-        # Timestamped name should match YYYY-MM-DD_HH-MM-SS pattern
-        assert len(dirs[0].name) == 19
+        assert len(run_name) == 19  # YYYY-MM-DD_HH-MM-SS
+        assert log_path.exists()
 
-    def test_log_train_step_writes_scalars(self, tmp_path: pathlib.Path) -> None:
-        """log_train_step should write loss scalars without error."""
+    def test_log_train_step_writes_scalar_events(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         breakdown = {"policy": 1.5, "value": 0.8, "total": 2.3, "grad_norm": 0.42}
         logger.log_train_step(step=0, loss=2.3, breakdown=breakdown)
         logger.close()
-        event_files = list((tmp_path / "test").glob("events.out.tfevents.*"))
-        assert len(event_files) >= 1
 
-    def test_log_epoch_line_phase1(self, tmp_path: pathlib.Path) -> None:
-        """log_epoch_line should write a compact single line with Phase 1 metrics."""
+        events = _event_payloads(log_path)
+        scalar_tags = {e["tag"] for e in events if e.get("kind") == "scalar"}
+        assert "loss/total" in scalar_tags
+        assert "loss/policy" in scalar_tags
+        assert "loss/value" in scalar_tags
+        assert "gradients/norm" in scalar_tags
+
+    def test_log_epoch_line_phase1(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_epoch_line(
             epoch=1,
@@ -49,7 +92,7 @@ class TestTrainingLogger:
             phase="phase1",
         )
         logger.close()
-        text = (tmp_path / "test" / "metrics.log").read_text()
+        text = _read_log(log_path)
         assert "E=1/100" in text
         assert "loss=2.0000" in text
         assert "top1=5.0%" in text
@@ -59,8 +102,9 @@ class TestTrainingLogger:
         assert "t=42.5s" in text
         assert "data=20%" in text
 
-    def test_log_epoch_line_phase2(self, tmp_path: pathlib.Path) -> None:
-        """log_epoch_line should handle Phase 2 format with diffusion losses."""
+    def test_log_epoch_line_phase2(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_epoch_line(
             epoch=5,
@@ -82,13 +126,14 @@ class TestTrainingLogger:
             phase="phase2",
         )
         logger.close()
-        text = (tmp_path / "test" / "metrics.log").read_text()
+        text = _read_log(log_path)
         assert "E=5/200" in text
         assert "diff=-0.0800" in text
         assert "sps=320" in text
 
-    def test_log_epoch_line_with_resources(self, tmp_path: pathlib.Path) -> None:
-        """log_epoch_line should include resource metrics when provided."""
+    def test_log_epoch_line_with_resources(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_epoch_line(
             epoch=1,
@@ -110,13 +155,14 @@ class TestTrainingLogger:
             },
         )
         logger.close()
-        text = (tmp_path / "test" / "metrics.log").read_text()
+        text = _read_log(log_path)
         assert "cpu=101%/134%" in text
         assert "ram=12334mb" in text
         assert "gpu=88%/90% 1039mb 57C 136W" in text
 
-    def test_log_epoch_line_with_overflows(self, tmp_path: pathlib.Path) -> None:
-        """Overflows should appear in line only when > 0."""
+    def test_log_epoch_line_with_overflows(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_epoch_line(
             epoch=1,
@@ -129,11 +175,12 @@ class TestTrainingLogger:
             overflows=3,
         )
         logger.close()
-        text = (tmp_path / "test" / "metrics.log").read_text()
+        text = _read_log(log_path)
         assert "ovf=3" in text
 
-    def test_log_epoch_line_no_overflow_when_zero(self, tmp_path: pathlib.Path) -> None:
-        """No overflow token when overflows=0."""
+    def test_log_epoch_line_no_overflow_when_zero(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_epoch_line(
             epoch=1,
@@ -146,11 +193,12 @@ class TestTrainingLogger:
             overflows=0,
         )
         logger.close()
-        text = (tmp_path / "test" / "metrics.log").read_text()
+        text = _read_log(log_path)
         assert "ovf=" not in text
 
-    def test_log_epoch_line_empty_grad_norms(self, tmp_path: pathlib.Path) -> None:
-        """Empty grad_norms should not produce gnorm= token."""
+    def test_log_epoch_line_empty_grad_norms(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_epoch_line(
             epoch=1,
@@ -162,67 +210,70 @@ class TestTrainingLogger:
             duration_s=10.0,
         )
         logger.close()
-        text = (tmp_path / "test" / "metrics.log").read_text()
+        text = _read_log(log_path)
         assert "gnorm=" not in text
 
-    def test_log_gpu_no_error_on_cpu(self, tmp_path: pathlib.Path) -> None:
-        """log_gpu should be a no-op on CPU without raising."""
+    def test_log_gpu_no_error_on_cpu(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_gpu(step=0)
         logger.close()
+        assert log_path.exists()
 
-    def test_log_hparams_writes_text_file(self, tmp_path: pathlib.Path) -> None:
-        """log_hparams should write hparams.txt alongside TensorBoard data."""
+    def test_log_hparams_emits_event(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         hparams = {"lr": 1e-4, "batch_size": 64, "d_s": 256}
         metrics = {"best_top1": 0.35}
         logger.log_hparams(hparams, metrics)
         logger.close()
-        text = (tmp_path / "test" / "hparams.txt").read_text()
-        assert "lr=0.0001" in text
-        assert "batch_size=64" in text
-        assert "d_s=256" in text
+        events = _event_payloads(log_path)
+        hparam_events = [e for e in events if e.get("kind") == "hparams"]
+        assert len(hparam_events) == 1
+        payload = hparam_events[0]
+        assert payload["hparams"] == hparams
+        assert payload["metrics"] == metrics
 
     def test_log_epoch_summary_emits_via_logging(
-        self, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+        self,
+        tmp_path: pathlib.Path,
+        caplog: pytest.LogCaptureFixture,
+        log_path: pathlib.Path,
     ) -> None:
-        """log_epoch_summary should emit key=value pairs via metrics logger.
-
-        The metrics logger has propagate=False so caplog (which hooks
-        into the root logger) cannot capture records directly.  We
-        install caplog's handler on the metrics logger for this test.
-        """
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
-        metrics_log = logging.getLogger("denoisr.metrics.test")
         with caplog.at_level(logging.INFO, logger="denoisr.metrics.test"):
-            metrics_log.addHandler(caplog.handler)
-            try:
-                logger.log_epoch_summary({"epoch": "0", "loss": "2.13", "top1": "5.2%"})
-            finally:
-                metrics_log.removeHandler(caplog.handler)
+            logger.log_epoch_summary({"epoch": "0", "loss": "2.13", "top1": "5.2%"})
         logger.close()
         assert "epoch=0" in caplog.text
         assert "loss=2.13" in caplog.text
         assert "top1=5.2%" in caplog.text
+        assert "epoch=0" in _read_log(log_path)
 
-    def test_log_epoch_summary_writes_to_file(self, tmp_path: pathlib.Path) -> None:
-        """log_epoch_summary should also write to metrics.log file."""
+    def test_log_epoch_summary_writes_to_file(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_epoch_summary({"epoch": "0", "loss": "2.13"})
         logger.close()
-        text = (tmp_path / "test" / "metrics.log").read_text()
+        text = _read_log(log_path)
         assert "epoch=0" in text
         assert "loss=2.13" in text
 
-    def test_context_manager(self, tmp_path: pathlib.Path) -> None:
-        """Logger should support with-statement for automatic cleanup."""
+    def test_context_manager(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         with TrainingLogger(log_dir=tmp_path, run_name="ctx") as logger:
             logger.log_train_step(step=0, loss=1.0, breakdown={"total": 1.0})
-        assert (tmp_path / "ctx").is_dir()
+        assert not (tmp_path / "ctx").exists()
+        assert "loss/total" in _read_log(log_path)
 
 
 class TestGrokLogging:
-    def test_log_grok_metrics_writes_scalars(self, tmp_path: pathlib.Path) -> None:
+    def test_log_grok_metrics_writes_scalar_events(
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
+    ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         metrics = {
             "grok/weight_norm_total": 42.0,
@@ -231,11 +282,15 @@ class TestGrokLogging:
         }
         logger.log_grok_metrics(step=100, metrics=metrics)
         logger.close()
-        event_files = list((tmp_path / "test").glob("events.out.tfevents.*"))
-        assert len(event_files) >= 1
+
+        events = _event_payloads(log_path)
+        scalar_tags = {e["tag"] for e in events if e.get("kind") == "scalar"}
+        assert "grok/weight_norm_total" in scalar_tags
+        assert "grok/erank/layer_0" in scalar_tags
+        assert "grok/state" in scalar_tags
 
     def test_log_grok_state_transition_writes_text(
-        self, tmp_path: pathlib.Path
+        self, tmp_path: pathlib.Path, log_path: pathlib.Path
     ) -> None:
         logger = TrainingLogger(log_dir=tmp_path, run_name="test")
         logger.log_grok_state_transition(
@@ -245,6 +300,6 @@ class TestGrokLogging:
             trigger="weight_norm decreased 6.2%",
         )
         logger.close()
-        text = (tmp_path / "test" / "metrics.log").read_text()
+        text = _read_log(log_path)
         assert "GROKKING" in text
         assert "ONSET_DETECTED" in text

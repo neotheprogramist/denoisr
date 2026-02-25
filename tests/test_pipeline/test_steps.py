@@ -34,6 +34,12 @@ def _make_cfg(tmp_path: Path) -> PipelineConfig:
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
             pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
+            stockfish_path="stockfish",
+            stockfish_depth=1,
+            max_examples=10,
+            workers=1,
+            chunksize=16,
+            chunk_examples=32,
         ),
         model=ModelSectionConfig(
             d_s=64,
@@ -42,10 +48,43 @@ def _make_cfg(tmp_path: Path) -> PipelineConfig:
             ffn_dim=128,
             num_timesteps=10,
         ),
-        phase1=Phase1Config(lr=3e-4, batch_size=32),
-        phase2=Phase2Config(epochs=5, lr=3e-4, batch_size=16, seq_len=4),
-        phase3=Phase3Config(generations=10, games_per_gen=5, mcts_sims=50),
-        output=OutputConfig(dir=str(tmp_path / "outputs")),
+        phase1=Phase1Config(
+            epochs=5,
+            lr=3e-4,
+            batch_size=32,
+            holdout_frac=0.05,
+            warmup_epochs=1,
+            weight_decay=1e-4,
+        ),
+        phase2=Phase2Config(
+            epochs=5,
+            lr=3e-4,
+            batch_size=16,
+            seq_len=4,
+            max_trajectories=20,
+        ),
+        phase3=Phase3Config(
+            generations=10,
+            games_per_gen=5,
+            reanalyse_per_gen=2,
+            mcts_sims=50,
+            buffer_capacity=128,
+            alpha_generations=4,
+            lr=1e-4,
+            train_batch_size=16,
+            diffusion_steps=4,
+            aux_updates_per_gen=1,
+            aux_batch_size=8,
+            aux_seq_len=4,
+            aux_lr=1e-4,
+            self_play_workers=0,
+            reanalyse_workers=0,
+            save_every=1,
+        ),
+        output=OutputConfig(
+            dir=str(tmp_path / "outputs"),
+            run_name="test-run",
+        ),
     )
 
 
@@ -172,6 +211,8 @@ def test_generate_data_calls_generate(tmp_path: Path) -> None:
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
             pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
+            stockfish_path="stockfish",
+            stockfish_depth=10,
             max_examples=123,
             workers=4,
             chunksize=512,
@@ -184,10 +225,43 @@ def test_generate_data_calls_generate(tmp_path: Path) -> None:
             ffn_dim=128,
             num_timesteps=10,
         ),
-        phase1=Phase1Config(lr=3e-4, batch_size=32),
-        phase2=Phase2Config(epochs=5, lr=3e-4, batch_size=16, seq_len=4),
-        phase3=Phase3Config(generations=10, games_per_gen=5, mcts_sims=50),
-        output=OutputConfig(dir=str(tmp_path / "outputs")),
+        phase1=Phase1Config(
+            epochs=5,
+            lr=3e-4,
+            batch_size=32,
+            holdout_frac=0.05,
+            warmup_epochs=1,
+            weight_decay=1e-4,
+        ),
+        phase2=Phase2Config(
+            epochs=5,
+            lr=3e-4,
+            batch_size=16,
+            seq_len=4,
+            max_trajectories=20,
+        ),
+        phase3=Phase3Config(
+            generations=10,
+            games_per_gen=5,
+            reanalyse_per_gen=2,
+            mcts_sims=50,
+            buffer_capacity=128,
+            alpha_generations=4,
+            lr=1e-4,
+            train_batch_size=16,
+            diffusion_steps=4,
+            aux_updates_per_gen=1,
+            aux_batch_size=8,
+            aux_seq_len=4,
+            aux_lr=1e-4,
+            self_play_workers=0,
+            reanalyse_workers=0,
+            save_every=1,
+        ),
+        output=OutputConfig(
+            dir=str(tmp_path / "outputs"),
+            run_name="test-run",
+        ),
     )
     state = PipelineState()
 
@@ -264,6 +338,7 @@ def test_train_phase1_updates_state(tmp_path: Path) -> None:
         assert "denoisr.scripts.train_phase1" in cmd
         assert "--holdout-frac" in cmd
         assert "--epochs" in cmd
+        assert "--tqdm" not in cmd
         (output_dir / "phase1.pt").write_bytes(b"phase1")
 
     with patch("subprocess.run", side_effect=_fake_run) as mock_run:
@@ -296,6 +371,7 @@ def test_train_phase2_updates_state(tmp_path: Path) -> None:
     def _fake_run(cmd: list[str], check: bool) -> None:
         assert check
         assert "denoisr.scripts.train_phase2" in cmd
+        assert "--tqdm" not in cmd
         (output_dir / "phase2.pt").write_bytes(b"phase2")
 
     with patch("subprocess.run", side_effect=_fake_run) as mock_run:
@@ -325,6 +401,7 @@ def test_train_phase3_updates_state(tmp_path: Path) -> None:
     def _fake_run(cmd: list[str], check: bool) -> None:
         assert check
         assert "denoisr.scripts.train_phase3" in cmd
+        assert "--tqdm" not in cmd
         (output_dir / "phase3.pt").write_bytes(b"phase3")
 
     with patch("subprocess.run", side_effect=_fake_run) as mock_run:
@@ -373,6 +450,7 @@ def test_state_persists_full_pipeline_phases(tmp_path: Path) -> None:
     def _fake_run(cmd: list[str], check: bool) -> None:
         assert check
         cmd_str = " ".join(cmd)
+        assert "--tqdm" not in cmd
         if "denoisr.scripts.train_phase1" in cmd_str:
             (output_dir / "phase1.pt").write_bytes(b"phase1")
             return

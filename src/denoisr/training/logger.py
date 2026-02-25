@@ -1,15 +1,13 @@
-"""TensorBoard training logger for denoisr.
+"""Structured training logger for denoisr.
 
-Writes both TensorBoard event files (for interactive visualization)
-and human-readable text logs via Python's logging module.
-
-Logs written:
-    logs/<run-name>/metrics.log   -- single-line-per-epoch metrics
-    logs/<run-name>/hparams.txt   -- hyperparameter dump
+Writes both compact epoch metrics and scalar/hparam events into the
+shared process log stream (typically ``logs/denoisr.log`` configured by
+``denoisr.scripts.runtime.configure_logging``).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from datetime import datetime
@@ -18,13 +16,69 @@ from statistics import mean, stdev
 from typing import Any
 
 import torch
-from torch.utils.tensorboard import SummaryWriter
 
 log = logging.getLogger(__name__)
 
 
+class _StructuredEventWriter:
+    """SummaryWriter-like adapter that emits JSON event lines via logging."""
+
+    def __init__(self, logger: logging.Logger, run_name: str) -> None:
+        self._logger = logger
+        self._run_name = run_name
+
+    def _emit(self, payload: dict[str, Any]) -> None:
+        full_payload = {"run": self._run_name, **payload}
+        self._logger.info(
+            "EVENT %s",
+            json.dumps(full_payload, sort_keys=True, default=str),
+        )
+
+    def add_scalar(
+        self,
+        tag: str,
+        scalar_value: float,
+        global_step: int | None = None,
+        *_: Any,
+        **__: Any,
+    ) -> None:
+        try:
+            value: float | str = float(scalar_value)
+        except (TypeError, ValueError):
+            value = str(scalar_value)
+        self._emit(
+            {
+                "kind": "scalar",
+                "tag": tag,
+                "step": int(global_step) if global_step is not None else None,
+                "value": value,
+            }
+        )
+
+    def add_hparams(
+        self,
+        hparam_dict: dict[str, Any],
+        metric_dict: dict[str, float],
+        *_: Any,
+        **__: Any,
+    ) -> None:
+        self._emit(
+            {
+                "kind": "hparams",
+                "hparams": hparam_dict,
+                "metrics": metric_dict,
+            }
+        )
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
 class TrainingLogger:
-    """Thin wrapper around SummaryWriter for structured training metrics.
+    """Thin wrapper for structured training metrics.
 
     Usage:
         with TrainingLogger(Path("logs"), run_name="lr1e-4") as logger:
@@ -39,24 +93,34 @@ class TrainingLogger:
     ) -> None:
         if run_name is None:
             run_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self._run_dir = log_dir / run_name
-        self._run_dir.mkdir(parents=True, exist_ok=True)
-        self._writer = SummaryWriter(str(self._run_dir))
+        self._run_name = run_name
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_root_logging(log_dir)
 
-        # Dedicated metrics logger (file + console), not the module-level one
-        self._metrics_logger = logging.getLogger(f"denoisr.metrics.{run_name}")
+        # Dedicated metrics logger; records propagate to root handlers.
+        self._metrics_logger = logging.getLogger(f"denoisr.metrics.{self._run_name}")
         self._metrics_logger.setLevel(logging.INFO)
-        self._metrics_logger.propagate = False  # don't bubble to root
+        self._metrics_logger.propagate = True
 
-        # File handler: write to metrics.log
-        fh = logging.FileHandler(self._run_dir / "metrics.log", encoding="utf-8")
-        fh.setFormatter(logging.Formatter("%(message)s"))
-        self._metrics_logger.addHandler(fh)
+        self._events_logger = logging.getLogger("denoisr.events")
+        self._events_logger.setLevel(logging.INFO)
+        self._events_logger.propagate = True
+        self._writer = _StructuredEventWriter(self._events_logger, self._run_name)
 
-        # Console handler: same format
-        ch = logging.StreamHandler()
-        ch.setFormatter(logging.Formatter("%(message)s"))
-        self._metrics_logger.addHandler(ch)
+    @staticmethod
+    def _ensure_root_logging(log_dir: Path) -> None:
+        """Install a fallback file logger when scripts forgot to configure logging."""
+        root = logging.getLogger()
+        if root.handlers:
+            return
+        fallback_path = log_dir / "denoisr.log"
+        fallback_path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(fallback_path, encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        root.setLevel(logging.INFO)
+        root.addHandler(handler)
 
     # ------------------------------------------------------------------
     # Per-batch logging (unchanged)
@@ -99,7 +163,7 @@ class TrainingLogger:
         generation: int | None = None,
         total_generations: int | None = None,
     ) -> None:
-        """Emit one compact line per epoch and write all scalars to TensorBoard.
+        """Emit one compact line per epoch and write scalar events.
 
         Consolidates the previous log_epoch, log_epoch_timing,
         log_resource_metrics, log_training_dynamics, log_pipeline_timing,
@@ -164,7 +228,7 @@ class TrainingLogger:
         line = " ".join(parts)
         self._metrics_logger.info(line)
 
-        # --- TensorBoard scalar writes ---
+        # --- Structured scalar event writes ---
         self._tb_losses(epoch, losses)
         self._tb_accuracy(epoch, accuracy)
         self._tb_lr(epoch, lr)
@@ -174,7 +238,7 @@ class TrainingLogger:
         self._tb_pipeline(epoch, data_pct, duration_s)
 
     # ------------------------------------------------------------------
-    # TensorBoard scalar helpers (internal)
+    # Scalar event helpers (internal)
     # ------------------------------------------------------------------
 
     def _tb_losses(self, epoch: int, losses: dict[str, float]) -> None:
@@ -230,7 +294,7 @@ class TrainingLogger:
         self._writer.add_scalar("dynamics/loss_stddev", loss_sd, epoch)
 
     def _tb_resources(self, epoch: int, resources: dict[str, str] | None) -> None:
-        """Write resource metrics to TensorBoard.
+        """Write resource metrics as scalar events.
 
         Accepts the string-valued dict from log_epoch_line and parses
         numeric values where possible.
@@ -284,19 +348,15 @@ class TrainingLogger:
     # ------------------------------------------------------------------
 
     def log_hparams(self, hparams: dict[str, Any], metrics: dict[str, float]) -> None:
-        """Log hyperparameters for TensorBoard HParams tab and text file."""
+        """Log hyperparameters as structured events in the shared log."""
         self._writer.add_hparams(hparams, metrics)
-        hparams_path = self._run_dir / "hparams.txt"
-        with open(hparams_path, "w", encoding="utf-8") as f:
-            for key, value in hparams.items():
-                f.write(f"{key}={value}\n")
 
     # ------------------------------------------------------------------
     # Grokking detection (redirected to _metrics_logger)
     # ------------------------------------------------------------------
 
     def log_grok_metrics(self, step: int, metrics: dict[str, float]) -> None:
-        """Log grokking detection metrics to TensorBoard."""
+        """Log grokking detection metrics as scalar events."""
         for key, value in metrics.items():
             self._writer.add_scalar(key, value, step)
 
@@ -320,10 +380,6 @@ class TrainingLogger:
         """Flush and close all writers."""
         self._writer.flush()
         self._writer.close()
-        # Clean up logging handlers to release file handles
-        for handler in self._metrics_logger.handlers[:]:
-            handler.close()
-            self._metrics_logger.removeHandler(handler)
 
     def __enter__(self) -> TrainingLogger:
         return self

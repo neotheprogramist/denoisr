@@ -1,87 +1,84 @@
-"""Pipeline configuration: frozen dataclasses + env overrides."""
+"""Pipeline configuration loaded strictly from environment variables."""
 
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from typing import Any, Callable
 
 
 @dataclass(frozen=True)
 class DataConfig:
-    pgn_url: str = (
-        "https://database.lichess.org/standard/"
-        "lichess_db_standard_rated_2025-01.pgn.zst"
-    )
-    pgn_path: str = "data/lichess.pgn.zst"
-    stockfish_path: str = ""
-    stockfish_depth: int = 10
-    max_examples: int = 4_000_000
-    workers: int = 64
-    chunksize: int = 1_024
-    chunk_examples: int = 1_000_000
+    pgn_url: str
+    pgn_path: str
+    stockfish_path: str
+    stockfish_depth: int
+    max_examples: int
+    workers: int
+    chunksize: int
+    chunk_examples: int
 
 
 @dataclass(frozen=True)
 class ModelSectionConfig:
-    d_s: int = 256
-    num_heads: int = 8
-    num_layers: int = 15
-    ffn_dim: int = 1024
-    num_timesteps: int = 100
+    d_s: int
+    num_heads: int
+    num_layers: int
+    ffn_dim: int
+    num_timesteps: int
 
 
 @dataclass(frozen=True)
 class Phase1Config:
-    epochs: int = 80
-    lr: float = 3e-4
-    batch_size: int = 128
-    holdout_frac: float = 0.05
-    warmup_epochs: int = 5
-    weight_decay: float = 1e-4
+    epochs: int
+    lr: float
+    batch_size: int
+    holdout_frac: float
+    warmup_epochs: int
+    weight_decay: float
 
 
 @dataclass(frozen=True)
 class Phase2Config:
-    epochs: int = 120
-    lr: float = 3e-4
-    batch_size: int = 64
-    seq_len: int = 10
-    max_trajectories: int = 30_000
+    epochs: int
+    lr: float
+    batch_size: int
+    seq_len: int
+    max_trajectories: int
 
 
 @dataclass(frozen=True)
 class Phase3Config:
-    generations: int = 400
-    games_per_gen: int = 64
-    reanalyse_per_gen: int = 32
-    mcts_sims: int = 400
-    buffer_capacity: int = 50_000
-    alpha_generations: int = 40
-    lr: float = 1e-4
-    train_batch_size: int = 128
-    diffusion_steps: int = 8
-    aux_updates_per_gen: int = 1
-    aux_batch_size: int = 64
-    aux_seq_len: int = 10
-    aux_lr: float | None = None
-    self_play_workers: int = 0
-    reanalyse_workers: int = 0
-    save_every: int = 10
+    generations: int
+    games_per_gen: int
+    reanalyse_per_gen: int
+    mcts_sims: int
+    buffer_capacity: int
+    alpha_generations: int
+    lr: float
+    train_batch_size: int
+    diffusion_steps: int
+    aux_updates_per_gen: int
+    aux_batch_size: int
+    aux_seq_len: int
+    aux_lr: float | None
+    self_play_workers: int
+    reanalyse_workers: int
+    save_every: int
 
 
 @dataclass(frozen=True)
 class OutputConfig:
-    dir: str = "outputs/"
-    run_name: str = ""
+    dir: str
+    run_name: str
 
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    data: DataConfig = field(default_factory=DataConfig)
-    model: ModelSectionConfig = field(default_factory=ModelSectionConfig)
-    phase1: Phase1Config = field(default_factory=Phase1Config)
-    phase2: Phase2Config = field(default_factory=Phase2Config)
-    phase3: Phase3Config = field(default_factory=Phase3Config)
-    output: OutputConfig = field(default_factory=OutputConfig)
+    data: DataConfig
+    model: ModelSectionConfig
+    phase1: Phase1Config
+    phase2: Phase2Config
+    phase3: Phase3Config
+    output: OutputConfig
 
 
 def _env_str(name: str) -> str | None:
@@ -156,13 +153,44 @@ _PHASE3_ENV_SPECS: tuple[_EnvFieldSpec, ...] = (
     ("DENOISR_PHASE3_REANALYSE_WORKERS", "reanalyse_workers", _parse_int),
     ("DENOISR_PHASE3_SAVE_EVERY", "save_every", _parse_int),
 )
-_OUTPUT_ENV_SPECS: tuple[_EnvFieldSpec, ...] = (
+_OUTPUT_REQUIRED_ENV_SPECS: tuple[_EnvFieldSpec, ...] = (
     ("DENOISR_OUTPUT_DIR", "dir", _parse_str),
     ("DENOISR_RUN_NAME", "run_name", _parse_str),
 )
+_OUTPUT_OPTIONAL_ENV_SPECS: tuple[_EnvFieldSpec, ...] = ()
+
+def _load_required_section(
+    section_name: str,
+    section_type: type[Any],
+    specs: tuple[_EnvFieldSpec, ...],
+) -> Any:
+    values: dict[str, Any] = {}
+    missing: list[str] = []
+    invalid: list[str] = []
+    for env_name, field_name, parser in specs:
+        raw = _env_str(env_name)
+        if raw is None:
+            missing.append(env_name)
+            continue
+        try:
+            values[field_name] = parser(raw)
+        except ValueError as exc:
+            invalid.append(f"{env_name}={raw!r}: {exc}")
+    if missing or invalid:
+        parts: list[str] = []
+        if missing:
+            parts.append(f"missing: {', '.join(sorted(missing))}")
+        if invalid:
+            parts.append(f"invalid: {'; '.join(invalid)}")
+        details = " | ".join(parts)
+        raise ValueError(f"Environment validation failed for {section_name}: {details}")
+    return section_type(**values)
 
 
-def _apply_section_overrides(section: Any, specs: tuple[_EnvFieldSpec, ...]) -> Any:
+def _apply_optional_overrides(
+    section: Any,
+    specs: tuple[_EnvFieldSpec, ...],
+) -> Any:
     updates: dict[str, Any] = {}
     for env_name, field_name, parser in specs:
         raw = _env_str(env_name)
@@ -172,28 +200,38 @@ def _apply_section_overrides(section: Any, specs: tuple[_EnvFieldSpec, ...]) -> 
             updates[field_name] = parser(raw)
         except ValueError as exc:
             raise ValueError(f"Invalid value in {env_name}={raw!r}") from exc
-    return replace(section, **updates) if updates else section
+    if not updates:
+        return section
+    return type(section)(**{**section.__dict__, **updates})
 
 
-def _apply_env_overrides(cfg: PipelineConfig) -> PipelineConfig:
-    return PipelineConfig(
-        data=_apply_section_overrides(cfg.data, _DATA_ENV_SPECS),
-        model=_apply_section_overrides(cfg.model, _MODEL_ENV_SPECS),
-        phase1=_apply_section_overrides(cfg.phase1, _PHASE1_ENV_SPECS),
-        phase2=_apply_section_overrides(cfg.phase2, _PHASE2_ENV_SPECS),
-        phase3=_apply_section_overrides(cfg.phase3, _PHASE3_ENV_SPECS),
-        output=_apply_section_overrides(cfg.output, _OUTPUT_ENV_SPECS),
+def required_env_vars() -> tuple[str, ...]:
+    """All env vars required to load PipelineConfig."""
+    sections = (
+        _DATA_ENV_SPECS,
+        _MODEL_ENV_SPECS,
+        _PHASE1_ENV_SPECS,
+        _PHASE2_ENV_SPECS,
+        _PHASE3_ENV_SPECS,
+        _OUTPUT_REQUIRED_ENV_SPECS,
     )
+    return tuple(env_name for specs in sections for env_name, _field, _parser in specs)
 
 
 def load_config() -> PipelineConfig:
-    """Load pipeline config from defaults with env overrides."""
-    cfg = PipelineConfig(
-        data=DataConfig(),
-        model=ModelSectionConfig(),
-        phase1=Phase1Config(),
-        phase2=Phase2Config(),
-        phase3=Phase3Config(),
-        output=OutputConfig(),
+    """Load PipelineConfig strictly from env; fail fast on missing/invalid values."""
+    return PipelineConfig(
+        data=_load_required_section("data", DataConfig, _DATA_ENV_SPECS),
+        model=_load_required_section("model", ModelSectionConfig, _MODEL_ENV_SPECS),
+        phase1=_load_required_section("phase1", Phase1Config, _PHASE1_ENV_SPECS),
+        phase2=_load_required_section("phase2", Phase2Config, _PHASE2_ENV_SPECS),
+        phase3=_load_required_section("phase3", Phase3Config, _PHASE3_ENV_SPECS),
+        output=_apply_optional_overrides(
+            _load_required_section(
+                "output",
+                OutputConfig,
+                _OUTPUT_REQUIRED_ENV_SPECS,
+            ),
+            _OUTPUT_OPTIONAL_ENV_SPECS,
+        ),
     )
-    return _apply_env_overrides(cfg)

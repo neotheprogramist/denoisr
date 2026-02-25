@@ -84,10 +84,11 @@ def add_env_argument(
     action = kwargs.get("action")
     arg_type = kwargs.get("type")
     env_raw = os.environ.get(env_var)
+    is_bool_optional_action = action is argparse.BooleanOptionalAction
 
     env_value: Any | None = None
     if env_raw is not None:
-        if action == "store_true" or action == "store_false":
+        if action == "store_true" or action == "store_false" or is_bool_optional_action:
             env_value = _parse_env_bool(env_raw, env_var)
         elif arg_type is not None:
             try:
@@ -104,6 +105,16 @@ def add_env_argument(
         return parser.add_argument(*flags, **kwargs)
     if action == "store_false":
         kwargs["default"] = not bool(env_value) if env_value is not None else True
+        return parser.add_argument(*flags, **kwargs)
+    if is_bool_optional_action:
+        if env_value is not None:
+            kwargs["default"] = bool(env_value)
+            kwargs["required"] = False
+        elif default is not None:
+            kwargs["default"] = bool(default)
+            kwargs["required"] = False
+        else:
+            kwargs["required"] = required
         return parser.add_argument(*flags, **kwargs)
 
     if env_value is not None:

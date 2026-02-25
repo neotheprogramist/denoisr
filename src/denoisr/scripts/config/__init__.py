@@ -11,7 +11,7 @@ import os
 from argparse import ArgumentParser, Namespace
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Callable, TypeVar
 
 import torch
 from torch import nn
@@ -24,6 +24,7 @@ from denoisr.nn.policy_backbone import ChessPolicyBackbone
 from denoisr.nn.policy_head import ChessPolicyHead
 from denoisr.nn.value_head import ChessValueHead
 from denoisr.nn.world_model import ChessWorldModel
+from denoisr.scripts.runtime import add_env_argument
 
 log = logging.getLogger(__name__)
 DEFAULT_AUTO_WORKERS = 64
@@ -97,7 +98,7 @@ class TrainingConfig:
     # Maximum L2 norm for gradient clipping. Prevents training instability
     # from occasional large gradient spikes (e.g. unusual positions).
     # 5.0 is permissive for from-scratch training; decrease to 1.0 for
-    # fine-tuning (visible in TensorBoard under gradients/norm).
+    # fine-tuning (visible in gradients/norm structured event lines).
     max_grad_norm: float = 5.0
 
     # AdamW weight decay coefficient. Acts as L2 regularization to prevent
@@ -388,302 +389,469 @@ def build_schedule(cfg: ModelConfig) -> CosineNoiseSchedule:
 
 
 def add_model_args(parser: ArgumentParser) -> None:
-    """Register CLI flags for model architecture hyperparameters."""
-    g = parser.add_argument_group("model")
-    g.add_argument(
+    """Register model flags; all values must come from env or explicit CLI."""
+    add_env_argument(
+        parser,
         "--d-s",
+        env_var="DENOISR_MODEL_D_S",
         type=int,
-        default=256,
-        help="latent dimension per square token (default: 256)",
+        help="latent dimension per square token",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--num-heads",
+        env_var="DENOISR_MODEL_NUM_HEADS",
         type=int,
-        default=8,
-        help="attention heads in backbone (default: 8, must divide d_s)",
+        help="attention heads in backbone (must divide d_s)",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--num-layers",
+        env_var="DENOISR_MODEL_NUM_LAYERS",
         type=int,
-        default=15,
-        help="policy backbone transformer depth (default: 15)",
+        help="policy backbone transformer depth",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--ffn-dim",
+        env_var="DENOISR_MODEL_FFN_DIM",
         type=int,
-        default=1024,
-        help="feed-forward hidden dim, typically 4×d_s (default: 1024)",
+        help="feed-forward hidden dim, typically 4×d_s",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--num-timesteps",
+        env_var="DENOISR_MODEL_NUM_TIMESTEPS",
         type=int,
-        default=100,
-        help="Diffusion timesteps (default: 100)",
+        help="diffusion timesteps",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--world-model-layers",
+        env_var="DENOISR_MODEL_WORLD_MODEL_LAYERS",
         type=int,
-        default=12,
-        help="world model transformer depth (default: 12)",
+        help="world model transformer depth",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--diffusion-layers",
+        env_var="DENOISR_MODEL_DIFFUSION_LAYERS",
         type=int,
-        default=6,
-        help="DiT diffusion denoiser depth (default: 6)",
+        help="DiT diffusion denoiser depth",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--proj-dim",
+        env_var="DENOISR_MODEL_PROJ_DIM",
         type=int,
-        default=256,
-        help="consistency projector dimension (default: 256)",
+        help="consistency projector dimension",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--gradient-checkpointing",
+        env_var="DENOISR_MODEL_GRADIENT_CHECKPOINTING",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="enable gradient checkpointing (saves VRAM, ~30%% slower; default: off)",
+        default=None,
+        help="enable gradient checkpointing (saves VRAM, ~30%% slower)",
     )
 
 
 def add_training_args(parser: ArgumentParser) -> None:
-    """Register CLI flags for all training hyperparameters."""
-    g = parser.add_argument_group("training")
-    g.add_argument(
+    """Register training flags; all values must come from env or explicit CLI."""
+    add_env_argument(
+        parser,
         "--max-grad-norm",
+        env_var="DENOISR_TRAIN_MAX_GRAD_NORM",
         type=float,
-        default=5.0,
-        help="gradient clipping L2 norm threshold (default: 5.0)",
+        help="gradient clipping L2 norm threshold",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--weight-decay",
+        env_var="DENOISR_TRAIN_WEIGHT_DECAY",
         type=float,
-        default=1e-4,
-        help="AdamW weight decay (default: 1e-4)",
+        help="AdamW weight decay",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--encoder-lr-multiplier",
+        env_var="DENOISR_TRAIN_ENCODER_LR_MULTIPLIER",
         type=float,
-        default=1.0,
-        help="LR multiplier for encoder/backbone vs heads (default: 1.0)",
+        help="LR multiplier for encoder/backbone vs heads",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--min-lr",
+        env_var="DENOISR_TRAIN_MIN_LR",
         type=float,
-        default=1e-6,
-        help="minimum LR at end of cosine annealing (default: 1e-6)",
+        help="minimum LR at end of cosine annealing",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--warmup-epochs",
+        env_var="DENOISR_TRAIN_WARMUP_EPOCHS",
         type=int,
-        default=5,
-        help="linear warmup epochs before cosine decay (default: 5)",
+        help="linear warmup epochs before cosine decay",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--warm-restarts",
+        env_var="DENOISR_TRAIN_WARM_RESTARTS",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="use cosine annealing with warm restarts (default: on)",
+        default=None,
+        help="use cosine annealing with warm restarts",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--threat-weight",
+        env_var="DENOISR_TRAIN_THREAT_WEIGHT",
         type=float,
-        default=0.1,
-        help="loss weight for threat prediction auxiliary head (default: 0.1)",
+        help="loss weight for threat prediction auxiliary head",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--policy-weight",
+        env_var="DENOISR_TRAIN_POLICY_WEIGHT",
         type=float,
-        default=2.0,
-        help="loss weight for policy cross-entropy (default: 2.0)",
+        help="loss weight for policy cross-entropy",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--value-weight",
+        env_var="DENOISR_TRAIN_VALUE_WEIGHT",
         type=float,
-        default=0.5,
-        help="loss weight for value cross-entropy (default: 0.5)",
+        help="loss weight for value cross-entropy",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--consistency-weight",
+        env_var="DENOISR_TRAIN_CONSISTENCY_WEIGHT",
         type=float,
-        default=1.0,
-        help="loss weight for consistency (default: 1.0)",
+        help="loss weight for consistency",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--diffusion-weight",
+        env_var="DENOISR_TRAIN_DIFFUSION_WEIGHT",
         type=float,
-        default=1.0,
-        help="loss weight for diffusion denoising (default: 1.0)",
+        help="loss weight for diffusion denoising",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--reward-weight",
+        env_var="DENOISR_TRAIN_REWARD_WEIGHT",
         type=float,
-        default=1.0,
-        help="loss weight for reward prediction (default: 1.0)",
+        help="loss weight for reward prediction",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--ply-weight",
+        env_var="DENOISR_TRAIN_PLY_WEIGHT",
         type=float,
-        default=0.1,
-        help="loss weight for game-length prediction (default: 0.1)",
+        help="loss weight for game-length prediction",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--illegal-penalty-weight",
+        env_var="DENOISR_TRAIN_ILLEGAL_PENALTY_WEIGHT",
         type=float,
-        default=0.01,
-        help="L2 penalty weight on illegal-move logits (default: 0.01)",
+        help="L2 penalty weight on illegal-move logits",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--harmony-dream",
+        env_var="DENOISR_TRAIN_HARMONY_DREAM",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="enable HarmonyDream dynamic loss balancing (default: on)",
+        default=None,
+        help="enable HarmonyDream dynamic loss balancing",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--harmony-ema-decay",
+        env_var="DENOISR_TRAIN_HARMONY_EMA_DECAY",
         type=float,
-        default=0.99,
-        help="EMA decay for HarmonyDream loss tracking (default: 0.99)",
+        help="EMA decay for HarmonyDream loss tracking",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--curriculum-initial-fraction",
+        env_var="DENOISR_TRAIN_CURRICULUM_INITIAL_FRACTION",
         type=float,
-        default=0.25,
-        help="fraction of diffusion steps at curriculum start (default: 0.25)",
+        help="fraction of diffusion steps at curriculum start",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--curriculum-growth",
+        env_var="DENOISR_TRAIN_CURRICULUM_GROWTH",
         type=float,
-        default=1.02,
-        help="per-epoch multiplier for curriculum steps (default: 1.02)",
+        help="per-epoch multiplier for curriculum steps",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--workers",
+        env_var="DENOISR_WORKERS",
         type=int,
-        default=0,
-        help="DataLoader worker processes (0 = auto: 64)",
+        help="DataLoader worker processes",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--tqdm",
-        action="store_true",
-        default=False,
-        help="show tqdm progress bars (default: off, structured log lines instead)",
+        env_var="DENOISR_TQDM",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="show tqdm progress bars",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--phase1-gate",
+        env_var="DENOISR_PHASE1_GATE",
         type=float,
-        default=0.50,
-        help="top-1 accuracy to pass Phase 1 gate (default: 0.50)",
+        help="top-1 accuracy to pass Phase 1 gate",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--phase2-gate",
+        env_var="DENOISR_PHASE2_GATE",
         type=float,
-        default=5.0,
-        help="diffusion improvement pp to pass Phase 2 gate (default: 5.0)",
+        help="diffusion improvement pp to pass Phase 2 gate",
     )
-    # Grokking detection
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--grok-tracking",
+        env_var="DENOISR_GROK_TRACKING",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="enable grokking detection metrics (default: on)",
+        default=None,
+        help="enable grokking detection metrics",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--grok-erank-freq",
+        env_var="DENOISR_GROK_ERANK_FREQ",
         type=int,
-        default=1000,
-        help="effective rank computation frequency in steps (default: 1000)",
+        help="effective rank computation frequency in steps",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--grok-spectral-freq",
+        env_var="DENOISR_GROK_SPECTRAL_FREQ",
         type=int,
-        default=5000,
-        help="spectral norm / HTSR alpha frequency in steps (default: 5000)",
+        help="spectral norm / HTSR alpha frequency",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--grok-onset-threshold",
+        env_var="DENOISR_GROK_ONSET_THRESHOLD",
         type=float,
-        default=0.95,
-        help="weight norm ratio for onset detection (default: 0.95)",
+        help="weight norm ratio for onset detection",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--grokfast",
+        env_var="DENOISR_GROKFAST",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="enable Grokfast EMA gradient filtering (default: on)",
+        default=None,
+        help="enable Grokfast EMA gradient filtering",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--grokfast-alpha",
+        env_var="DENOISR_GROKFAST_ALPHA",
         type=float,
-        default=0.98,
-        help="Grokfast EMA decay rate (default: 0.98)",
+        help="Grokfast EMA decay rate",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--grokfast-lamb",
+        env_var="DENOISR_GROKFAST_LAMB",
         type=float,
-        default=2.0,
-        help="Grokfast amplification factor (default: 2.0)",
+        help="Grokfast amplification factor",
     )
-    # EMA
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--ema-decay",
+        env_var="DENOISR_EMA_DECAY",
         type=float,
-        default=0.999,
-        help="EMA decay for shadow model evaluation (0=disabled, default: 0.999)",
+        help="EMA decay for shadow model evaluation",
     )
 
 
 def add_phase3_args(parser: ArgumentParser) -> None:
-    """Register Phase 3-specific CLI flags for self-play and MCTS."""
-    g = parser.add_argument_group("phase3")
-    g.add_argument(
+    """Register Phase 3 flags; all values must come from env or explicit CLI."""
+    add_env_argument(
+        parser,
         "--c-puct",
+        env_var="DENOISR_PHASE3_C_PUCT",
         type=float,
-        default=1.4,
-        help="MCTS UCB exploration constant (default: 1.4)",
+        help="MCTS UCB exploration constant",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--dirichlet-alpha",
+        env_var="DENOISR_PHASE3_DIRICHLET_ALPHA",
         type=float,
-        default=0.3,
-        help="Dirichlet noise alpha for root exploration (default: 0.3)",
+        help="Dirichlet noise alpha for root exploration",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--dirichlet-epsilon",
+        env_var="DENOISR_PHASE3_DIRICHLET_EPSILON",
         type=float,
-        default=0.25,
-        help="fraction of root prior replaced by Dirichlet noise (default: 0.25)",
+        help="fraction of root prior replaced by Dirichlet noise",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--temperature-base",
+        env_var="DENOISR_PHASE3_TEMPERATURE_BASE",
         type=float,
-        default=1.0,
-        help="base temperature for move selection (default: 1.0)",
+        help="base temperature for move selection",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--temperature-explore-moves",
+        env_var="DENOISR_PHASE3_TEMPERATURE_EXPLORE_MOVES",
         type=int,
-        default=30,
-        help="moves per game using full temperature (default: 30)",
+        help="moves per game using full temperature",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--temperature-generation-decay",
+        env_var="DENOISR_PHASE3_TEMPERATURE_GENERATION_DECAY",
         type=float,
-        default=0.97,
-        help="per-generation temperature decay (default: 0.97)",
+        help="per-generation temperature decay",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--max-moves",
+        env_var="DENOISR_PHASE3_MAX_MOVES",
         type=int,
-        default=300,
-        help="maximum moves per self-play game (default: 300)",
+        help="maximum moves per self-play game",
     )
-    g.add_argument(
+    add_env_argument(
+        parser,
         "--reanalyse-simulations",
+        env_var="DENOISR_PHASE3_REANALYSE_SIMULATIONS",
         type=int,
-        default=100,
-        help="MCTS sims for MuZero Reanalyse (default: 100)",
+        help="MCTS sims for MuZero Reanalyse",
     )
+
+
+_EnvValueParser = Callable[[str], Any]
+_EnvSpec = tuple[str, _EnvValueParser]
+
+
+def _parse_env_int(raw: str) -> int:
+    return int(raw.replace("_", ""))
+
+
+def _parse_env_float(raw: str) -> float:
+    return float(raw.replace("_", ""))
+
+
+def _parse_env_bool(raw: str) -> bool:
+    norm = raw.strip().lower()
+    if norm in {"1", "true", "yes", "on"}:
+        return True
+    if norm in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(
+        f"invalid boolean value {raw!r} (expected one of 1/0,true/false,yes/no,on/off)"
+    )
+
+
+_MODEL_REQUIRED_ENV_SPECS: tuple[_EnvSpec, ...] = (
+    ("DENOISR_MODEL_D_S", _parse_env_int),
+    ("DENOISR_MODEL_NUM_HEADS", _parse_env_int),
+    ("DENOISR_MODEL_NUM_LAYERS", _parse_env_int),
+    ("DENOISR_MODEL_FFN_DIM", _parse_env_int),
+    ("DENOISR_MODEL_NUM_TIMESTEPS", _parse_env_int),
+    ("DENOISR_MODEL_WORLD_MODEL_LAYERS", _parse_env_int),
+    ("DENOISR_MODEL_DIFFUSION_LAYERS", _parse_env_int),
+    ("DENOISR_MODEL_PROJ_DIM", _parse_env_int),
+    ("DENOISR_MODEL_GRADIENT_CHECKPOINTING", _parse_env_bool),
+)
+
+_TRAINING_REQUIRED_ENV_SPECS: tuple[_EnvSpec, ...] = (
+    ("DENOISR_TRAIN_MAX_GRAD_NORM", _parse_env_float),
+    ("DENOISR_TRAIN_WEIGHT_DECAY", _parse_env_float),
+    ("DENOISR_TRAIN_ENCODER_LR_MULTIPLIER", _parse_env_float),
+    ("DENOISR_TRAIN_MIN_LR", _parse_env_float),
+    ("DENOISR_TRAIN_WARMUP_EPOCHS", _parse_env_int),
+    ("DENOISR_TRAIN_WARM_RESTARTS", _parse_env_bool),
+    ("DENOISR_TRAIN_THREAT_WEIGHT", _parse_env_float),
+    ("DENOISR_TRAIN_POLICY_WEIGHT", _parse_env_float),
+    ("DENOISR_TRAIN_VALUE_WEIGHT", _parse_env_float),
+    ("DENOISR_TRAIN_CONSISTENCY_WEIGHT", _parse_env_float),
+    ("DENOISR_TRAIN_DIFFUSION_WEIGHT", _parse_env_float),
+    ("DENOISR_TRAIN_REWARD_WEIGHT", _parse_env_float),
+    ("DENOISR_TRAIN_PLY_WEIGHT", _parse_env_float),
+    ("DENOISR_TRAIN_ILLEGAL_PENALTY_WEIGHT", _parse_env_float),
+    ("DENOISR_TRAIN_HARMONY_DREAM", _parse_env_bool),
+    ("DENOISR_TRAIN_HARMONY_EMA_DECAY", _parse_env_float),
+    ("DENOISR_TRAIN_CURRICULUM_INITIAL_FRACTION", _parse_env_float),
+    ("DENOISR_TRAIN_CURRICULUM_GROWTH", _parse_env_float),
+    ("DENOISR_WORKERS", _parse_env_int),
+    ("DENOISR_TQDM", _parse_env_bool),
+    ("DENOISR_PHASE1_GATE", _parse_env_float),
+    ("DENOISR_PHASE2_GATE", _parse_env_float),
+    ("DENOISR_GROK_TRACKING", _parse_env_bool),
+    ("DENOISR_GROK_ERANK_FREQ", _parse_env_int),
+    ("DENOISR_GROK_SPECTRAL_FREQ", _parse_env_int),
+    ("DENOISR_GROK_ONSET_THRESHOLD", _parse_env_float),
+    ("DENOISR_GROKFAST", _parse_env_bool),
+    ("DENOISR_GROKFAST_ALPHA", _parse_env_float),
+    ("DENOISR_GROKFAST_LAMB", _parse_env_float),
+    ("DENOISR_EMA_DECAY", _parse_env_float),
+)
+
+_PHASE3_REQUIRED_ENV_SPECS: tuple[_EnvSpec, ...] = (
+    ("DENOISR_PHASE3_C_PUCT", _parse_env_float),
+    ("DENOISR_PHASE3_DIRICHLET_ALPHA", _parse_env_float),
+    ("DENOISR_PHASE3_DIRICHLET_EPSILON", _parse_env_float),
+    ("DENOISR_PHASE3_TEMPERATURE_BASE", _parse_env_float),
+    ("DENOISR_PHASE3_TEMPERATURE_EXPLORE_MOVES", _parse_env_int),
+    ("DENOISR_PHASE3_TEMPERATURE_GENERATION_DECAY", _parse_env_float),
+    ("DENOISR_PHASE3_MAX_MOVES", _parse_env_int),
+    ("DENOISR_PHASE3_REANALYSE_SIMULATIONS", _parse_env_int),
+)
+
+
+def required_env_vars(*, include_phase3: bool = True) -> tuple[str, ...]:
+    """Required env vars for model/training configuration."""
+    specs: list[_EnvSpec] = list(_MODEL_REQUIRED_ENV_SPECS) + list(
+        _TRAINING_REQUIRED_ENV_SPECS
+    )
+    if include_phase3:
+        specs.extend(_PHASE3_REQUIRED_ENV_SPECS)
+    return tuple(name for name, _parser in specs)
+
+
+def validate_required_env(*, include_phase3: bool = True) -> None:
+    """Fail fast if required env vars are missing or malformed."""
+    specs: list[_EnvSpec] = list(_MODEL_REQUIRED_ENV_SPECS) + list(
+        _TRAINING_REQUIRED_ENV_SPECS
+    )
+    if include_phase3:
+        specs.extend(_PHASE3_REQUIRED_ENV_SPECS)
+
+    missing: list[str] = []
+    invalid: list[str] = []
+    for env_name, parser in specs:
+        raw = os.environ.get(env_name)
+        if raw is None or raw.strip() == "":
+            missing.append(env_name)
+            continue
+        try:
+            parser(raw)
+        except ValueError as exc:
+            invalid.append(f"{env_name}={raw!r}: {exc}")
+
+    if missing or invalid:
+        parts: list[str] = []
+        if missing:
+            parts.append(f"missing: {', '.join(sorted(missing))}")
+        if invalid:
+            parts.append(f"invalid: {'; '.join(invalid)}")
+        raise ValueError(f"Environment validation failed for training config: {' | '.join(parts)}")
 
 
 def training_config_from_args(args: Namespace) -> TrainingConfig:
