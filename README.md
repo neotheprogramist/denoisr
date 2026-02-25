@@ -288,7 +288,10 @@ Plus all [training optimization](#training-optimization-trainingconfig) and [Pha
 
 ### Training logs
 
-Phase 1 and Phase 2 write human-readable metrics to a single file: `logs/denoisr.log`.
+Phase 1 and Phase 2 write human-readable metrics to a timestamped file:
+`logs/denoisr_YYYY-MM-DD_HH-MM-SS.log`.
+
+`DENOISR_LOG_FILE` is optional. If it is unset, the runtime generates a timestamped filename automatically. In multi-step pipeline runs, subprocesses inherit the same log filename for that run.
 
 `--run-name` is still useful: it tags log lines with a run label so you can filter mixed logs from multiple experiments. Without `--run-name`, a timestamp like `2026-02-20_14-30-15` is generated automatically.
 
@@ -303,10 +306,10 @@ Phase 1 and Phase 2 write human-readable metrics to a single file: `logs/denoisr
 
 ```bash
 # Follow live training output
-tail -f logs/denoisr.log
+tail -f "$(ls -1t logs/denoisr_*.log | head -n 1)"
 
 # Show only epoch summary lines
-rg "denoisr.metrics" logs/denoisr.log
+rg "denoisr.metrics" "$(ls -1t logs/denoisr_*.log | head -n 1)"
 ```
 
 #### Agent-friendly mode (default)
@@ -328,7 +331,7 @@ uv run denoisr-train-phase1 --checkpoint outputs/random_model.pt \
 
 ```
 logs/
-└── denoisr.log
+└── denoisr_2026-02-25_09-40-12.log
 ```
 
 ### Grokking detection (Phase 1)

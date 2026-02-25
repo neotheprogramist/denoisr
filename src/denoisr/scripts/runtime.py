@@ -9,6 +9,7 @@ Provides:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import logging
 import os
 from pathlib import Path
@@ -17,7 +18,8 @@ from typing import Any, TypeVar
 _T = TypeVar("_T")
 
 DEFAULT_ENV_FILE = ".env"
-DEFAULT_LOG_FILE = "logs/denoisr.log"
+DEFAULT_LOG_DIR = Path("logs")
+DEFAULT_LOG_PREFIX = "denoisr"
 
 
 def build_parser(description: str) -> argparse.ArgumentParser:
@@ -135,8 +137,16 @@ def configure_logging(
     filename: str | Path | None = None,
 ) -> Path:
     """Configure root logging to console and log file."""
-    log_path = Path(filename or os.environ.get("DENOISR_LOG_FILE", DEFAULT_LOG_FILE))
+    env_log_path = os.environ.get("DENOISR_LOG_FILE", "").strip()
+    if filename is not None:
+        log_path = Path(filename)
+    elif env_log_path:
+        log_path = Path(env_log_path)
+    else:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        log_path = DEFAULT_LOG_DIR / f"{DEFAULT_LOG_PREFIX}_{timestamp}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    os.environ["DENOISR_LOG_FILE"] = str(log_path)
     handlers: list[logging.Handler] = [
         logging.StreamHandler(),
         logging.FileHandler(log_path, encoding="utf-8"),

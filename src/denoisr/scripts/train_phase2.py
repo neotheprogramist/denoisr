@@ -55,8 +55,10 @@ from denoisr.training.phase2_trainer import (
     evaluate_phase2_gate,
 )
 from denoisr.training.resource_monitor import ResourceMonitor
+from denoisr.training.swa import ModelSWA
 
 log = logging.getLogger(__name__)
+_SWA_START_FRACTION = 0.75
 
 
 def extract_trajectories(
@@ -234,7 +236,7 @@ def main() -> None:
         type=str,
         default=None,
         required=False,
-        help="log run label attached to structured event lines (default: timestamp)",
+        help="log run label attached to training log lines (default: timestamp)",
     )
     add_training_args(parser)
     args = parser.parse_args()
@@ -321,6 +323,25 @@ def main() -> None:
             decay=tcfg.ema_decay,
         )
         log.info("EMA enabled  decay=%.4f", tcfg.ema_decay)
+    swa_start_epoch = max(1, math.ceil(args.epochs * _SWA_START_FRACTION))
+    swa_model = ModelSWA(
+        {
+            "encoder": encoder,
+            "backbone": backbone,
+            "policy_head": policy_head,
+            "value_head": value_head,
+            "world_model": world_model,
+            "diffusion": diffusion_mod,
+            "consistency": consistency,
+        }
+    )
+    log.info(
+        "SWA enabled  start_epoch=%d/%d",
+        swa_start_epoch,
+        args.epochs,
+    )
+    if not swa_model.has_batch_norm():
+        log.info("SWA batch-norm update skipped (no BatchNorm layers detected)")
 
     # --- Extract enriched trajectories ---
     board_encoder = build_board_encoder(cfg)
@@ -366,7 +387,6 @@ def main() -> None:
 
     monitor = ResourceMonitor()
     plateau_detector = PlateauDetector()
-    best_loss = float("inf")
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
         logger.log_hparams(
@@ -387,6 +407,24 @@ def main() -> None:
         )
 
         global_step = 0
+
+        def _save_current_checkpoint() -> None:
+            ema_kwargs: dict[str, object] = {}
+            if model_ema is not None:
+                for name, sd in model_ema.state_dicts().items():
+                    ema_kwargs[f"ema_{name}"] = sd
+            save_checkpoint(
+                Path(args.output),
+                cfg,
+                encoder=encoder.state_dict(),
+                backbone=backbone.state_dict(),
+                policy_head=policy_head.state_dict(),
+                value_head=value_head.state_dict(),
+                world_model=world_model.state_dict(),
+                diffusion=diffusion_mod.state_dict(),
+                consistency=consistency.state_dict(),
+                **ema_kwargs,
+            )
 
         for epoch in range(args.epochs):
             epoch_num = epoch + 1
@@ -465,6 +503,8 @@ def main() -> None:
             pbar.close()
 
             trainer.advance_curriculum()
+            if epoch_num >= swa_start_epoch:
+                swa_model.update()
             epoch_duration = time.monotonic() - epoch_start
             num_samples = len(train_dataset)
             avg_loss = epoch_loss / max(num_batches, 1)
@@ -544,25 +584,6 @@ def main() -> None:
                 trainer.optimizer.param_groups[0]["lr"],
             )
 
-            if avg_loss < best_loss:
-                best_loss = avg_loss
-                ema_kwargs: dict[str, object] = {}
-                if model_ema is not None:
-                    for name, sd in model_ema.state_dicts().items():
-                        ema_kwargs[f"ema_{name}"] = sd
-                save_checkpoint(
-                    Path(args.output),
-                    cfg,
-                    encoder=encoder.state_dict(),
-                    backbone=backbone.state_dict(),
-                    policy_head=policy_head.state_dict(),
-                    value_head=value_head.state_dict(),
-                    world_model=world_model.state_dict(),
-                    diffusion=diffusion_mod.state_dict(),
-                    consistency=consistency.state_dict(),
-                    **ema_kwargs,
-                )
-
         # --- Phase 2 gate ---
         log.info(
             "Phase 2 gate on holdout (%d samples)...",
@@ -593,6 +614,31 @@ def main() -> None:
             delta,
             tcfg.phase2_gate,
         )
+        selected_delta = delta
+        selected_source = "base"
+        if swa_model.num_updates > 0:
+            with swa_model.apply():
+                swa_single, swa_diff, swa_delta = evaluate_phase2_gate(
+                    encoder=encoder,
+                    backbone=backbone,
+                    policy_head=policy_head,
+                    diffusion=diffusion_mod,
+                    schedule=schedule,
+                    boards=holdout_boards,
+                    target_from=holdout_from,
+                    target_to=holdout_to,
+                    device=device,
+                    legal_mask=holdout_legal,
+                )
+            log.info(
+                "Phase 2 gate (SWA): single=%.1f%%  diffusion=%.1f%%  delta=%.1fpp",
+                swa_single * 100,
+                swa_diff * 100,
+                swa_delta,
+            )
+            if swa_delta >= selected_delta:
+                selected_delta = swa_delta
+                selected_source = "swa"
         if model_ema is not None:
             with model_ema.apply():
                 ema_single, ema_diff, ema_delta = evaluate_phase2_gate(
@@ -613,17 +659,29 @@ def main() -> None:
                 ema_diff * 100,
                 ema_delta,
             )
-        if delta > tcfg.phase2_gate:
+        if selected_source == "swa":
+            with swa_model.apply():
+                _save_current_checkpoint()
+        else:
+            _save_current_checkpoint()
+        log.info(
+            "Saved Phase 2 checkpoint from %s weights (holdout delta=%.1fpp)",
+            selected_source,
+            selected_delta,
+        )
+        if selected_delta > tcfg.phase2_gate:
             log.info(
-                "Phase 2 gate PASSED (delta %.1fpp > %.1fpp)",
-                delta,
+                "Phase 2 gate PASSED (%s delta %.1fpp > %.1fpp)",
+                selected_source,
+                selected_delta,
                 tcfg.phase2_gate,
             )
         else:
             log.warning(
-                "Phase 2 gate NOT PASSED (delta %.1fpp <= %.1fpp)."
+                "Phase 2 gate NOT PASSED (%s delta %.1fpp <= %.1fpp)."
                 " Checkpoint saved -- user decides.",
-                delta,
+                selected_source,
+                selected_delta,
                 tcfg.phase2_gate,
             )
 

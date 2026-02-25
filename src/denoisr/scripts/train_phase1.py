@@ -50,6 +50,7 @@ from denoisr.training.loss import ChessLossComputer
 from denoisr.training.resource_monitor import ResourceMonitor
 from denoisr.training.plateau_detector import PlateauDetector
 from denoisr.training.prefetch import DevicePrefetcher
+from denoisr.training.swa import ModelSWA
 from denoisr.training.supervised_trainer import SupervisedTrainer
 from denoisr.types import TrainingExample
 from denoisr.types.board import BoardTensor
@@ -59,6 +60,7 @@ log = logging.getLogger(__name__)
 _CHUNK_FORMAT = "chunked_v1"
 _HOLDOUT_SPLIT_SEED = 42
 _GROK_HOLDOUT_SPLITS = ("random", "game_level", "opening_family", "piece_count")
+_SWA_START_FRACTION = 0.75
 
 
 @dataclass(frozen=True)
@@ -577,7 +579,7 @@ def main() -> None:
         type=str,
         default=None,
         required=False,
-        help="log run label attached to structured event lines (default: timestamp)",
+        help="log run label attached to training log lines (default: timestamp)",
     )
     add_training_args(parser)
     args = parser.parse_args()
@@ -688,6 +690,22 @@ def main() -> None:
         grokfast_filter=grokfast_filter,
         use_warm_restarts=tcfg.use_warm_restarts,
     )
+    swa_start_epoch = max(1, math.ceil(args.epochs * _SWA_START_FRACTION))
+    swa_model = ModelSWA(
+        {
+            "encoder": encoder,
+            "backbone": backbone,
+            "policy_head": policy_head,
+            "value_head": value_head,
+        }
+    )
+    log.info(
+        "SWA enabled  start_epoch=%d/%d",
+        swa_start_epoch,
+        args.epochs,
+    )
+    if not swa_model.has_batch_norm():
+        log.info("SWA batch-norm update skipped (no BatchNorm layers detected)")
 
     # --- Grok tracker (opt-in) ---
     grok_tracker: GrokTracker | None = None
@@ -725,6 +743,7 @@ def main() -> None:
 
         # --- Train ---
         best_acc = 0.0
+        best_source = "base"
 
         logger.log_hparams(
             {
@@ -752,6 +771,22 @@ def main() -> None:
 
         global_step = 0
         consecutive_overflow_epochs = 0
+
+        def _save_current_checkpoint() -> None:
+            ema_kwargs: dict[str, object] = {}
+            if model_ema is not None:
+                for name, sd in model_ema.state_dicts().items():
+                    ema_kwargs[f"ema_{name}"] = sd
+            save_checkpoint(
+                Path(args.output),
+                cfg,
+                encoder=encoder.state_dict(),
+                backbone=backbone.state_dict(),
+                policy_head=policy_head.state_dict(),
+                value_head=value_head.state_dict(),
+                optimizer=trainer.optimizer.state_dict(),
+                **ema_kwargs,
+            )
 
         for epoch in range(args.epochs):
             epoch_num = epoch + 1
@@ -860,6 +895,8 @@ def main() -> None:
                 pbar.close()
                 del train_loader, train_dataset, boards, policies, values
             trainer.scheduler_step()
+            if epoch_num >= swa_start_epoch:
+                swa_model.update()
 
             epoch_duration = time.monotonic() - epoch_start
             samples_per_sec = data_plan.train_examples / max(epoch_duration, 1e-9)
@@ -871,6 +908,23 @@ def main() -> None:
                 use_tqdm=use_tqdm,
                 progress_desc=f"Eval random E{epoch_num}",
             )
+            swa_top1: float | None = None
+            swa_top5: float | None = None
+            if swa_model.num_updates > 0:
+                with swa_model.apply():
+                    swa_top1, swa_top5 = _measure_accuracy_from_plan(
+                        trainer,
+                        data_plan,
+                        device,
+                        use_tqdm=use_tqdm,
+                        progress_desc=f"Eval random SWA E{epoch_num}",
+                    )
+                log.info(
+                    "SWA top1=%.2f%% top5=%.2f%% (regular=%.2f%%)",
+                    swa_top1 * 100,
+                    (swa_top5 or 0.0) * 100,
+                    top1 * 100,
+                )
             if model_ema is not None:
                 with model_ema.apply():
                     ema_top1, _ = _measure_accuracy_from_plan(
@@ -885,6 +939,11 @@ def main() -> None:
                     ema_top1 * 100,
                     top1 * 100,
                 )
+            selected_top1 = top1
+            selected_source = "base"
+            if swa_top1 is not None and swa_top1 >= selected_top1:
+                selected_top1 = swa_top1
+                selected_source = "swa"
             current_lr = trainer.optimizer.param_groups[0]["lr"]
             avg_policy_loss = policy_loss_sum / max(policy_loss_count, 1)
             avg_value_loss = value_loss_sum / max(value_loss_count, 1)
@@ -965,7 +1024,8 @@ def main() -> None:
             log.info(
                 (
                     "Epoch %d/%d summary: loss=%.4f pol=%.4f val=%.4f "
-                    "top1=%.2f%% top5=%.2f%% lr=%.2e sps=%.0f data=%.1f%% ovf=%d"
+                    "top1=%.2f%% top5=%.2f%% selected=%s(%.2f%%) "
+                    "lr=%.2e sps=%.0f data=%.1f%% ovf=%d"
                 ),
                 epoch_num,
                 args.epochs,
@@ -974,6 +1034,8 @@ def main() -> None:
                 avg_value_loss,
                 top1 * 100,
                 top5 * 100,
+                selected_source,
+                selected_top1 * 100,
                 current_lr,
                 samples_per_sec,
                 data_time / max(epoch_duration, 1e-9) * 100.0,
@@ -1012,28 +1074,21 @@ def main() -> None:
             )
             plateau_detector.update(epoch, grad_norm_avg, avg_loss, current_lr)
 
-            if top1 > best_acc:
-                best_acc = top1
-                ema_kwargs: dict[str, object] = {}
-                if model_ema is not None:
-                    for name, sd in model_ema.state_dicts().items():
-                        ema_kwargs[f"ema_{name}"] = sd
-                save_checkpoint(
-                    Path(args.output),
-                    cfg,
-                    encoder=encoder.state_dict(),
-                    backbone=backbone.state_dict(),
-                    policy_head=policy_head.state_dict(),
-                    value_head=value_head.state_dict(),
-                    optimizer=trainer.optimizer.state_dict(),
-                    **ema_kwargs,
-                )
+            if selected_top1 > best_acc:
+                best_acc = selected_top1
+                best_source = selected_source
+                if selected_source == "swa":
+                    with swa_model.apply():
+                        _save_current_checkpoint()
+                else:
+                    _save_current_checkpoint()
 
             # Phase gate check
-            if top1 > tcfg.phase1_gate:
+            if selected_top1 > tcfg.phase1_gate:
                 log.info(
-                    "PHASE 1 GATE PASSED: top-1 accuracy %s > %s — ready for Phase 2",
-                    f"{top1:.1%}",
+                    "PHASE 1 GATE PASSED: top-1 accuracy %s (%s) > %s — ready for Phase 2",
+                    f"{selected_top1:.1%}",
+                    selected_source,
                     f"{tcfg.phase1_gate:.0%}",
                 )
                 break
@@ -1043,7 +1098,7 @@ def main() -> None:
     if grok_tracker is not None:
         grok_tracker.close()
 
-    log.info("best_top1=%s", f"{best_acc:.1%}")
+    log.info("best_top1=%s source=%s", f"{best_acc:.1%}", best_source)
 
 
 if __name__ == "__main__":
