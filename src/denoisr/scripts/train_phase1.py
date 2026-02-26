@@ -61,6 +61,7 @@ _CHUNK_FORMAT = "chunked_v1"
 _HOLDOUT_SPLIT_SEED = 42
 _GROK_HOLDOUT_SPLITS = ("random", "game_level", "opening_family", "piece_count")
 _SWA_START_FRACTION = 0.75
+_DATALOADER_PREFETCH_FACTOR = 2
 
 
 @dataclass(frozen=True)
@@ -526,6 +527,29 @@ def measure_accuracy(
     return correct_1 / max(total, 1), correct_5 / max(total, 1)
 
 
+def _is_dataloader_worker_failure(exc: RuntimeError) -> bool:
+    msg = str(exc)
+    return "DataLoader worker" in msg and "exited unexpectedly" in msg
+
+
+def _build_phase1_train_loader(
+    train_dataset: Dataset[tuple[Tensor, Tensor, Tensor]],
+    *,
+    batch_size: int,
+    worker_count: int,
+    pin_memory: bool,
+) -> DataLoader[tuple[Tensor, Tensor, Tensor]]:
+    loader_kwargs: dict[str, Any] = {
+        "batch_size": batch_size,
+        "shuffle": True,
+        "num_workers": worker_count,
+        "pin_memory": pin_memory,
+    }
+    if worker_count > 0:
+        loader_kwargs["prefetch_factor"] = _DATALOADER_PREFETCH_FACTOR
+    return DataLoader(train_dataset, **loader_kwargs)
+
+
 @graceful_main("denoisr-train-phase1", logger=log)
 def main() -> None:
     load_env_file()
@@ -733,10 +757,11 @@ def main() -> None:
         # --- Build shard stream config ---
         bs = args.batch_size
         worker_count = resolve_dataloader_workers(tcfg.workers)
+        active_worker_count = worker_count
         pin_memory = device.type == "cuda"
         log.info(
             "phase1 dataloader config: workers=%d  batch_size=%d  shards=%d",
-            worker_count,
+            active_worker_count,
             bs,
             len(data_plan.shards),
         )
@@ -818,27 +843,44 @@ def main() -> None:
                     num_planes=cfg.num_planes,
                     augment=True,
                 )
-                loader_kwargs: dict[str, Any] = {
-                    "batch_size": bs,
-                    "shuffle": True,
-                    "num_workers": worker_count,
-                    "pin_memory": pin_memory,
-                }
-                if worker_count > 0:
-                    loader_kwargs["persistent_workers"] = True
-                    loader_kwargs["prefetch_factor"] = 4
-                train_loader: DataLoader[
-                    tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-                ] = DataLoader(
+                train_loader = _build_phase1_train_loader(
                     train_dataset,
-                    **loader_kwargs,
+                    batch_size=bs,
+                    worker_count=active_worker_count,
+                    pin_memory=pin_memory,
                 )
                 batch_iter: (
                     DevicePrefetcher[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
                     | DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
                 )
                 if device.type == "cuda":
-                    batch_iter = DevicePrefetcher(train_loader, device)
+                    try:
+                        batch_iter = DevicePrefetcher(train_loader, device)
+                    except RuntimeError as exc:
+                        if (
+                            active_worker_count > 0
+                            and _is_dataloader_worker_failure(exc)
+                        ):
+                            log.warning(
+                                "DataLoader worker startup failed on shard %d/%d; "
+                                "disabling workers (num_workers=0) for the "
+                                "remainder of phase1 "
+                                "(%s)",
+                                shard_pos,
+                                len(shard_order),
+                                exc,
+                            )
+                            active_worker_count = 0
+                            del train_loader
+                            train_loader = _build_phase1_train_loader(
+                                train_dataset,
+                                batch_size=bs,
+                                worker_count=active_worker_count,
+                                pin_memory=pin_memory,
+                            )
+                            batch_iter = DevicePrefetcher(train_loader, device)
+                        else:
+                            raise
                 else:
                     batch_iter = train_loader
                 pbar = tqdm(

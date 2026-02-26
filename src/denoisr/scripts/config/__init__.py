@@ -28,6 +28,7 @@ from denoisr.scripts.runtime import add_env_argument
 
 log = logging.getLogger(__name__)
 DEFAULT_AUTO_WORKERS = 64
+DEFAULT_AUTO_DATALOADER_WORKERS = 8
 
 
 # ---------------------------------------------------------------------------
@@ -298,10 +299,10 @@ def resolve_workers(workers: int) -> int:
 
 
 def resolve_dataloader_workers(workers: int) -> int:
-    """Resolve DataLoader workers with hardcoded auto default and safety clamp."""
+    """Resolve DataLoader workers with conservative auto defaults and safety clamp."""
     max_workers = _detect_available_cpus()
     if workers <= 0:
-        return min(DEFAULT_AUTO_WORKERS, max_workers)
+        return min(DEFAULT_AUTO_DATALOADER_WORKERS, max_workers)
     if workers > max_workers:
         log.warning(
             "Requested DataLoader workers=%d exceeds available CPUs=%d; clamping to %d",

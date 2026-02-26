@@ -59,6 +59,12 @@ from denoisr.training.swa import ModelSWA
 
 log = logging.getLogger(__name__)
 _SWA_START_FRACTION = 0.75
+_DATALOADER_PREFETCH_FACTOR = 2
+
+
+def _is_dataloader_worker_failure(exc: RuntimeError) -> bool:
+    msg = str(exc)
+    return "DataLoader worker" in msg and "exited unexpectedly" in msg
 
 
 def extract_trajectories(
@@ -369,19 +375,20 @@ def main() -> None:
         trajectory_data.rewards[:n_train],
     )
     worker_count = resolve_dataloader_workers(tcfg.workers)
+    active_worker_count = worker_count
     loader_kwargs: dict[str, object] = {
         "batch_size": args.batch_size,
         "shuffle": True,
-        "num_workers": worker_count,
+        "num_workers": active_worker_count,
         "pin_memory": (device.type == "cuda"),
     }
-    if worker_count > 0:
+    if active_worker_count > 0:
         loader_kwargs["persistent_workers"] = True
-        loader_kwargs["prefetch_factor"] = 4
+        loader_kwargs["prefetch_factor"] = _DATALOADER_PREFETCH_FACTOR
     loader = DataLoader(train_dataset, **loader_kwargs)
     log.info(
         "phase2 dataloader config: workers=%d  batch_size=%d",
-        worker_count,
+        active_worker_count,
         args.batch_size,
     )
 
@@ -450,7 +457,29 @@ def main() -> None:
                 | DataLoader[tuple[torch.Tensor, ...]]
             )
             if device.type == "cuda":
-                batch_iter = DevicePrefetcher(loader, device)
+                try:
+                    batch_iter = DevicePrefetcher(loader, device)
+                except RuntimeError as exc:
+                    if (
+                        active_worker_count > 0
+                        and _is_dataloader_worker_failure(exc)
+                    ):
+                        log.warning(
+                            "DataLoader worker startup failed; disabling workers "
+                            "(num_workers=0) for the remainder of phase2 (%s)",
+                            exc,
+                        )
+                        active_worker_count = 0
+                        loader = DataLoader(
+                            train_dataset,
+                            batch_size=args.batch_size,
+                            shuffle=True,
+                            num_workers=active_worker_count,
+                            pin_memory=(device.type == "cuda"),
+                        )
+                        batch_iter = DevicePrefetcher(loader, device)
+                    else:
+                        raise
             else:
                 batch_iter = loader
 
