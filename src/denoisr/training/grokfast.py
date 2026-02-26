@@ -33,24 +33,26 @@ class GrokfastFilter:
         """Drop all EMA buffers, e.g. after a numerical instability event."""
         self.grads.clear()
 
-    def apply(self, model: nn.Module) -> None:
+    def apply(self, model: nn.Module, *, key_prefix: str = "") -> None:
+        prefix = f"{key_prefix}." if key_prefix else ""
         for name, param in model.named_parameters():
             if not param.requires_grad or param.grad is None:
                 continue
+            full_name = f"{prefix}{name}" if prefix else name
             grad = param.grad.detach()
             if not torch.isfinite(grad).all():
-                self.grads.pop(name, None)
+                self.grads.pop(full_name, None)
                 continue
-            if name not in self.grads:
-                self.grads[name] = grad.clone()
+            if full_name not in self.grads:
+                self.grads[full_name] = grad.clone()
             else:
-                ema = self.grads[name]
+                ema = self.grads[full_name]
                 if (
                     ema.shape != grad.shape
                     or ema.device != grad.device
                     or not torch.isfinite(ema).all()
                 ):
-                    self.grads[name] = grad.clone()
+                    self.grads[full_name] = grad.clone()
                 else:
                     ema.mul_(self.alpha).add_(grad, alpha=1 - self.alpha)
-            param.grad.add_(self.grads[name], alpha=self.lamb)
+            param.grad.add_(self.grads[full_name], alpha=self.lamb)

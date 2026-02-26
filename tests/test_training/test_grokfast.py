@@ -83,3 +83,32 @@ class TestGrokfastFilter:
         assert len(gf.grads) > 0
         gf.reset()
         assert gf.grads == {}
+
+    def test_key_prefix_namespaces_ema_buffers(self) -> None:
+        class _NormModule(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.norm = nn.LayerNorm(4)
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return self.norm(x)
+
+        encoder = _NormModule()
+        value_head = _NormModule()
+        gf = GrokfastFilter(alpha=0.98, lamb=2.0)
+
+        x = torch.randn(2, 4)
+        encoder.zero_grad()
+        value_head.zero_grad()
+        encoder(x).sum().backward()
+        value_head((x * 2.0)).sum().backward()
+
+        gf.apply(encoder, key_prefix="encoder")
+        gf.apply(value_head, key_prefix="value_head")
+
+        assert "encoder.norm.weight" in gf.grads
+        assert "value_head.norm.weight" in gf.grads
+        assert not torch.allclose(
+            gf.grads["encoder.norm.weight"],
+            gf.grads["value_head.norm.weight"],
+        )

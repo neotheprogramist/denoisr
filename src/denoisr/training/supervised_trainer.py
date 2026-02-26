@@ -146,13 +146,13 @@ class SupervisedTrainer:
             self._handle_overflow(breakdown, batch_top1)
             return total_loss.item(), breakdown
         if self._grokfast_filter is not None:
-            for module in [
-                self.encoder,
-                self.backbone,
-                self.policy_head,
-                self.value_head,
+            for module_name, module in [
+                ("encoder", self.encoder),
+                ("backbone", self.backbone),
+                ("policy_head", self.policy_head),
+                ("value_head", self.value_head),
             ]:
-                self._grokfast_filter.apply(module)
+                self._grokfast_filter.apply(module, key_prefix=module_name)
             if self._has_nonfinite_gradients():
                 self._handle_overflow(breakdown, batch_top1)
                 return total_loss.item(), breakdown

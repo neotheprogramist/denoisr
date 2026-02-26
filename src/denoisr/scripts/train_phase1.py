@@ -967,6 +967,7 @@ def main() -> None:
                     (swa_top5 or 0.0) * 100,
                     top1 * 100,
                 )
+            ema_top1: float | None = None
             if model_ema is not None:
                 with model_ema.apply():
                     ema_top1, _ = _measure_accuracy_from_plan(
@@ -983,6 +984,9 @@ def main() -> None:
                 )
             selected_top1 = top1
             selected_source = "base"
+            if ema_top1 is not None and ema_top1 >= selected_top1:
+                selected_top1 = ema_top1
+                selected_source = "ema"
             if swa_top1 is not None and swa_top1 >= selected_top1:
                 selected_top1 = swa_top1
                 selected_source = "swa"
@@ -1121,6 +1125,9 @@ def main() -> None:
                 best_source = selected_source
                 if selected_source == "swa":
                     with swa_model.apply():
+                        _save_current_checkpoint()
+                elif selected_source == "ema" and model_ema is not None:
+                    with model_ema.apply():
                         _save_current_checkpoint()
                 else:
                     _save_current_checkpoint()
