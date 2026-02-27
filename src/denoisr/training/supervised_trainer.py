@@ -198,6 +198,46 @@ class SupervisedTrainer:
             target_values.to(self.device, non_blocking=True),
         )
 
+    def backoff_learning_rates(
+        self,
+        factor: float,
+        *,
+        min_lr: float = 0.0,
+    ) -> tuple[list[float], list[float]]:
+        """Scale all optimizer/scheduler LRs by factor with an optional floor."""
+        if factor <= 0.0:
+            raise ValueError("LR backoff factor must be > 0")
+        if min_lr < 0.0:
+            raise ValueError("min_lr must be >= 0")
+
+        old_lrs: list[float] = []
+        new_lrs: list[float] = []
+        for group in self.optimizer.param_groups:
+            old = float(group["lr"])
+            new = max(old * factor, min_lr)
+            group["lr"] = new
+            old_lrs.append(old)
+            new_lrs.append(new)
+
+        self._base_lrs = [max(lr * factor, min_lr) for lr in self._base_lrs]
+        if hasattr(self._scheduler, "base_lrs"):
+            self._scheduler.base_lrs = list(self._base_lrs)
+        return old_lrs, new_lrs
+
+    def reset_amp_scaler(self) -> None:
+        """Reset GradScaler state after repeated numerical instability."""
+        self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
+
+    def reset_grokfast_filter(self) -> None:
+        if self._grokfast_filter is not None:
+            self._grokfast_filter.reset()
+
+    def disable_grokfast_filter(self) -> bool:
+        if self._grokfast_filter is None:
+            return False
+        self._grokfast_filter = None
+        return True
+
     def scheduler_step(self) -> None:
         self._epoch += 1
         if self._epoch <= self._warmup_epochs:

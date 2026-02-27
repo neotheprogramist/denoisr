@@ -38,8 +38,8 @@ def _set_required_training_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "DENOISR_GROK_SPECTRAL_FREQ": "5000",
         "DENOISR_GROK_ONSET_THRESHOLD": "0.95",
         "DENOISR_GROKFAST": "1",
-        "DENOISR_GROKFAST_ALPHA": "0.98",
-        "DENOISR_GROKFAST_LAMB": "2.0",
+        "DENOISR_GROKFAST_ALPHA": "0.99",
+        "DENOISR_GROKFAST_LAMB": "1.0",
         "DENOISR_EMA_DECAY": "0.999",
     }
     for key, value in values.items():
@@ -54,6 +54,8 @@ class TestGrokConfig:
     def test_default_grokfast_on(self) -> None:
         cfg = TrainingConfig()
         assert cfg.grokfast is True
+        assert cfg.grokfast_alpha == 0.99
+        assert cfg.grokfast_lamb == 1.0
 
     def test_grok_fields_exist(self) -> None:
         cfg = TrainingConfig(

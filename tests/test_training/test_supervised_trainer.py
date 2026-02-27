@@ -209,6 +209,28 @@ class TestSupervisedTrainer:
         assert breakdown["overflow"] is True
         assert math.isnan(float(breakdown["grad_norm"]))
 
+    def test_backoff_learning_rates_scales_optimizer_and_scheduler(
+        self, trainer: SupervisedTrainer
+    ) -> None:
+        old_current = [float(group["lr"]) for group in trainer.optimizer.param_groups]
+        old_base = list(trainer._base_lrs)
+        old_scheduler_base = list(trainer._scheduler.base_lrs)
+
+        old_lrs, new_lrs = trainer.backoff_learning_rates(0.5, min_lr=1e-8)
+
+        assert old_lrs == old_current
+        assert new_lrs == [pytest.approx(v * 0.5) for v in old_current]
+        assert trainer._base_lrs == [pytest.approx(v * 0.5) for v in old_base]
+        assert trainer._scheduler.base_lrs == [
+            pytest.approx(v * 0.5) for v in old_scheduler_base
+        ]
+
+    def test_backoff_learning_rates_rejects_nonpositive_factor(
+        self, trainer: SupervisedTrainer
+    ) -> None:
+        with pytest.raises(ValueError, match="factor"):
+            trainer.backoff_learning_rates(0.0)
+
 
 class TestSupervisedTrainerGrokfast:
     @pytest.fixture
@@ -274,3 +296,19 @@ class TestSupervisedTrainerGrokfast:
         )
         assert math.isfinite(clean_loss)
         assert clean_breakdown["overflow"] is False
+
+    def test_can_reset_and_disable_grokfast_filter(
+        self, trainer_with_grokfast: SupervisedTrainer
+    ) -> None:
+        batch = _make_batch(4)
+        trainer_with_grokfast.train_step(batch)
+        assert trainer_with_grokfast._grokfast_filter is not None
+        assert len(trainer_with_grokfast._grokfast_filter.grads) > 0
+
+        trainer_with_grokfast.reset_grokfast_filter()
+        assert trainer_with_grokfast._grokfast_filter is not None
+        assert trainer_with_grokfast._grokfast_filter.grads == {}
+
+        assert trainer_with_grokfast.disable_grokfast_filter() is True
+        assert trainer_with_grokfast._grokfast_filter is None
+        assert trainer_with_grokfast.disable_grokfast_filter() is False

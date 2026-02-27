@@ -270,8 +270,8 @@ class TrainingConfig:
     # -- Grokfast acceleration ------------------------------------------------
 
     grokfast: bool = True
-    grokfast_alpha: float = 0.98
-    grokfast_lamb: float = 2.0
+    grokfast_alpha: float = 0.99
+    grokfast_lamb: float = 1.0
 
     # -- EMA shadow model evaluation ------------------------------------------
 

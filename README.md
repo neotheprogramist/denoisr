@@ -171,21 +171,21 @@ Saved chunked manifest with 4000000 examples across 7 chunks to outputs/training
 Done: 4000000 examples generated.
 ```
 
-| Flag                   | Default                    | Description                                    |
-| ---------------------- | -------------------------- | ---------------------------------------------- |
-| `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file              |
-| `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                       |
-| `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)     |
-| `--max-examples`       | `4000000`                  | Training examples to generate                  |
-| `--workers`            | `64`                       | Worker processes (each runs its own Stockfish) |
-| `--policy-temperature` | `80`                       | Softmax temperature for policy targets         |
-| `--label-smoothing`    | `0.02`                     | Label smoothing epsilon for policy targets     |
-| `--seed`               | (none)                     | Random seed for reproducible sampling          |
-| `--chunksize`          | `1024`                     | `imap_unordered` chunksize for worker batching |
+| Flag                   | Default                    | Description                                                     |
+| ---------------------- | -------------------------- | --------------------------------------------------------------- |
+| `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file                               |
+| `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                                        |
+| `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)                      |
+| `--max-examples`       | `4000000`                  | Training examples to generate                                   |
+| `--workers`            | `64`                       | Worker processes (each runs its own Stockfish)                  |
+| `--policy-temperature` | `80`                       | Softmax temperature for policy targets                          |
+| `--label-smoothing`    | `0.02`                     | Label smoothing epsilon for policy targets                      |
+| `--seed`               | (none)                     | Random seed for reproducible sampling                           |
+| `--chunksize`          | `1024`                     | `imap_unordered` chunksize for worker batching                  |
 | `--chunk-examples`     | `1000000`                  | Requested examples per output shard (auto-capped by RAM budget) |
-| `--max-ram-gib`        | `64`                       | RAM budget used to auto-cap effective chunk size |
-| `--tqdm`               | off                        | Show tqdm progress bar (disabled by default)   |
-| `--output`             | `outputs/training_data.pt` | Output path for generated data                 |
+| `--max-ram-gib`        | `64`                       | RAM budget used to auto-cap effective chunk size                |
+| `--tqdm`               | off                        | Show tqdm progress bar (disabled by default)                    |
+| `--output`             | `outputs/training_data.pt` | Output path for generated data                                  |
 
 #### Step 4: Phase 1 -- Supervised learning
 
@@ -390,8 +390,8 @@ uv run denoisr-train-phase1 \
     --data outputs/training_data.pt \
     --grok-tracking \
     --grokfast \
-    --grokfast-alpha 0.98 \
-    --grokfast-lamb 2.0 \
+    --grokfast-alpha 0.99 \
+    --grokfast-lamb 1.0 \
     --run-name grokfast-experiment
 ```
 
@@ -408,8 +408,8 @@ Disable either feature with `--no-grok-tracking` and `--no-grokfast`.
 | `--grok-spectral-freq`   | `5000`  | Spectral norm / HTSR alpha frequency (steps)                        |
 | `--grok-onset-threshold` | `0.95`  | Weight norm ratio for onset detection (lower = more sensitive)      |
 | `--grokfast`             | on      | Enable Grokfast EMA gradient filtering (~50x grokking acceleration) |
-| `--grokfast-alpha`       | `0.98`  | EMA decay rate. Higher = smoother (more historical averaging)       |
-| `--grokfast-lamb`        | `2.0`   | Amplification factor. Higher = stronger boost to slow gradients     |
+| `--grokfast-alpha`       | `0.99`  | EMA decay rate. Higher = smoother (more historical averaging)       |
+| `--grokfast-lamb`        | `1.0`   | Amplification factor. Higher = stronger boost to slow gradients     |
 
 ### Hyperparameters
 

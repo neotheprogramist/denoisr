@@ -62,6 +62,16 @@ _HOLDOUT_SPLIT_SEED = 42
 _GROK_HOLDOUT_SPLITS = ("random", "game_level", "opening_family", "piece_count")
 _SWA_START_FRACTION = 0.75
 _DATALOADER_PREFETCH_FACTOR = 2
+_STABILITY_GUARD_ENABLED = True
+_STABILITY_GUARD_MIN_EPOCH = 4
+_STABILITY_GUARD_DROP_RATIO = 0.75
+_STABILITY_GUARD_MIN_DROP = 0.10
+_STABILITY_GUARD_OVERFLOW_FRAC = 5e-4
+_STABILITY_GUARD_GRAD_PEAK = 100.0
+_STABILITY_GUARD_LR_BACKOFF = 0.5
+_STABILITY_GUARD_MAX_BACKOFFS = 4
+_STABILITY_GUARD_DISABLE_GROKFAST_AFTER = 2
+_STABILITY_GUARD_COOLDOWN_EPOCHS = 1
 
 
 @dataclass(frozen=True)
@@ -80,6 +90,12 @@ class _TensorDataPlan:
     holdout_examples: int
     holdout_split_indices: dict[str, list[Tensor]]
     holdout_split_counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class _StabilityGuardDecision:
+    trigger: bool
+    reason: str = ""
 
 
 class _IndexedTensorDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
@@ -550,6 +566,91 @@ def _build_phase1_train_loader(
     return DataLoader(train_dataset, **loader_kwargs)
 
 
+def _evaluate_stability_guard(
+    *,
+    enabled: bool,
+    epoch_num: int,
+    best_top1: float,
+    current_top1: float,
+    overflow_frac: float,
+    grad_peak: float,
+    backoff_count: int,
+    cooldown_until_epoch: int,
+    min_epoch: int,
+    drop_ratio: float,
+    min_drop: float,
+    overflow_frac_threshold: float,
+    grad_peak_threshold: float,
+    max_backoffs: int,
+) -> _StabilityGuardDecision:
+    if not enabled:
+        return _StabilityGuardDecision(trigger=False)
+    if best_top1 <= 0.0:
+        return _StabilityGuardDecision(trigger=False)
+    if epoch_num < min_epoch:
+        return _StabilityGuardDecision(trigger=False)
+    if backoff_count >= max_backoffs:
+        return _StabilityGuardDecision(trigger=False)
+    if epoch_num <= cooldown_until_epoch:
+        return _StabilityGuardDecision(trigger=False)
+
+    drop = best_top1 - current_top1
+    if drop < min_drop:
+        return _StabilityGuardDecision(trigger=False)
+
+    ratio = current_top1 / max(best_top1, 1e-12)
+    if ratio > drop_ratio:
+        return _StabilityGuardDecision(trigger=False)
+
+    overflow_signal = overflow_frac >= overflow_frac_threshold
+    grad_signal = math.isfinite(grad_peak) and grad_peak >= grad_peak_threshold
+    if not (overflow_signal or grad_signal):
+        return _StabilityGuardDecision(trigger=False)
+
+    reasons: list[str] = [
+        (
+            f"top1 dropped {drop * 100:.2f}pp "
+            f"(best={best_top1 * 100:.2f}%, now={current_top1 * 100:.2f}%)"
+        )
+    ]
+    if overflow_signal:
+        reasons.append(f"overflow_frac={overflow_frac * 100:.3f}%")
+    if grad_signal:
+        reasons.append(f"grad_peak={grad_peak:.1f}")
+    return _StabilityGuardDecision(trigger=True, reason="; ".join(reasons))
+
+
+def _restore_phase1_from_checkpoint(
+    *,
+    checkpoint_path: Path,
+    device: torch.device,
+    trainer: SupervisedTrainer,
+    model_ema: ModelEMA | None,
+) -> bool:
+    if not checkpoint_path.exists():
+        return False
+    _ckpt_cfg, restored_state = load_checkpoint(checkpoint_path, device)
+    trainer.encoder.load_state_dict(restored_state["encoder"])
+    trainer.backbone.load_state_dict(restored_state["backbone"])
+    trainer.policy_head.load_state_dict(restored_state["policy_head"])
+    trainer.value_head.load_state_dict(restored_state["value_head"])
+
+    optimizer_state = restored_state.get("optimizer")
+    if isinstance(optimizer_state, dict):
+        trainer.optimizer.load_state_dict(optimizer_state)
+
+    if model_ema is not None:
+        ema_state: dict[str, dict[str, Tensor]] = {}
+        for name in ("encoder", "backbone", "policy_head", "value_head"):
+            key = f"ema_{name}"
+            state_dict = restored_state.get(key)
+            if isinstance(state_dict, dict):
+                ema_state[name] = state_dict
+        if len(ema_state) == 4:
+            model_ema.load_state_dicts(ema_state)
+    return True
+
+
 @graceful_main("denoisr-train-phase1", logger=log)
 def main() -> None:
     load_env_file()
@@ -796,6 +897,9 @@ def main() -> None:
 
         global_step = 0
         consecutive_overflow_epochs = 0
+        stability_backoff_count = 0
+        stability_guard_cooldown_until_epoch = 0
+        grokfast_disabled_by_guard = False
 
         def _save_current_checkpoint() -> None:
             ema_kwargs: dict[str, object] = {}
@@ -1118,7 +1222,82 @@ def main() -> None:
             grad_norm_avg = (
                 sum(step_grad_norms) / len(step_grad_norms) if step_grad_norms else 0.0
             )
+            grad_norm_peak = max(step_grad_norms) if step_grad_norms else float("nan")
             plateau_detector.update(epoch, grad_norm_avg, avg_loss, current_lr)
+
+            guard_decision = _evaluate_stability_guard(
+                enabled=_STABILITY_GUARD_ENABLED,
+                epoch_num=epoch_num,
+                best_top1=best_acc,
+                current_top1=selected_top1,
+                overflow_frac=overflow_frac,
+                grad_peak=grad_norm_peak,
+                backoff_count=stability_backoff_count,
+                cooldown_until_epoch=stability_guard_cooldown_until_epoch,
+                min_epoch=_STABILITY_GUARD_MIN_EPOCH,
+                drop_ratio=_STABILITY_GUARD_DROP_RATIO,
+                min_drop=_STABILITY_GUARD_MIN_DROP,
+                overflow_frac_threshold=_STABILITY_GUARD_OVERFLOW_FRAC,
+                grad_peak_threshold=_STABILITY_GUARD_GRAD_PEAK,
+                max_backoffs=_STABILITY_GUARD_MAX_BACKOFFS,
+            )
+            if guard_decision.trigger:
+                rollback_path = Path(args.output)
+                log.warning(
+                    "Stability guard triggered at epoch %d: %s",
+                    epoch_num,
+                    guard_decision.reason,
+                )
+                restored = _restore_phase1_from_checkpoint(
+                    checkpoint_path=rollback_path,
+                    device=device,
+                    trainer=trainer,
+                    model_ema=model_ema,
+                )
+                if not restored:
+                    log.error(
+                        "Stability guard could not restore best checkpoint at %s; stopping.",
+                        rollback_path,
+                    )
+                    break
+                old_lrs, new_lrs = trainer.backoff_learning_rates(
+                    _STABILITY_GUARD_LR_BACKOFF,
+                    min_lr=tcfg.min_lr,
+                )
+                trainer.reset_amp_scaler()
+                trainer.reset_grokfast_filter()
+                stability_backoff_count += 1
+                stability_guard_cooldown_until_epoch = (
+                    epoch_num + _STABILITY_GUARD_COOLDOWN_EPOCHS
+                )
+                consecutive_overflow_epochs = 0
+
+                if (
+                    not grokfast_disabled_by_guard
+                    and stability_backoff_count >= _STABILITY_GUARD_DISABLE_GROKFAST_AFTER
+                    and trainer.disable_grokfast_filter()
+                ):
+                    grokfast_disabled_by_guard = True
+                    log.warning(
+                        "Stability guard disabled Grokfast after %d rollback(s).",
+                        stability_backoff_count,
+                    )
+
+                old_head_lr = max(old_lrs)
+                new_head_lr = max(new_lrs)
+                log.warning(
+                    (
+                        "Stability guard rollback complete: restored=%s "
+                        "head_lr %.2e->%.2e backoff=%d/%d cooldown_until_epoch=%d"
+                    ),
+                    rollback_path,
+                    old_head_lr,
+                    new_head_lr,
+                    stability_backoff_count,
+                    _STABILITY_GUARD_MAX_BACKOFFS,
+                    stability_guard_cooldown_until_epoch,
+                )
+                continue
 
             if selected_top1 > best_acc:
                 best_acc = selected_top1

@@ -108,7 +108,6 @@ class TestGrokfastFilter:
 
         assert "encoder.norm.weight" in gf.grads
         assert "value_head.norm.weight" in gf.grads
-        assert not torch.allclose(
-            gf.grads["encoder.norm.weight"],
-            gf.grads["value_head.norm.weight"],
-        )
+        before = gf.grads["value_head.norm.weight"].clone()
+        gf.grads["encoder.norm.weight"].add_(1.0)
+        torch.testing.assert_close(gf.grads["value_head.norm.weight"], before)
