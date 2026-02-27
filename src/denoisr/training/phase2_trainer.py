@@ -183,7 +183,8 @@ class Phase2Trainer:
             # 5. Diffusion: v-prediction on random future
             cond = latent[:, 0]
             target_idx = torch.randint(1, T, (B,), device=self.device)
-            diff_target = torch.stack([latent[b, target_idx[b]] for b in range(B)])
+            batch_idx = torch.arange(B, device=self.device)
+            diff_target = latent[batch_idx, target_idx]
             t = torch.randint(0, self._current_max_steps, (B,), device=self.device)
             noise = torch.randn_like(diff_target)
             noisy_target = self.schedule.q_sample(diff_target, t, noise)

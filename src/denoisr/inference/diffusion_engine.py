@@ -39,7 +39,8 @@ class DiffusionChessEngine:
         self._schedule = schedule
         self._board_encoder = board_encoder
         self._device = device or torch.device("cpu")
-        self._num_steps = num_denoising_steps
+        self._num_steps = max(1, num_denoising_steps)
+        self._solver = DPMSolverPP(self._schedule, num_steps=self._num_steps)
 
     @torch.no_grad()
     def select_move(self, board: chess.Board) -> chess.Move:
@@ -49,12 +50,15 @@ class DiffusionChessEngine:
         features = self._backbone(enriched)
         logits = self._policy_head(features).squeeze(0)
 
-        legal_mask = torch.full((64, 64), float("-inf"))
+        flat_logits = logits.reshape(-1)
+        legal_flat = torch.zeros(64 * 64, dtype=torch.bool, device=self._device)
         for move in board.legal_moves:
-            legal_mask[move.from_square, move.to_square] = 0.0
-        legal_mask = legal_mask.to(self._device)
+            legal_flat[(move.from_square * 64) + move.to_square] = True
+        if not bool(legal_flat.any().item()):
+            raise ValueError("No legal moves available for current board position")
 
-        probs = torch.softmax((logits + legal_mask).reshape(-1), dim=0)
+        masked_logits = flat_logits.masked_fill(~legal_flat, float("-inf"))
+        probs = torch.softmax(masked_logits, dim=0)
         idx = int(torch.multinomial(probs, 1).item())
         from_sq, to_sq = idx // 64, idx % 64
 
@@ -86,8 +90,7 @@ class DiffusionChessEngine:
 
     def _diffusion_imagine(self, latent: torch.Tensor) -> torch.Tensor:
         """Run DPM-Solver++ denoising to imagine future trajectories."""
-        solver = DPMSolverPP(self._schedule, num_steps=self._num_steps)
-        x = solver.sample(self._diffusion, latent.shape, latent, self._device)
+        x = self._solver.sample(self._diffusion, latent.shape, latent, self._device)
         return self._diffusion.fuse(latent, x)
 
     def _set_eval(self) -> None:

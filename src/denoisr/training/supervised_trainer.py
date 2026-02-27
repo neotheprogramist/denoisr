@@ -238,6 +238,9 @@ class SupervisedTrainer:
         self._grokfast_filter = None
         return True
 
+    def set_grokfast_filter(self, grokfast_filter: GrokfastFilter | None) -> None:
+        self._grokfast_filter = grokfast_filter
+
     def scheduler_step(self) -> None:
         self._epoch += 1
         if self._epoch <= self._warmup_epochs:

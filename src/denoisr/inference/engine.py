@@ -42,13 +42,15 @@ class ChessEngine:
         features = self._backbone(latent)
         logits = self._policy_head(features).squeeze(0)
 
-        legal_mask = torch.full((64, 64), float("-inf"))
+        flat_logits = logits.reshape(-1)
+        legal_flat = torch.zeros(64 * 64, dtype=torch.bool, device=self._device)
         for move in board.legal_moves:
-            legal_mask[move.from_square, move.to_square] = 0.0
-        legal_mask = legal_mask.to(self._device)
+            legal_flat[(move.from_square * 64) + move.to_square] = True
+        if not bool(legal_flat.any().item()):
+            raise ValueError("No legal moves available for current board position")
 
-        masked_logits = logits + legal_mask
-        probs = torch.softmax(masked_logits.reshape(-1), dim=0)
+        masked_logits = flat_logits.masked_fill(~legal_flat, float("-inf"))
+        probs = torch.softmax(masked_logits, dim=0)
         idx = int(torch.multinomial(probs, 1).item())
 
         from_sq = idx // 64

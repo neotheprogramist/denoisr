@@ -231,6 +231,12 @@ class TestSupervisedTrainer:
         with pytest.raises(ValueError, match="factor"):
             trainer.backoff_learning_rates(0.0)
 
+    def test_set_and_disable_grokfast_filter(self, trainer: SupervisedTrainer) -> None:
+        gf = GrokfastFilter(alpha=0.98, lamb=1.0)
+        trainer.set_grokfast_filter(gf)
+        assert trainer.disable_grokfast_filter() is True
+        assert trainer.disable_grokfast_filter() is False
+
 
 class TestSupervisedTrainerGrokfast:
     @pytest.fixture

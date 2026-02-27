@@ -393,7 +393,7 @@ def main() -> None:
     )
 
     monitor = ResourceMonitor()
-    plateau_detector = PlateauDetector()
+    plateau_detector = PlateauDetector(warmup_epochs=tcfg.warmup_epochs)
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
         logger.log_hparams(

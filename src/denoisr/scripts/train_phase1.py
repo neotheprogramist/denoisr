@@ -548,6 +548,10 @@ def _is_dataloader_worker_failure(exc: RuntimeError) -> bool:
     return "DataLoader worker" in msg and "exited unexpectedly" in msg
 
 
+def _is_loss_stall_warning(msg: str) -> bool:
+    return "loss stalled" in msg
+
+
 def _build_phase1_train_loader(
     train_dataset: Dataset[tuple[Tensor, Tensor, Tensor]],
     *,
@@ -714,6 +718,16 @@ def main() -> None:
 
     device = detect_device()
     tcfg = training_config_from_args(args)
+    if tcfg.grokfast_start_epoch < 1:
+        raise ValueError("--grokfast-start-epoch must be >= 1")
+    if tcfg.grokfast_plateau_epochs < 0:
+        raise ValueError("--grokfast-plateau-epochs must be >= 0")
+    if tcfg.phase1_ema_eval_every < 1:
+        raise ValueError("--phase1-ema-eval-every must be >= 1")
+    if tcfg.phase1_swa_eval_every < 1:
+        raise ValueError("--phase1-swa-eval-every must be >= 1")
+    if tcfg.phase1_grok_eval_every < 1:
+        raise ValueError("--phase1-grok-eval-every must be >= 1")
     use_tqdm = args.tqdm
     log.info("device=%s", device)
 
@@ -773,16 +787,33 @@ def main() -> None:
 
     # --- Grokfast filter (opt-in) ---
     grokfast_filter: GrokfastFilter | None = None
+    grokfast_enabled = False
     if tcfg.grokfast:
-        grokfast_filter = GrokfastFilter(
-            alpha=tcfg.grokfast_alpha,
-            lamb=tcfg.grokfast_lamb,
+        immediate_grokfast = (
+            tcfg.grokfast_start_epoch <= 1 and tcfg.grokfast_plateau_epochs == 0
         )
-        log.info(
-            "grokfast enabled  alpha=%.3f  lamb=%.1f",
-            tcfg.grokfast_alpha,
-            tcfg.grokfast_lamb,
-        )
+        if immediate_grokfast:
+            grokfast_filter = GrokfastFilter(
+                alpha=tcfg.grokfast_alpha,
+                lamb=tcfg.grokfast_lamb,
+            )
+            grokfast_enabled = True
+            log.info(
+                "grokfast enabled  alpha=%.3f  lamb=%.1f",
+                tcfg.grokfast_alpha,
+                tcfg.grokfast_lamb,
+            )
+        else:
+            log.info(
+                (
+                    "grokfast delayed  alpha=%.3f  lamb=%.1f  "
+                    "start_epoch=%d  plateau_epochs=%d"
+                ),
+                tcfg.grokfast_alpha,
+                tcfg.grokfast_lamb,
+                tcfg.grokfast_start_epoch,
+                tcfg.grokfast_plateau_epochs,
+            )
 
     # --- EMA shadow model (opt-in) ---
     model_ema: ModelEMA | None = None
@@ -836,7 +867,7 @@ def main() -> None:
     grok_tracker: GrokTracker | None = None
 
     monitor = ResourceMonitor()
-    plateau_detector = PlateauDetector()
+    plateau_detector = PlateauDetector(warmup_epochs=tcfg.warmup_epochs)
 
     with TrainingLogger(Path("logs"), run_name=args.run_name) as logger:
         if tcfg.grok_tracking:
@@ -866,6 +897,15 @@ def main() -> None:
             bs,
             len(data_plan.shards),
         )
+        log.info(
+            (
+                "phase1 eval cadence: ema_every=%d  swa_every=%d  "
+                "grok_nonrandom_every=%d"
+            ),
+            tcfg.phase1_ema_eval_every,
+            tcfg.phase1_swa_eval_every,
+            tcfg.phase1_grok_eval_every,
+        )
 
         # --- Train ---
         best_acc = 0.0
@@ -891,6 +931,11 @@ def main() -> None:
                 "value_weight": tcfg.value_weight,
                 "use_harmony_dream": tcfg.use_harmony_dream,
                 "workers": worker_count,
+                "grokfast_start_epoch": tcfg.grokfast_start_epoch,
+                "grokfast_plateau_epochs": tcfg.grokfast_plateau_epochs,
+                "phase1_ema_eval_every": tcfg.phase1_ema_eval_every,
+                "phase1_swa_eval_every": tcfg.phase1_swa_eval_every,
+                "phase1_grok_eval_every": tcfg.phase1_grok_eval_every,
             },
             {"best_top1": 0.0},
         )
@@ -900,6 +945,7 @@ def main() -> None:
         stability_backoff_count = 0
         stability_guard_cooldown_until_epoch = 0
         grokfast_disabled_by_guard = False
+        grokfast_plateau_streak = 0
 
         def _save_current_checkpoint() -> None:
             ema_kwargs: dict[str, object] = {}
@@ -919,6 +965,31 @@ def main() -> None:
 
         for epoch in range(args.epochs):
             epoch_num = epoch + 1
+            if (
+                tcfg.grokfast
+                and not grokfast_enabled
+                and not grokfast_disabled_by_guard
+                and epoch_num >= tcfg.grokfast_start_epoch
+                and grokfast_plateau_streak >= tcfg.grokfast_plateau_epochs
+            ):
+                trainer.set_grokfast_filter(
+                    GrokfastFilter(
+                        alpha=tcfg.grokfast_alpha,
+                        lamb=tcfg.grokfast_lamb,
+                    )
+                )
+                grokfast_enabled = True
+                log.info(
+                    (
+                        "grokfast enabled at epoch %d  alpha=%.3f  lamb=%.1f  "
+                        "plateau_streak=%d/%d"
+                    ),
+                    epoch_num,
+                    tcfg.grokfast_alpha,
+                    tcfg.grokfast_lamb,
+                    grokfast_plateau_streak,
+                    tcfg.grokfast_plateau_epochs,
+                )
             log.info("Epoch %d/%d started", epoch_num, args.epochs)
             epoch_loss = 0.0
             num_batches = 0
@@ -1054,9 +1125,14 @@ def main() -> None:
                 use_tqdm=use_tqdm,
                 progress_desc=f"Eval random E{epoch_num}",
             )
+            boundary_epoch = epoch_num in {1, args.epochs}
             swa_top1: float | None = None
             swa_top5: float | None = None
-            if swa_model.num_updates > 0:
+            eval_swa = (
+                swa_model.num_updates > 0
+                and (boundary_epoch or (epoch_num % tcfg.phase1_swa_eval_every == 0))
+            )
+            if eval_swa:
                 with swa_model.apply():
                     swa_top1, swa_top5 = _measure_accuracy_from_plan(
                         trainer,
@@ -1072,7 +1148,10 @@ def main() -> None:
                     top1 * 100,
                 )
             ema_top1: float | None = None
-            if model_ema is not None:
+            eval_ema = model_ema is not None and (
+                boundary_epoch or (epoch_num % tcfg.phase1_ema_eval_every == 0)
+            )
+            if eval_ema and model_ema is not None:
                 with model_ema.apply():
                     ema_top1, _ = _measure_accuracy_from_plan(
                         trainer,
@@ -1194,14 +1273,19 @@ def main() -> None:
 
             # --- Grokking detection: evaluate all holdout splits ---
             if grok_tracker is not None:
-                holdout_results: dict[str, tuple[float, float]] = {}
-                for split_name in _GROK_HOLDOUT_SPLITS:
-                    split_count = data_plan.holdout_split_counts.get(split_name, 0)
-                    if split_count <= 0:
-                        continue
-                    if split_name == "random":
-                        split_top1 = top1
-                    else:
+                holdout_results: dict[str, tuple[float, float]] = {
+                    "random": (top1, avg_loss)
+                }
+                eval_nonrandom_grok = boundary_epoch or (
+                    epoch_num % tcfg.phase1_grok_eval_every == 0
+                )
+                if eval_nonrandom_grok:
+                    for split_name in _GROK_HOLDOUT_SPLITS:
+                        if split_name == "random":
+                            continue
+                        split_count = data_plan.holdout_split_counts.get(split_name, 0)
+                        if split_count <= 0:
+                            continue
                         split_top1, _ = _measure_accuracy_from_indices(
                             trainer=trainer,
                             data_plan=data_plan,
@@ -1212,7 +1296,7 @@ def main() -> None:
                             use_tqdm=use_tqdm,
                             progress_desc=f"Eval {split_name} E{epoch_num}",
                         )
-                    holdout_results[split_name] = (split_top1, avg_loss)
+                        holdout_results[split_name] = (split_top1, avg_loss)
                 grok_epoch_metrics = grok_tracker.epoch(
                     epoch, avg_loss, holdout_results
                 )
@@ -1223,7 +1307,13 @@ def main() -> None:
                 sum(step_grad_norms) / len(step_grad_norms) if step_grad_norms else 0.0
             )
             grad_norm_peak = max(step_grad_norms) if step_grad_norms else float("nan")
-            plateau_detector.update(epoch, grad_norm_avg, avg_loss, current_lr)
+            plateau_warnings = plateau_detector.update(
+                epoch, grad_norm_avg, avg_loss, current_lr
+            )
+            if any(_is_loss_stall_warning(msg) for msg in plateau_warnings):
+                grokfast_plateau_streak += 1
+            else:
+                grokfast_plateau_streak = 0
 
             guard_decision = _evaluate_stability_guard(
                 enabled=_STABILITY_GUARD_ENABLED,
@@ -1274,14 +1364,26 @@ def main() -> None:
 
                 if (
                     not grokfast_disabled_by_guard
+                    and tcfg.grokfast
                     and stability_backoff_count >= _STABILITY_GUARD_DISABLE_GROKFAST_AFTER
-                    and trainer.disable_grokfast_filter()
                 ):
-                    grokfast_disabled_by_guard = True
-                    log.warning(
-                        "Stability guard disabled Grokfast after %d rollback(s).",
-                        stability_backoff_count,
-                    )
+                    disabled_active_filter = trainer.disable_grokfast_filter()
+                    if disabled_active_filter:
+                        grokfast_enabled = False
+                        grokfast_disabled_by_guard = True
+                        log.warning(
+                            "Stability guard disabled Grokfast after %d rollback(s).",
+                            stability_backoff_count,
+                        )
+                    elif not grokfast_enabled:
+                        grokfast_disabled_by_guard = True
+                        log.warning(
+                            (
+                                "Stability guard suppressed delayed Grokfast activation "
+                                "after %d rollback(s)."
+                            ),
+                            stability_backoff_count,
+                        )
 
                 old_head_lr = max(old_lrs)
                 new_head_lr = max(new_lrs)

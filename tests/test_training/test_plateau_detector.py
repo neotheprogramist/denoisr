@@ -41,3 +41,11 @@ class TestPlateauDetector:
             for epoch in range(5):
                 detector.update(epoch, grad_norm=1.0, loss=1.0, lr=1e-3)
         assert any("loss stalled" in r.message for r in caplog.records)
+
+    def test_suppresses_warnings_during_warmup(self) -> None:
+        detector = PlateauDetector(warmup_epochs=3, update_mag_threshold=1e-2)
+        warnings = [
+            detector.update(epoch, grad_norm=0.01, loss=1.0, lr=1e-5)
+            for epoch in range(3)
+        ]
+        assert warnings == [[], [], []]

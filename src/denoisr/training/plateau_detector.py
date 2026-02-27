@@ -23,6 +23,7 @@ class PlateauDetector:
     grad_threshold: float = 0.15
     loss_rel_threshold: float = 1e-3
     update_mag_threshold: float = 1e-4
+    warmup_epochs: int = 0
 
     _grad_ema: float = field(default=0.0, init=False, repr=False)
     _loss_history: deque[float] = field(default_factory=deque, init=False, repr=False)
@@ -47,6 +48,11 @@ class PlateauDetector:
         self._loss_history.append(loss)
         if len(self._loss_history) > self.window:
             self._loss_history.popleft()
+
+        # Early warmup epochs intentionally use conservative updates and can
+        # trigger false stall alerts. Keep tracking state, but suppress warnings.
+        if epoch < self.warmup_epochs:
+            return []
 
         # Check 1: gradient norm collapse
         if self._grad_ema < self.grad_threshold:

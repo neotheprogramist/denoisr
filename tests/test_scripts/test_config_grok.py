@@ -40,6 +40,8 @@ def _set_required_training_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "DENOISR_GROKFAST": "1",
         "DENOISR_GROKFAST_ALPHA": "0.99",
         "DENOISR_GROKFAST_LAMB": "1.0",
+        "DENOISR_GROKFAST_START_EPOCH": "1",
+        "DENOISR_GROKFAST_PLATEAU_EPOCHS": "0",
         "DENOISR_EMA_DECAY": "0.999",
     }
     for key, value in values.items():
@@ -56,6 +58,8 @@ class TestGrokConfig:
         assert cfg.grokfast is True
         assert cfg.grokfast_alpha == 0.99
         assert cfg.grokfast_lamb == 1.0
+        assert cfg.grokfast_start_epoch == 1
+        assert cfg.grokfast_plateau_epochs == 0
 
     def test_grok_fields_exist(self) -> None:
         cfg = TrainingConfig(
@@ -66,18 +70,33 @@ class TestGrokConfig:
             grokfast=True,
             grokfast_alpha=0.95,
             grokfast_lamb=3.0,
+            grokfast_start_epoch=20,
+            grokfast_plateau_epochs=3,
         )
         assert cfg.grok_tracking is True
         assert cfg.grok_erank_freq == 500
         assert cfg.grokfast_lamb == 3.0
+        assert cfg.grokfast_start_epoch == 20
+        assert cfg.grokfast_plateau_epochs == 3
 
     def test_cli_flags_registered(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _set_required_training_env(monkeypatch)
         parser = argparse.ArgumentParser()
         add_training_args(parser)
-        args = parser.parse_args(["--grok-tracking", "--grokfast"])
+        args = parser.parse_args(
+            [
+                "--grok-tracking",
+                "--grokfast",
+                "--grokfast-start-epoch",
+                "20",
+                "--grokfast-plateau-epochs",
+                "3",
+            ]
+        )
         assert args.grok_tracking is True
         assert args.grokfast is True
+        assert args.grokfast_start_epoch == 20
+        assert args.grokfast_plateau_epochs == 3
 
     def test_training_config_from_args_includes_grok(
         self, monkeypatch: pytest.MonkeyPatch
@@ -85,7 +104,19 @@ class TestGrokConfig:
         _set_required_training_env(monkeypatch)
         parser = argparse.ArgumentParser()
         add_training_args(parser)
-        args = parser.parse_args(["--grok-tracking", "--grok-erank-freq", "500"])
+        args = parser.parse_args(
+            [
+                "--grok-tracking",
+                "--grok-erank-freq",
+                "500",
+                "--grokfast-start-epoch",
+                "20",
+                "--grokfast-plateau-epochs",
+                "3",
+            ]
+        )
         cfg = training_config_from_args(args)
         assert cfg.grok_tracking is True
         assert cfg.grok_erank_freq == 500
+        assert cfg.grokfast_start_epoch == 20
+        assert cfg.grokfast_plateau_epochs == 3

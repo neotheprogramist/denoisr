@@ -272,6 +272,8 @@ class TrainingConfig:
     grokfast: bool = True
     grokfast_alpha: float = 0.99
     grokfast_lamb: float = 1.0
+    grokfast_start_epoch: int = 1
+    grokfast_plateau_epochs: int = 0
 
     # -- EMA shadow model evaluation ------------------------------------------
 
@@ -279,6 +281,18 @@ class TrainingConfig:
     # 0.999 for large datasets, 0.9999 for very long training. Enabled by
     # default — the shadow model provides smoother evaluation metrics.
     ema_decay: float = 0.999
+
+    # -- Phase 1 evaluation cadence -------------------------------------------
+
+    # Evaluate EMA shadow model every N epochs (1 = every epoch).
+    phase1_ema_eval_every: int = 2
+
+    # Evaluate SWA shadow model every N epochs (1 = every epoch).
+    phase1_swa_eval_every: int = 2
+
+    # Evaluate expensive non-random grok holdout splits every N epochs.
+    # Random split is still evaluated every epoch.
+    phase1_grok_eval_every: int = 3
 
 
 def _detect_available_cpus() -> int:
@@ -674,10 +688,55 @@ def add_training_args(parser: ArgumentParser) -> None:
     )
     add_env_argument(
         parser,
+        "--grokfast-start-epoch",
+        env_var="DENOISR_GROKFAST_START_EPOCH",
+        type=int,
+        default=1,
+        required=False,
+        help="Earliest epoch (1-based) where Grokfast may be enabled",
+    )
+    add_env_argument(
+        parser,
+        "--grokfast-plateau-epochs",
+        env_var="DENOISR_GROKFAST_PLATEAU_EPOCHS",
+        type=int,
+        default=0,
+        required=False,
+        help="Consecutive plateau epochs (loss-stall warnings) required before enabling Grokfast; 0 enables immediately",
+    )
+    add_env_argument(
+        parser,
         "--ema-decay",
         env_var="DENOISR_EMA_DECAY",
         type=float,
         help="EMA decay for shadow model evaluation",
+    )
+    add_env_argument(
+        parser,
+        "--phase1-ema-eval-every",
+        env_var="DENOISR_PHASE1_EMA_EVAL_EVERY",
+        type=int,
+        default=2,
+        required=False,
+        help="Evaluate EMA holdout accuracy every N epochs in phase1",
+    )
+    add_env_argument(
+        parser,
+        "--phase1-swa-eval-every",
+        env_var="DENOISR_PHASE1_SWA_EVAL_EVERY",
+        type=int,
+        default=2,
+        required=False,
+        help="Evaluate SWA holdout accuracy every N epochs in phase1",
+    )
+    add_env_argument(
+        parser,
+        "--phase1-grok-eval-every",
+        env_var="DENOISR_PHASE1_GROK_EVAL_EVERY",
+        type=int,
+        default=3,
+        required=False,
+        help="Evaluate non-random grok holdout splits every N epochs in phase1",
     )
 
 
@@ -891,7 +950,12 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         grokfast=args.grokfast,
         grokfast_alpha=args.grokfast_alpha,
         grokfast_lamb=args.grokfast_lamb,
+        grokfast_start_epoch=args.grokfast_start_epoch,
+        grokfast_plateau_epochs=args.grokfast_plateau_epochs,
         ema_decay=args.ema_decay,
+        phase1_ema_eval_every=args.phase1_ema_eval_every,
+        phase1_swa_eval_every=args.phase1_swa_eval_every,
+        phase1_grok_eval_every=args.phase1_grok_eval_every,
     )
 
 
@@ -962,7 +1026,7 @@ def load_checkpoint(
     path: Path,
     device: torch.device,
 ) -> tuple[ModelConfig, dict[str, Any]]:
-    data = torch.load(path, map_location=device, weights_only=False)
+    data = torch.load(path, map_location=device, weights_only=True)
     cfg = ModelConfig(**data.pop("config"))
     # Checkpoints saved from torch.compile()-wrapped models have an
     # ``_orig_mod.`` prefix on every key.  Strip it so state dicts load
