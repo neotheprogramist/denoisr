@@ -1,6 +1,6 @@
 """Tests for new training enhancement config fields."""
 
-from denoisr.scripts.config import ModelConfig, TrainingConfig
+from denoisr.scripts.config import ModelConfig, TrainingConfig, build_backbone
 
 
 class TestEnhancementConfigDefaults:
@@ -39,3 +39,18 @@ class TestEnhancementConfigDefaults:
     def test_training_config_has_policy_temp_augment_prob(self) -> None:
         cfg = TrainingConfig()
         assert cfg.policy_temp_augment_prob == 0.0
+
+
+class TestBuildBackboneWithDropout:
+    def test_build_backbone_passes_dropout(self) -> None:
+        cfg = ModelConfig(dropout=0.2, drop_path_rate=0.15)
+        backbone = build_backbone(cfg)
+        layer0 = backbone.layers[0]
+        assert layer0.attn_dropout.p == 0.2
+        assert layer0.ffn_dropout.p == 0.2
+
+    def test_build_backbone_passes_drop_path(self) -> None:
+        cfg = ModelConfig(num_layers=4, drop_path_rate=0.3)
+        backbone = build_backbone(cfg)
+        assert backbone.layers[0].drop_path.drop_prob == 0.0
+        assert abs(backbone.layers[-1].drop_path.drop_prob - 0.3) < 1e-6

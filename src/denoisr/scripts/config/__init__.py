@@ -404,6 +404,8 @@ def build_backbone(cfg: ModelConfig) -> ChessPolicyBackbone:
         num_layers=cfg.num_layers,
         ffn_dim=cfg.ffn_dim,
         gradient_checkpointing=cfg.gradient_checkpointing,
+        dropout=cfg.dropout,
+        drop_path_rate=cfg.drop_path_rate,
     )
 
 
