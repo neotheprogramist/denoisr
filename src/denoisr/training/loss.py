@@ -31,9 +31,11 @@ class ChessLossComputer:
         ply_weight: float = 0.1,
         state_weight: float = 1.0,
         illegal_penalty_weight: float = 0.0,
+        label_smoothing: float = 0.0,
         use_harmony_dream: bool = False,
         harmony_ema_decay: float = 0.99,
     ) -> None:
+        self._label_smoothing = label_smoothing
         self._illegal_penalty_weight = illegal_penalty_weight
         self._base_weights = {
             "policy": policy_weight,
@@ -72,6 +74,13 @@ class ChessLossComputer:
             legal_mask = legal_mask | (target_flat > 0)
         else:
             legal_mask = target_flat > 0
+        if self._label_smoothing > 0:
+            n_legal = legal_mask.sum(dim=-1, keepdim=True).clamp(min=1).float()
+            uniform = legal_mask.float() / n_legal
+            target_flat = (
+                (1 - self._label_smoothing) * target_flat
+                + self._label_smoothing * uniform
+            )
         has_legal = legal_mask.any(dim=-1, keepdim=True)
         masked_logits = pred_flat.masked_fill(~legal_mask, float("-inf"))
         # Guard all-zero rows: replace all-inf rows with zeros to avoid NaN

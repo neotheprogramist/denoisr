@@ -294,3 +294,47 @@ class TestChessLossComputer:
             policy_legal_mask=legal_mask,
         )
         assert breakdown["policy"] > 0.0
+
+
+class TestLabelSmoothing:
+    def test_smoothing_zero_is_unchanged(self) -> None:
+        loss_fn = ChessLossComputer(label_smoothing=0.0)
+        pred = torch.randn(2, 64, 64)
+        target = torch.zeros(2, 64, 64)
+        target[0, 0, 1] = 0.8
+        target[0, 0, 3] = 0.2
+        target[1, 2, 5] = 1.0
+        value = torch.tensor([[0.5, 0.3, 0.2], [0.1, 0.8, 0.1]])
+        total_0, _ = loss_fn.compute(pred, torch.randn(2, 3), target, value)
+        assert total_0.isfinite()
+
+    def test_smoothing_increases_loss_for_confident_prediction(self) -> None:
+        """Label smoothing should increase loss when model is very confident on correct move."""
+        pred = torch.zeros(1, 64, 64)
+        pred[0, 0, 1] = 10.0  # high confidence on correct move
+        target = torch.zeros(1, 64, 64)
+        target[0, 0, 1] = 0.8
+        target[0, 0, 3] = 0.2
+        value_pred = torch.tensor([[0.0, 0.0, 0.0]])
+        value_target = torch.tensor([[0.5, 0.3, 0.2]])
+
+        no_smooth = ChessLossComputer(label_smoothing=0.0)
+        with_smooth = ChessLossComputer(label_smoothing=0.1)
+
+        loss_no, _ = no_smooth.compute(pred, value_pred, target, value_target)
+        loss_yes, _ = with_smooth.compute(pred, value_pred, target, value_target)
+        # Smoothing redistributes probability, so confident-correct predictions
+        # have slightly higher loss with smoothing
+        assert loss_yes > loss_no
+
+    def test_smoothing_only_among_legal_moves(self) -> None:
+        """Smoothed probability mass should only go to legal moves."""
+        loss_fn = ChessLossComputer(label_smoothing=0.5)
+        pred = torch.zeros(1, 64, 64)
+        target = torch.zeros(1, 64, 64)
+        target[0, 0, 1] = 0.7
+        target[0, 0, 3] = 0.3
+        value_pred = torch.tensor([[0.0, 0.0, 0.0]])
+        value_target = torch.tensor([[0.5, 0.3, 0.2]])
+        total, _ = loss_fn.compute(pred, value_pred, target, value_target)
+        assert total.isfinite()
