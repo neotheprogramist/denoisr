@@ -30,6 +30,7 @@ from denoisr.scripts.config import (
     detect_device,
     load_checkpoint,
     maybe_compile,
+    resolve_amp_dtype,
     resolve_dataloader_workers,
     save_checkpoint,
     training_config_from_args,
@@ -443,7 +444,8 @@ def _measure_accuracy_from_indices(
     trainer.policy_head.eval()
 
     autocast_device = device.type if device.type in ("cuda", "cpu") else "cpu"
-    autocast_enabled = device.type == "cuda"
+    amp_dtype: torch.dtype | None = getattr(trainer, "_amp_dtype", None)
+    autocast_enabled = amp_dtype is not None and device.type == "cuda"
 
     correct_1 = 0
     correct_5 = 0
@@ -458,7 +460,7 @@ def _measure_accuracy_from_indices(
         smoothing=0.3,
     )
 
-    with torch.no_grad(), autocast(autocast_device, enabled=autocast_enabled):
+    with torch.no_grad(), autocast(autocast_device, enabled=autocast_enabled, dtype=amp_dtype):
         for shard_idx, shard in enumerate(data_plan.shards):
             split_idx = indices_by_shard[shard_idx]
             if split_idx.numel() == 0:
@@ -520,13 +522,14 @@ def measure_accuracy(
     trainer.policy_head.eval()
 
     autocast_device = device.type if device.type in ("cuda", "cpu") else "cpu"
-    autocast_enabled = device.type == "cuda"
+    amp_dtype_val: torch.dtype | None = getattr(trainer, "_amp_dtype", None)
+    autocast_enabled = amp_dtype_val is not None and device.type == "cuda"
 
     correct_1 = 0
     correct_5 = 0
     total = len(examples)
 
-    with torch.no_grad(), autocast(autocast_device, enabled=autocast_enabled):
+    with torch.no_grad(), autocast(autocast_device, enabled=autocast_enabled, dtype=amp_dtype_val):
         for i in range(0, total, batch_size):
             batch = examples[i : i + batch_size]
             boards = torch.stack([ex.board.data for ex in batch]).to(device)
@@ -857,6 +860,7 @@ def main() -> None:
         onecycle_pct_start=tcfg.onecycle_pct_start,
         steps_per_epoch=steps_per_epoch,
         accumulation_steps=tcfg.gradient_accumulation_steps,
+        amp_dtype=resolve_amp_dtype(tcfg),
     )
     swa_start_epoch = max(1, math.ceil(args.epochs * _SWA_START_FRACTION))
     swa_model = ModelSWA(

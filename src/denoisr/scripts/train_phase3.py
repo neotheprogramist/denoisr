@@ -36,6 +36,7 @@ from denoisr.scripts.config import (
     detect_device,
     full_training_config_from_args,
     load_checkpoint,
+    resolve_amp_dtype,
     resolve_dataloader_workers,
     save_checkpoint,
 )
@@ -476,6 +477,7 @@ def main() -> None:
         encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
         min_lr=tcfg.min_lr,
         use_warm_restarts=tcfg.use_warm_restarts,
+        amp_dtype=resolve_amp_dtype(tcfg),
     )
     aux_lr = args.aux_lr if args.aux_lr is not None else args.lr
     aux_trainer: Phase2Trainer | None = None
@@ -508,6 +510,7 @@ def main() -> None:
             curriculum_initial_fraction=tcfg.curriculum_initial_fraction,
             curriculum_growth=tcfg.curriculum_growth,
             freeze_encoder=False,
+            amp_dtype=resolve_amp_dtype(tcfg),
         )
         log.info(
             "phase3 auxiliary trainer enabled: updates/gen=%d batch_size=%d seq_len=%d lr=%.2e",

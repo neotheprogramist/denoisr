@@ -136,6 +136,11 @@ class TrainingConfig:
     # basins when training stalls.
     use_warm_restarts: bool = True
 
+    # Mixed-precision dtype for autocast. "bf16" eliminates gradient overflow
+    # (same exponent range as fp32), "fp16" uses dynamic loss scaling, "fp32"
+    # disables mixed precision entirely.
+    amp_dtype: str = "bf16"
+
     # Use OneCycleLR instead of cosine annealing. Provides per-step scheduling
     # with coupled LR/momentum annealing for super-convergence.
     use_onecycle: bool = False
@@ -526,6 +531,22 @@ def add_model_args(parser: ArgumentParser) -> None:
     )
 
 
+_AMP_DTYPE_MAP: dict[str, torch.dtype | None] = {
+    "bf16": torch.bfloat16,
+    "fp16": torch.float16,
+    "fp32": None,
+}
+
+
+def resolve_amp_dtype(tcfg: TrainingConfig) -> torch.dtype | None:
+    """Map the string amp_dtype config to a torch.dtype (or None for fp32)."""
+    try:
+        return _AMP_DTYPE_MAP[tcfg.amp_dtype]
+    except KeyError:
+        msg = f"unknown amp_dtype={tcfg.amp_dtype!r}, expected one of {sorted(_AMP_DTYPE_MAP)}"
+        raise ValueError(msg) from None
+
+
 def add_training_args(parser: ArgumentParser) -> None:
     """Register training flags; all values must come from env or explicit CLI."""
     add_env_argument(
@@ -790,6 +811,13 @@ def add_training_args(parser: ArgumentParser) -> None:
     )
     add_env_argument(
         parser,
+        "--amp-dtype",
+        env_var="DENOISR_AMP_DTYPE",
+        type=str,
+        help="mixed-precision dtype: bf16, fp16, or fp32",
+    )
+    add_env_argument(
+        parser,
         "--use-onecycle",
         env_var="DENOISR_TRAIN_USE_ONECYCLE",
         action=argparse.BooleanOptionalAction,
@@ -912,6 +940,17 @@ def _parse_env_float(raw: str) -> float:
     return float(raw.replace("_", ""))
 
 
+_AMP_DTYPE_CHOICES = {"bf16", "fp16", "fp32"}
+
+
+def _parse_env_amp_dtype(raw: str) -> str:
+    norm = raw.strip().lower()
+    if norm not in _AMP_DTYPE_CHOICES:
+        msg = f"expected one of {sorted(_AMP_DTYPE_CHOICES)}, got {raw!r}"
+        raise ValueError(msg)
+    return norm
+
+
 def _parse_env_bool(raw: str) -> bool:
     norm = raw.strip().lower()
     if norm in {"1", "true", "yes", "on"}:
@@ -968,6 +1007,7 @@ _TRAINING_REQUIRED_ENV_SPECS: tuple[_EnvSpec, ...] = (
     ("DENOISR_GROKFAST_ALPHA", _parse_env_float),
     ("DENOISR_GROKFAST_LAMB", _parse_env_float),
     ("DENOISR_EMA_DECAY", _parse_env_float),
+    ("DENOISR_AMP_DTYPE", _parse_env_amp_dtype),
     ("DENOISR_TRAIN_USE_ONECYCLE", _parse_env_bool),
     ("DENOISR_TRAIN_ONECYCLE_PCT_START", _parse_env_float),
     ("DENOISR_TRAIN_GRADIENT_ACCUMULATION_STEPS", _parse_env_int),
@@ -1065,6 +1105,7 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         phase1_ema_eval_every=args.phase1_ema_eval_every,
         phase1_swa_eval_every=args.phase1_swa_eval_every,
         phase1_grok_eval_every=args.phase1_grok_eval_every,
+        amp_dtype=args.amp_dtype,
         use_onecycle=args.use_onecycle,
         onecycle_pct_start=args.onecycle_pct_start,
         gradient_accumulation_steps=args.gradient_accumulation_steps,

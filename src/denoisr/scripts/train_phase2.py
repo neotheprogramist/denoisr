@@ -33,6 +33,7 @@ from denoisr.scripts.config import (
     detect_device,
     load_checkpoint,
     maybe_compile,
+    resolve_amp_dtype,
     resolve_dataloader_workers,
     save_checkpoint,
     training_config_from_args,
@@ -311,6 +312,7 @@ def main() -> None:
         weight_decay=tcfg.weight_decay,
         curriculum_initial_fraction=tcfg.curriculum_initial_fraction,
         curriculum_growth=tcfg.curriculum_growth,
+        amp_dtype=resolve_amp_dtype(tcfg),
     )
 
     # --- EMA shadow model (opt-in) ---

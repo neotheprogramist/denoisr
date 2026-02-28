@@ -25,6 +25,7 @@ class DiffusionTrainer:
         max_grad_norm: float = 1.0,
         curriculum_initial_fraction: float = 0.25,
         curriculum_growth: float = 1.02,
+        amp_dtype: torch.dtype | None = None,
     ) -> None:
         self.encoder = encoder
         self.diffusion = diffusion
@@ -34,11 +35,13 @@ class DiffusionTrainer:
         params = list(diffusion.parameters())
         self.optimizer = torch.optim.AdamW(params, lr=lr)
         self.max_grad_norm = max_grad_norm
-        self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
+        use_scaler = amp_dtype == torch.float16 and self.device.type == "cuda"
+        self.scaler = GradScaler("cuda", enabled=use_scaler)
         self._autocast_device = (
             self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
         )
-        self._autocast_enabled = self.device.type == "cuda"
+        self._autocast_enabled = amp_dtype is not None and self.device.type == "cuda"
+        self._amp_dtype = amp_dtype
 
         self._curriculum_max_steps = schedule.num_timesteps
         initial_steps = max(
@@ -59,7 +62,7 @@ class DiffusionTrainer:
         self.encoder.eval()
         self.diffusion.train()
 
-        with autocast(self._autocast_device, enabled=self._autocast_enabled):
+        with autocast(self._autocast_device, enabled=self._autocast_enabled, dtype=self._amp_dtype):
             with torch.no_grad():
                 flat = trajectories.reshape(B * T, C, H, W)
                 latent_flat = self.encoder(flat)

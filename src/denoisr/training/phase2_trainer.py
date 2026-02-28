@@ -84,6 +84,7 @@ class Phase2Trainer:
         curriculum_initial_fraction: float = 0.25,
         curriculum_growth: float = 1.02,
         freeze_encoder: bool = True,
+        amp_dtype: torch.dtype | None = None,
     ) -> None:
         self.encoder = encoder
         self.backbone = backbone
@@ -96,11 +97,13 @@ class Phase2Trainer:
         self.loss_fn = loss_fn
         self.device = device or torch.device("cpu")
         self.max_grad_norm = max_grad_norm
-        self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
+        use_scaler = amp_dtype == torch.float16 and self.device.type == "cuda"
+        self.scaler = GradScaler("cuda", enabled=use_scaler)
         self._autocast_device = (
             self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
         )
-        self._autocast_enabled = self.device.type == "cuda"
+        self._autocast_enabled = amp_dtype is not None and self.device.type == "cuda"
+        self._amp_dtype = amp_dtype
 
         # Freeze encoder for standard Phase 2 training. Phase 3 auxiliary
         # updates can disable this to avoid interfering with other optimizers.
@@ -140,7 +143,7 @@ class Phase2Trainer:
         self.diffusion.train()
         self.consistency.train()
 
-        with autocast(self._autocast_device, enabled=self._autocast_enabled):
+        with autocast(self._autocast_device, enabled=self._autocast_enabled, dtype=self._amp_dtype):
             # 1. Encode all boards (frozen encoder)
             with torch.no_grad():
                 flat_boards = batch.boards.reshape(B * T, *batch.boards.shape[2:])

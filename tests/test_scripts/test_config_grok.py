@@ -43,6 +43,7 @@ def _set_required_training_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "DENOISR_GROKFAST_START_EPOCH": "1",
         "DENOISR_GROKFAST_PLATEAU_EPOCHS": "0",
         "DENOISR_EMA_DECAY": "0.999",
+        "DENOISR_AMP_DTYPE": "bf16",
         "DENOISR_TRAIN_USE_ONECYCLE": "0",
         "DENOISR_TRAIN_ONECYCLE_PCT_START": "0.3",
         "DENOISR_TRAIN_GRADIENT_ACCUMULATION_STEPS": "1",

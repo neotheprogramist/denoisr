@@ -39,6 +39,7 @@ class SupervisedTrainer:
         onecycle_pct_start: float = 0.3,
         steps_per_epoch: int = 1,
         accumulation_steps: int = 1,
+        amp_dtype: torch.dtype | None = None,
     ) -> None:
         self.encoder = encoder
         self.backbone = backbone
@@ -48,11 +49,14 @@ class SupervisedTrainer:
         self.device = device or torch.device("cpu")
         self._grokfast_filter = grokfast_filter
         self.max_grad_norm = max_grad_norm
-        self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
+        # BF16 doesn't need loss scaling; FP16 does; FP32 disables AMP entirely.
+        use_scaler = amp_dtype == torch.float16 and self.device.type == "cuda"
+        self.scaler = GradScaler("cuda", enabled=use_scaler)
         self._autocast_device = (
             self.device.type if self.device.type in ("cuda", "cpu") else "cpu"
         )
-        self._autocast_enabled = self.device.type == "cuda"
+        self._autocast_enabled = amp_dtype is not None and self.device.type == "cuda"
+        self._amp_dtype = amp_dtype
 
         param_groups = [
             {"params": list(encoder.parameters()), "lr": lr * encoder_lr_multiplier},
@@ -149,7 +153,7 @@ class SupervisedTrainer:
         self.policy_head.train()
         self.value_head.train()
 
-        with autocast(self._autocast_device, enabled=self._autocast_enabled):
+        with autocast(self._autocast_device, enabled=self._autocast_enabled, dtype=self._amp_dtype):
             latent = self.encoder(boards)
             features = self.backbone(latent)
             pred_policy = self.policy_head(features)
@@ -269,7 +273,7 @@ class SupervisedTrainer:
 
     def reset_amp_scaler(self) -> None:
         """Reset GradScaler state after repeated numerical instability."""
-        self.scaler = GradScaler("cuda", enabled=(self.device.type == "cuda"))
+        self.scaler = GradScaler("cuda", enabled=self.scaler.is_enabled())
 
     def reset_grokfast_filter(self) -> None:
         if self._grokfast_filter is not None:
