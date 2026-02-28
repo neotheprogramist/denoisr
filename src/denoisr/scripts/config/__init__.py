@@ -79,6 +79,14 @@ class ModelConfig:
     # Enables training larger models on limited GPU memory at ~30% speed cost.
     gradient_checkpointing: bool = False
 
+    # Dropout probability for attention output and FFN output in transformer
+    # blocks. 0.0 disables dropout. Recommended: 0.1 for from-scratch training.
+    dropout: float = 0.0
+
+    # Maximum stochastic depth (DropPath) rate, linearly scaled per layer
+    # from 0.0 at layer 0 to this value at the final layer. Recommended: 0.1.
+    drop_path_rate: float = 0.0
+
 
 # ---------------------------------------------------------------------------
 # Training hyperparameter config (NOT saved in checkpoints)
@@ -127,6 +135,32 @@ class TrainingConfig:
     # of plain CosineAnnealingLR. Periodically resets LR to help escape local
     # basins when training stalls.
     use_warm_restarts: bool = True
+
+    # Use OneCycleLR instead of cosine annealing. Provides per-step scheduling
+    # with coupled LR/momentum annealing for super-convergence.
+    use_onecycle: bool = False
+
+    # Fraction of total steps spent in the warmup phase of OneCycleLR.
+    # 0.3 means 30% warmup, 70% annealing. Only used when use_onecycle=True.
+    onecycle_pct_start: float = 0.3
+
+    # Number of micro-batches to accumulate before stepping the optimizer.
+    # Effective batch size = batch_size * gradient_accumulation_steps.
+    # 1 means no accumulation (step every batch).
+    gradient_accumulation_steps: int = 1
+
+    # Label smoothing for policy cross-entropy loss, distributed only among
+    # legal moves. 0.0 disables smoothing. Stacks with data-time smoothing.
+    label_smoothing: float = 0.0
+
+    # Probability of applying value noise augmentation per sample.
+    value_noise_prob: float = 0.0
+
+    # Scale of Gaussian noise added to WDL targets.
+    value_noise_scale: float = 0.02
+
+    # Probability of applying policy temperature augmentation per sample.
+    policy_temp_augment_prob: float = 0.0
 
     # -- Loss weights -------------------------------------------------------
     # These control the relative importance of each training objective.
@@ -474,6 +508,20 @@ def add_model_args(parser: ArgumentParser) -> None:
         default=None,
         help="enable gradient checkpointing (saves VRAM, ~30%% slower)",
     )
+    add_env_argument(
+        parser,
+        "--dropout",
+        env_var="DENOISR_MODEL_DROPOUT",
+        type=float,
+        help="dropout probability in transformer blocks",
+    )
+    add_env_argument(
+        parser,
+        "--drop-path-rate",
+        env_var="DENOISR_MODEL_DROP_PATH_RATE",
+        type=float,
+        help="max stochastic depth rate (linearly scaled per layer)",
+    )
 
 
 def add_training_args(parser: ArgumentParser) -> None:
@@ -738,6 +786,56 @@ def add_training_args(parser: ArgumentParser) -> None:
         required=False,
         help="Evaluate non-random grok holdout splits every N epochs in phase1",
     )
+    add_env_argument(
+        parser,
+        "--use-onecycle",
+        env_var="DENOISR_TRAIN_USE_ONECYCLE",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="use OneCycleLR scheduler instead of cosine annealing",
+    )
+    add_env_argument(
+        parser,
+        "--onecycle-pct-start",
+        env_var="DENOISR_TRAIN_ONECYCLE_PCT_START",
+        type=float,
+        help="OneCycleLR warmup fraction",
+    )
+    add_env_argument(
+        parser,
+        "--gradient-accumulation-steps",
+        env_var="DENOISR_TRAIN_GRADIENT_ACCUMULATION_STEPS",
+        type=int,
+        help="micro-batches per optimizer step",
+    )
+    add_env_argument(
+        parser,
+        "--label-smoothing",
+        env_var="DENOISR_TRAIN_LABEL_SMOOTHING",
+        type=float,
+        help="label smoothing for policy loss (legal-move-aware)",
+    )
+    add_env_argument(
+        parser,
+        "--value-noise-prob",
+        env_var="DENOISR_TRAIN_VALUE_NOISE_PROB",
+        type=float,
+        help="probability of WDL noise augmentation",
+    )
+    add_env_argument(
+        parser,
+        "--value-noise-scale",
+        env_var="DENOISR_TRAIN_VALUE_NOISE_SCALE",
+        type=float,
+        help="scale of Gaussian noise on WDL targets",
+    )
+    add_env_argument(
+        parser,
+        "--policy-temp-augment-prob",
+        env_var="DENOISR_TRAIN_POLICY_TEMP_AUGMENT_PROB",
+        type=float,
+        help="probability of policy temperature augmentation",
+    )
 
 
 def add_phase3_args(parser: ArgumentParser) -> None:
@@ -833,6 +931,8 @@ _MODEL_REQUIRED_ENV_SPECS: tuple[_EnvSpec, ...] = (
     ("DENOISR_MODEL_DIFFUSION_LAYERS", _parse_env_int),
     ("DENOISR_MODEL_PROJ_DIM", _parse_env_int),
     ("DENOISR_MODEL_GRADIENT_CHECKPOINTING", _parse_env_bool),
+    ("DENOISR_MODEL_DROPOUT", _parse_env_float),
+    ("DENOISR_MODEL_DROP_PATH_RATE", _parse_env_float),
 )
 
 _TRAINING_REQUIRED_ENV_SPECS: tuple[_EnvSpec, ...] = (
@@ -866,6 +966,13 @@ _TRAINING_REQUIRED_ENV_SPECS: tuple[_EnvSpec, ...] = (
     ("DENOISR_GROKFAST_ALPHA", _parse_env_float),
     ("DENOISR_GROKFAST_LAMB", _parse_env_float),
     ("DENOISR_EMA_DECAY", _parse_env_float),
+    ("DENOISR_TRAIN_USE_ONECYCLE", _parse_env_bool),
+    ("DENOISR_TRAIN_ONECYCLE_PCT_START", _parse_env_float),
+    ("DENOISR_TRAIN_GRADIENT_ACCUMULATION_STEPS", _parse_env_int),
+    ("DENOISR_TRAIN_LABEL_SMOOTHING", _parse_env_float),
+    ("DENOISR_TRAIN_VALUE_NOISE_PROB", _parse_env_float),
+    ("DENOISR_TRAIN_VALUE_NOISE_SCALE", _parse_env_float),
+    ("DENOISR_TRAIN_POLICY_TEMP_AUGMENT_PROB", _parse_env_float),
 )
 
 _PHASE3_REQUIRED_ENV_SPECS: tuple[_EnvSpec, ...] = (
@@ -956,6 +1063,13 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         phase1_ema_eval_every=args.phase1_ema_eval_every,
         phase1_swa_eval_every=args.phase1_swa_eval_every,
         phase1_grok_eval_every=args.phase1_grok_eval_every,
+        use_onecycle=args.use_onecycle,
+        onecycle_pct_start=args.onecycle_pct_start,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        label_smoothing=args.label_smoothing,
+        value_noise_prob=args.value_noise_prob,
+        value_noise_scale=args.value_noise_scale,
+        policy_temp_augment_prob=args.policy_temp_augment_prob,
     )
 
 
@@ -1002,6 +1116,8 @@ def config_from_args(args: Namespace) -> ModelConfig:
         diffusion_layers=args.diffusion_layers,
         proj_dim=args.proj_dim,
         gradient_checkpointing=args.gradient_checkpointing,
+        dropout=args.dropout,
+        drop_path_rate=args.drop_path_rate,
     )
 
 
