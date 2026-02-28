@@ -2,6 +2,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
+from denoisr.nn.drop_path import DropPath
 from denoisr.nn.relative_pos import ShawRelativePositionBias
 from denoisr.nn.smolgen import SmolgenBias
 
@@ -12,19 +13,29 @@ class TransformerBlock(nn.Module):
     Accepts combined smolgen + Shaw PE biases.
     """
 
-    def __init__(self, d_s: int, num_heads: int, ffn_dim: int) -> None:
+    def __init__(
+        self,
+        d_s: int,
+        num_heads: int,
+        ffn_dim: int,
+        dropout: float = 0.0,
+        drop_path_rate: float = 0.0,
+    ) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = d_s // num_heads
         self.norm1 = nn.LayerNorm(d_s)
         self.qkv = nn.Linear(d_s, 3 * d_s)
         self.out_proj = nn.Linear(d_s, d_s)
+        self.attn_dropout = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_s)
         self.ffn = nn.Sequential(
             nn.Linear(d_s, ffn_dim),
             nn.Mish(),
             nn.Linear(ffn_dim, d_s),
         )
+        self.ffn_dropout = nn.Dropout(dropout)
+        self.drop_path = DropPath(drop_path_rate)
 
     def forward(self, x: Tensor, attn_bias: Tensor | None = None) -> Tensor:
         B, S, D = x.shape
@@ -37,10 +48,10 @@ class TransformerBlock(nn.Module):
 
         h = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)
         h = h.transpose(1, 2).reshape(B, S, D)
-        h = self.out_proj(h)
-        x = x + h
+        h = self.attn_dropout(self.out_proj(h))
+        x = x + self.drop_path(h)
 
-        x = x + self.ffn(self.norm2(x))
+        x = x + self.drop_path(self.ffn_dropout(self.ffn(self.norm2(x))))
         return x
 
 
@@ -61,13 +72,22 @@ class ChessPolicyBackbone(nn.Module):
         num_layers: int,
         ffn_dim: int,
         gradient_checkpointing: bool = False,
+        dropout: float = 0.0,
+        drop_path_rate: float = 0.0,
     ) -> None:
         super().__init__()
         self._gradient_checkpointing = gradient_checkpointing
         self.smolgen = SmolgenBias(d_s, num_heads)
         self.shaw_relative_pe = ShawRelativePositionBias(num_heads)
+        dpr = [drop_path_rate * i / max(num_layers - 1, 1) for i in range(num_layers)]
         self.layers = nn.ModuleList(
-            [TransformerBlock(d_s, num_heads, ffn_dim) for _ in range(num_layers)]
+            [
+                TransformerBlock(
+                    d_s, num_heads, ffn_dim,
+                    dropout=dropout, drop_path_rate=dpr[i],
+                )
+                for i in range(num_layers)
+            ]
         )
         self.final_norm = nn.LayerNorm(d_s)
 

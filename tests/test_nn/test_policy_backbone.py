@@ -130,3 +130,61 @@ class TestChessPolicyBackbone:
         assert out.shape == (1, 64, SMALL_D_S)
         assert not torch.isnan(out).any()
         assert not torch.isinf(out).any()
+
+    def test_dropout_params_accepted(self, device: torch.device) -> None:
+        """TransformerBlock should accept dropout and drop_path_rate."""
+        from denoisr.nn.policy_backbone import TransformerBlock
+
+        block = TransformerBlock(
+            SMALL_D_S, SMALL_NUM_HEADS, SMALL_FFN_DIM,
+            dropout=0.1, drop_path_rate=0.1,
+        )
+        block.to(device)
+        x = torch.randn(2, 64, SMALL_D_S, device=device)
+        out = block(x)
+        assert out.shape == x.shape
+
+    def test_backbone_accepts_dropout(self, device: torch.device) -> None:
+        """ChessPolicyBackbone should accept and distribute dropout/drop_path_rate."""
+        backbone = ChessPolicyBackbone(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            ffn_dim=SMALL_FFN_DIM,
+            dropout=0.1,
+            drop_path_rate=0.1,
+        ).to(device)
+        x = torch.randn(2, 64, SMALL_D_S, device=device)
+        out = backbone(x)
+        assert out.shape == x.shape
+
+    def test_dropout_deterministic_in_non_training(self, device: torch.device) -> None:
+        """Backbone should be deterministic in non-training mode even with dropout."""
+        backbone = ChessPolicyBackbone(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=SMALL_NUM_LAYERS,
+            ffn_dim=SMALL_FFN_DIM,
+            dropout=0.5,
+            drop_path_rate=0.5,
+        ).to(device)
+        backbone.train(False)
+        x = torch.randn(1, 64, SMALL_D_S, device=device)
+        out1 = backbone(x)
+        out2 = backbone(x)
+        assert torch.allclose(out1, out2, atol=1e-6)
+
+    def test_drop_path_linearly_scaled(self, device: torch.device) -> None:
+        """DropPath rates should increase linearly across layers."""
+        backbone = ChessPolicyBackbone(
+            d_s=SMALL_D_S,
+            num_heads=SMALL_NUM_HEADS,
+            num_layers=4,
+            ffn_dim=SMALL_FFN_DIM,
+            drop_path_rate=0.3,
+        ).to(device)
+        rates = [layer.drop_path.drop_prob for layer in backbone.layers]
+        assert rates[0] == 0.0
+        assert abs(rates[-1] - 0.3) < 1e-6
+        for i in range(len(rates) - 1):
+            assert rates[i] <= rates[i + 1]
