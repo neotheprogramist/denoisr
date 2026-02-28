@@ -35,6 +35,10 @@ class SupervisedTrainer:
         min_lr: float = 1e-6,
         grokfast_filter: GrokfastFilter | None = None,
         use_warm_restarts: bool = False,
+        use_onecycle: bool = False,
+        onecycle_pct_start: float = 0.3,
+        steps_per_epoch: int = 1,
+        accumulation_steps: int = 1,
     ) -> None:
         self.encoder = encoder
         self.backbone = backbone
@@ -61,13 +65,36 @@ class SupervisedTrainer:
             p for group in self.optimizer.param_groups for p in group["params"]
         ]
 
+        self._accum_steps = accumulation_steps
+        self._accum_count = 0
+        self._use_onecycle = use_onecycle
+
         self._warmup_epochs = warmup_epochs
         self._base_lrs: list[float] = [float(g["lr"]) for g in param_groups]  # type: ignore[arg-type]
-        # Start at 1/N of peak LR; warmup will ramp up from here
-        for g, base_lr in zip(param_groups, self._base_lrs):
-            g["lr"] = base_lr / max(self._warmup_epochs, 1)
-        if use_warm_restarts:
+
+        if use_onecycle:
             self._scheduler: torch.optim.lr_scheduler.LRScheduler = (
+                torch.optim.lr_scheduler.OneCycleLR(
+                    self.optimizer,
+                    max_lr=[
+                        lr * encoder_lr_multiplier,
+                        lr * encoder_lr_multiplier,
+                        lr,
+                        lr,
+                    ],
+                    epochs=total_epochs,
+                    steps_per_epoch=max(1, steps_per_epoch // accumulation_steps),
+                    pct_start=onecycle_pct_start,
+                    anneal_strategy="cos",
+                    div_factor=25,
+                    final_div_factor=10000,
+                )
+            )
+        elif use_warm_restarts:
+            # Start at 1/N of peak LR; warmup will ramp up from here
+            for g, base_lr in zip(param_groups, self._base_lrs):
+                g["lr"] = base_lr / max(self._warmup_epochs, 1)
+            self._scheduler = (
                 torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                     self.optimizer,
                     T_0=20,
@@ -75,13 +102,17 @@ class SupervisedTrainer:
                     eta_min=min_lr,
                 )
             )
+            self._scheduler.base_lrs = list(self._base_lrs)
         else:
+            # Start at 1/N of peak LR; warmup will ramp up from here
+            for g, base_lr in zip(param_groups, self._base_lrs):
+                g["lr"] = base_lr / max(self._warmup_epochs, 1)
             self._scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
                 T_max=max(1, total_epochs - warmup_epochs),
                 eta_min=min_lr,
             )
-        self._scheduler.base_lrs = list(self._base_lrs)
+            self._scheduler.base_lrs = list(self._base_lrs)
         self._epoch = 0
 
     def _has_nonfinite_gradients(self) -> bool:
@@ -139,36 +170,48 @@ class SupervisedTrainer:
             self._handle_overflow(breakdown, batch_top1)
             return float("nan"), breakdown
 
-        self.optimizer.zero_grad(set_to_none=True)
-        self.scaler.scale(total_loss).backward()  # type: ignore[no-untyped-call]
-        self.scaler.unscale_(self.optimizer)
-        if self._has_nonfinite_gradients():
-            self._handle_overflow(breakdown, batch_top1)
-            return total_loss.item(), breakdown
-        if self._grokfast_filter is not None:
-            for module_name, module in [
-                ("encoder", self.encoder),
-                ("backbone", self.backbone),
-                ("policy_head", self.policy_head),
-                ("value_head", self.value_head),
-            ]:
-                self._grokfast_filter.apply(module, key_prefix=module_name)
+        # Gradient accumulation: scale loss and accumulate
+        scaled_loss = total_loss / self._accum_steps
+        if self._accum_count == 0:
+            self.optimizer.zero_grad(set_to_none=True)
+        self.scaler.scale(scaled_loss).backward()  # type: ignore[no-untyped-call]
+
+        self._accum_count += 1
+        is_step = self._accum_count >= self._accum_steps
+
+        if is_step:
+            self._accum_count = 0
+            self.scaler.unscale_(self.optimizer)
             if self._has_nonfinite_gradients():
                 self._handle_overflow(breakdown, batch_top1)
                 return total_loss.item(), breakdown
-        total_norm = torch.nn.utils.clip_grad_norm_(
-            self._params,
-            self.max_grad_norm,
-        )
-        grad_norm = total_norm.item()
-        if not math.isfinite(grad_norm):
-            self._handle_overflow(breakdown, batch_top1)
-            return total_loss.item(), breakdown
+            if self._grokfast_filter is not None:
+                for module_name, module in [
+                    ("encoder", self.encoder),
+                    ("backbone", self.backbone),
+                    ("policy_head", self.policy_head),
+                    ("value_head", self.value_head),
+                ]:
+                    self._grokfast_filter.apply(module, key_prefix=module_name)
+                if self._has_nonfinite_gradients():
+                    self._handle_overflow(breakdown, batch_top1)
+                    return total_loss.item(), breakdown
+            total_norm = torch.nn.utils.clip_grad_norm_(
+                self._params,
+                self.max_grad_norm,
+            )
+            grad_norm = total_norm.item()
+            if not math.isfinite(grad_norm):
+                self._handle_overflow(breakdown, batch_top1)
+                return total_loss.item(), breakdown
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            if self._use_onecycle:
+                self._scheduler.step()
+            breakdown["grad_norm"] = grad_norm
+        else:
+            breakdown["grad_norm"] = 0.0
 
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-
-        breakdown["grad_norm"] = grad_norm
         breakdown["overflow"] = False
         breakdown["batch_top1"] = batch_top1
         return total_loss.item(), breakdown
@@ -243,6 +286,8 @@ class SupervisedTrainer:
 
     def scheduler_step(self) -> None:
         self._epoch += 1
+        if self._use_onecycle:
+            return  # OneCycleLR steps per optimizer step in _forward_backward
         if self._epoch <= self._warmup_epochs:
             # Linear warmup
             frac = self._epoch / self._warmup_epochs

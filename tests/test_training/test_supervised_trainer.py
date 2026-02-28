@@ -318,3 +318,49 @@ class TestSupervisedTrainerGrokfast:
         assert trainer_with_grokfast.disable_grokfast_filter() is True
         assert trainer_with_grokfast._grokfast_filter is None
         assert trainer_with_grokfast.disable_grokfast_filter() is False
+
+
+class TestOneCycleLR:
+    def test_onecycle_scheduler_accepted(self) -> None:
+        encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S)
+        backbone = ChessPolicyBackbone(
+            SMALL_D_S, SMALL_NUM_HEADS, SMALL_NUM_LAYERS, SMALL_FFN_DIM
+        )
+        policy_head = ChessPolicyHead(d_s=SMALL_D_S)
+        value_head = ChessValueHead(d_s=SMALL_D_S)
+        loss_fn = ChessLossComputer()
+
+        trainer = SupervisedTrainer(
+            encoder=encoder,
+            backbone=backbone,
+            policy_head=policy_head,
+            value_head=value_head,
+            loss_fn=loss_fn,
+            lr=1e-3,
+            use_onecycle=True,
+            steps_per_epoch=100,
+            total_epochs=10,
+        )
+        assert isinstance(trainer._scheduler, torch.optim.lr_scheduler.OneCycleLR)
+
+
+class TestGradientAccumulation:
+    def test_accumulation_steps_accepted(self) -> None:
+        encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S)
+        backbone = ChessPolicyBackbone(
+            SMALL_D_S, SMALL_NUM_HEADS, SMALL_NUM_LAYERS, SMALL_FFN_DIM
+        )
+        policy_head = ChessPolicyHead(d_s=SMALL_D_S)
+        value_head = ChessValueHead(d_s=SMALL_D_S)
+        loss_fn = ChessLossComputer()
+
+        trainer = SupervisedTrainer(
+            encoder=encoder,
+            backbone=backbone,
+            policy_head=policy_head,
+            value_head=value_head,
+            loss_fn=loss_fn,
+            lr=1e-3,
+            accumulation_steps=4,
+        )
+        assert trainer._accum_steps == 4
