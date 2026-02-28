@@ -1,8 +1,7 @@
-"""Board color-flip augmentation for training data.
+"""Training-time augmentations for chess data.
 
-Flips a chess position by mirroring ranks and swapping colors.
-This doubles the effective dataset: every White-to-play position
-becomes an equivalent Black-to-play position (and vice versa).
+Includes board color-flip (mirror ranks + swap colors), value noise
+injection, and policy temperature scaling.
 """
 
 import torch
@@ -79,3 +78,31 @@ def flip_policy(policy: Tensor) -> Tensor:
 def flip_value(win: float, draw: float, loss: float) -> tuple[float, float, float]:
     """Swap win and loss probabilities."""
     return loss, draw, win
+
+
+def augment_value_noise(value: Tensor, scale: float = 0.02) -> Tensor:
+    """Add Gaussian noise to WDL targets and re-normalize to valid distribution."""
+    if scale == 0.0:
+        return value
+    noise = torch.randn_like(value) * scale
+    noisy = (value + noise).clamp(min=0.0)
+    total = noisy.sum()
+    return noisy / total if total > 0 else value
+
+
+def augment_policy_temperature(
+    policy: Tensor, temp_min: float = 0.8, temp_max: float = 1.2
+) -> Tensor:
+    """Apply random temperature scaling to policy distribution.
+
+    Only affects nonzero entries (legal moves). Temperature < 1 sharpens,
+    temperature > 1 flattens the distribution.
+    """
+    temp = temp_min + torch.rand(1).item() * (temp_max - temp_min)
+    mask = policy > 0
+    if not mask.any():
+        return policy
+    result = policy.clone()
+    result[mask] = result[mask] ** (1.0 / temp)
+    total = result.sum()
+    return result / total if total > 0 else policy

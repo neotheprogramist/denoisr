@@ -3,7 +3,13 @@ import torch
 
 from denoisr.data.extended_board_encoder import ExtendedBoardEncoder
 from denoisr.nn.encoder import ChessEncoder
-from denoisr.training.augmentation import flip_board, flip_policy, flip_value
+from denoisr.training.augmentation import (
+    augment_policy_temperature,
+    augment_value_noise,
+    flip_board,
+    flip_policy,
+    flip_value,
+)
 
 from conftest import SMALL_D_S
 
@@ -107,6 +113,53 @@ class TestExtendedBoardFlip:
             # After flip, rank-mirrored white plane should be in black slot and vice versa
             assert torch.allclose(flipped[base], orig_b.flip(0))
             assert torch.allclose(flipped[base + 1], orig_w.flip(0))
+
+
+class TestValueNoiseAugmentation:
+    def test_value_noise_preserves_distribution(self) -> None:
+        value = torch.tensor([0.5, 0.3, 0.2])
+        torch.manual_seed(42)
+        noisy = augment_value_noise(value, scale=0.02)
+        assert noisy.shape == (3,)
+        assert abs(noisy.sum().item() - 1.0) < 1e-5
+        assert (noisy >= 0).all()
+
+    def test_value_noise_changes_values(self) -> None:
+        value = torch.tensor([0.5, 0.3, 0.2])
+        torch.manual_seed(42)
+        noisy = augment_value_noise(value, scale=0.1)
+        assert not torch.allclose(noisy, value)
+
+    def test_value_noise_zero_scale_is_identity(self) -> None:
+        value = torch.tensor([0.5, 0.3, 0.2])
+        noisy = augment_value_noise(value, scale=0.0)
+        assert torch.allclose(noisy, value)
+
+
+class TestPolicyTemperatureAugmentation:
+    def test_policy_temp_preserves_sum(self) -> None:
+        policy = torch.zeros(64, 64)
+        policy[0, 1] = 0.7
+        policy[0, 3] = 0.3
+        torch.manual_seed(42)
+        aug = augment_policy_temperature(policy)
+        assert abs(aug.sum().item() - 1.0) < 1e-5
+
+    def test_policy_temp_changes_distribution(self) -> None:
+        policy = torch.zeros(64, 64)
+        policy[0, 1] = 0.7
+        policy[0, 3] = 0.3
+        torch.manual_seed(42)
+        aug = augment_policy_temperature(policy)
+        assert not torch.allclose(aug, policy)
+
+    def test_policy_temp_preserves_zeros(self) -> None:
+        policy = torch.zeros(64, 64)
+        policy[0, 1] = 0.7
+        policy[0, 3] = 0.3
+        aug = augment_policy_temperature(policy)
+        zero_mask = policy == 0
+        assert (aug[zero_mask] == 0).all()
 
 
 class TestRoundTrip:
