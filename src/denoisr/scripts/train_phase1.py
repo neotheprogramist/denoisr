@@ -109,6 +109,9 @@ class _IndexedTensorDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
         indices: Tensor,
         num_planes: int,
         augment: bool = True,
+        value_noise_prob: float = 0.0,
+        value_noise_scale: float = 0.02,
+        policy_temp_augment_prob: float = 0.0,
     ) -> None:
         self._base = ChessDataset(
             boards=boards,
@@ -116,6 +119,9 @@ class _IndexedTensorDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
             values=values,
             num_planes=num_planes,
             augment=augment,
+            value_noise_prob=value_noise_prob,
+            value_noise_scale=value_noise_scale,
+            policy_temp_augment_prob=policy_temp_augment_prob,
         )
         self._indices = indices.to(dtype=torch.long, device="cpu")
 
@@ -783,6 +789,7 @@ def main() -> None:
         use_harmony_dream=tcfg.use_harmony_dream,
         harmony_ema_decay=tcfg.harmony_ema_decay,
         illegal_penalty_weight=tcfg.illegal_penalty_weight,
+        label_smoothing=tcfg.label_smoothing,
     )
 
     # --- Grokfast filter (opt-in) ---
@@ -829,6 +836,7 @@ def main() -> None:
         )
         log.info("EMA enabled  decay=%.4f", tcfg.ema_decay)
 
+    steps_per_epoch = data_plan.train_examples // args.batch_size
     trainer = SupervisedTrainer(
         encoder=encoder,
         backbone=backbone,
@@ -845,6 +853,10 @@ def main() -> None:
         min_lr=tcfg.min_lr,
         grokfast_filter=grokfast_filter,
         use_warm_restarts=tcfg.use_warm_restarts,
+        use_onecycle=tcfg.use_onecycle,
+        onecycle_pct_start=tcfg.onecycle_pct_start,
+        steps_per_epoch=steps_per_epoch,
+        accumulation_steps=tcfg.gradient_accumulation_steps,
     )
     swa_start_epoch = max(1, math.ceil(args.epochs * _SWA_START_FRACTION))
     swa_model = ModelSWA(
@@ -1017,6 +1029,9 @@ def main() -> None:
                     indices=shard.train_indices,
                     num_planes=cfg.num_planes,
                     augment=True,
+                    value_noise_prob=tcfg.value_noise_prob,
+                    value_noise_scale=tcfg.value_noise_scale,
+                    policy_temp_augment_prob=tcfg.policy_temp_augment_prob,
                 )
                 train_loader = _build_phase1_train_loader(
                     train_dataset,
