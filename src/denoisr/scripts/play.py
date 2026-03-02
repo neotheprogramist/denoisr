@@ -56,6 +56,8 @@ def main() -> None:
         "--denoising-steps",
         env_var="DENOISR_PLAY_DENOISING_STEPS",
         type=int,
+        required=False,
+        default=20,
         help="Denoising steps for diffusion mode (more = stronger, slower)",
     )
     args = parser.parse_args()

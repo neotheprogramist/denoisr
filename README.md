@@ -44,6 +44,7 @@ uv run denoisr-gui --checkpoint outputs/random_model.pt
 ```
 
 This opens a window where you can play against the engine with click-to-move interaction.
+By default, the GUI starts Denoisr in `single` mode. Use `--mode diffusion` for stronger play.
 
 > **Tip:** Denoisr also speaks the UCI protocol, so it works with any UCI-compatible GUI (CuteChess, Arena, Lucas Chess, etc.) if you prefer:
 >
@@ -551,6 +552,8 @@ uv run denoisr-play \
     --denoising-steps 20
 ```
 
+`--denoising-steps` defaults to `20`, so you only need to pass it when overriding the default.
+
 ### Compare random vs trained
 
 Use **Match** mode in the built-in GUI to pit different checkpoints against each other:
@@ -614,8 +617,8 @@ Even when both models score 0/100 against Stockfish, ACPL (Average Centipawn Los
 ```bash
 # Compare trained model vs random baseline, with ACPL analysis and PGN recording
 uv run denoisr-benchmark \
-    --engine-cmd "uv run denoisr-play --checkpoint outputs/phase1.pt" \
-    --baseline-cmd "uv run denoisr-play --checkpoint outputs/random_model.pt" \
+    --engine-cmd "uv run denoisr-play --checkpoint outputs/phase1.pt --mode single" \
+    --baseline-cmd "uv run denoisr-play --checkpoint outputs/random_model.pt --mode single" \
     --opponent-skill 0 \
     --games 20 --concurrency 4 \
     --pgn-out outputs/pgn/ \
@@ -627,11 +630,11 @@ uv run denoisr-benchmark \
 ```
 12:34:56 INFO Benchmark: 20 games, 4 workers, TC 10+0.1 Skill 0 + baseline
 12:34:56 INFO ============================================================
-12:34:56 INFO   Engine: uv run denoisr-play --checkpoint outputs/phase1.pt
+12:34:56 INFO   Engine: uv run denoisr-play --checkpoint outputs/phase1.pt --mode single
 12:34:56 INFO ============================================================
 12:35:12 INFO [engine] Game 20/20: +0 =0 -20 | Elo: N/A
 12:35:12 INFO ============================================================
-12:35:12 INFO   Baseline: uv run denoisr-play --checkpoint outputs/random_model.pt
+12:35:12 INFO   Baseline: uv run denoisr-play --checkpoint outputs/random_model.pt --mode single
 12:35:12 INFO ============================================================
 12:35:28 INFO [baseline] Game 20/20: +0 =0 -20 | Elo: N/A
 12:35:28 INFO PGN saved: outputs/pgn/engine/ (20 games) + outputs/pgn/engine_all.pgn
@@ -674,7 +677,7 @@ Save every game as PGN for external analysis (e.g. in Lichess, ChessBase, or SCI
 
 ```bash
 uv run denoisr-benchmark \
-    --engine-cmd "uv run denoisr-play --checkpoint outputs/phase1.pt" \
+    --engine-cmd "uv run denoisr-play --checkpoint outputs/phase1.pt --mode single" \
     --opponent-skill 0 --games 10 \
     --pgn-out outputs/pgn/
 ```

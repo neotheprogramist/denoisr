@@ -34,6 +34,8 @@ def main() -> None:
         env_var="DENOISR_GUI_MODE",
         type=str,
         choices=["single", "diffusion"],
+        required=False,
+        default="single",
         help="Engine inference mode",
     )
     args = parser.parse_args()
