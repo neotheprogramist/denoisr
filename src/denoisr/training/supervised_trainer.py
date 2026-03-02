@@ -72,11 +72,14 @@ class SupervisedTrainer:
         self._accum_steps = accumulation_steps
         self._accum_count = 0
         self._use_onecycle = use_onecycle
+        self._onecycle_total_steps = 0
 
         self._warmup_epochs = warmup_epochs
         self._base_lrs: list[float] = [float(g["lr"]) for g in param_groups]  # type: ignore[arg-type]
 
         if use_onecycle:
+            onecycle_spe = max(1, steps_per_epoch // accumulation_steps)
+            self._onecycle_total_steps = onecycle_spe * total_epochs
             self._scheduler: torch.optim.lr_scheduler.LRScheduler = (
                 torch.optim.lr_scheduler.OneCycleLR(
                     self.optimizer,
@@ -87,7 +90,7 @@ class SupervisedTrainer:
                         lr,
                     ],
                     epochs=total_epochs,
-                    steps_per_epoch=max(1, steps_per_epoch // accumulation_steps),
+                    steps_per_epoch=onecycle_spe,
                     pct_start=onecycle_pct_start,
                     anneal_strategy="cos",
                     div_factor=25,
@@ -210,7 +213,7 @@ class SupervisedTrainer:
                 return total_loss.item(), breakdown
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            if self._use_onecycle:
+            if self._use_onecycle and self._scheduler.last_epoch < self._onecycle_total_steps:
                 self._scheduler.step()
             breakdown["grad_norm"] = grad_norm
         else:

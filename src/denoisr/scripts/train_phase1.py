@@ -839,7 +839,13 @@ def main() -> None:
         )
         log.info("EMA enabled  decay=%.4f", tcfg.ema_decay)
 
-    steps_per_epoch = data_plan.train_examples // args.batch_size
+    # Compute actual micro-batches: each shard's DataLoader rounds up
+    # independently (drop_last=False), so use ceiling division per shard.
+    steps_per_epoch = sum(
+        -(-int(shard.train_indices.numel()) // args.batch_size)
+        for shard in data_plan.shards
+        if shard.train_indices.numel() > 0
+    )
     trainer = SupervisedTrainer(
         encoder=encoder,
         backbone=backbone,
