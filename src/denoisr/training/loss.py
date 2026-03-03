@@ -58,22 +58,15 @@ class ChessLossComputer:
         pred_value: Tensor,
         target_policy: Tensor,
         target_value: Tensor,
-        policy_legal_mask: Tensor | None = None,
+        policy_legal_mask: Tensor,
         **auxiliary_losses: Tensor,
     ) -> tuple[Tensor, dict[str, float]]:
         B = pred_policy.shape[0]
         pred_flat = pred_policy.reshape(B, -1)
         target_flat = target_policy.reshape(B, -1)
-        # Mask illegal moves using explicit legal mask when provided.
-        # Otherwise derive legality from nonzero target support.
-        if policy_legal_mask is not None:
-            legal_mask = policy_legal_mask.reshape(B, -1).to(
-                device=pred_flat.device, dtype=torch.bool
-            )
-            # Ensure any nonzero target support is always treated as legal.
-            legal_mask = legal_mask | (target_flat > 0)
-        else:
-            legal_mask = target_flat > 0
+        legal_mask = policy_legal_mask.reshape(B, -1).to(
+            device=pred_flat.device, dtype=torch.bool
+        )
         if self._label_smoothing > 0:
             n_legal = legal_mask.sum(dim=-1, keepdim=True).clamp(min=1).float()
             uniform = legal_mask.float() / n_legal

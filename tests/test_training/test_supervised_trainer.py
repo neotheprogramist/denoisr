@@ -103,9 +103,8 @@ class TestSupervisedTrainer:
         assert "batch_top1" in breakdown
         assert 0.0 <= breakdown["batch_top1"] <= 1.0
 
-    def test_lr_reaches_min_at_final_epoch(self, device: torch.device) -> None:
-        """Cosine schedule should reach eta_min at the final epoch."""
-        total_epochs = 100
+    def test_lr_decays_and_restarts(self, device: torch.device) -> None:
+        """CosineAnnealingWarmRestarts should decay then restart LR periodically."""
         warmup = 5
         min_lr = 1e-6
         encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
@@ -126,21 +125,29 @@ class TestSupervisedTrainer:
             loss_fn=loss_fn,
             lr=3e-4,
             device=device,
-            total_epochs=total_epochs,
+            total_epochs=100,
             warmup_epochs=warmup,
             min_lr=min_lr,
         )
 
-        # Run through all epochs
-        for _ in range(total_epochs):
+        lrs: list[float] = []
+        for _ in range(60):
             trainer.scheduler_step()
+            lrs.append(trainer.optimizer.param_groups[2]["lr"])
 
-        head_lr = trainer.optimizer.param_groups[2]["lr"]
-        # LR should be at or near eta_min at the end
-        assert head_lr < min_lr * 2
+        # After warmup, LR should decay below peak
+        peak_lr = 3e-4
+        post_warmup = lrs[warmup:]
+        assert min(post_warmup) < peak_lr * 0.1, "LR should decay significantly"
+        # Should also have restarts (LR increases at some point)
+        has_increase = any(
+            post_warmup[i + 1] > post_warmup[i]
+            for i in range(len(post_warmup) - 1)
+        )
+        assert has_increase, "CosineAnnealingWarmRestarts should restart LR"
 
     def test_warm_restarts_produce_lr_spikes(self, device: torch.device) -> None:
-        """Warm restarts should produce periodic LR resets."""
+        """CosineAnnealingWarmRestarts should produce periodic LR resets."""
         total_epochs = 60
         warmup = 3
         encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
@@ -163,7 +170,6 @@ class TestSupervisedTrainer:
             device=device,
             total_epochs=total_epochs,
             warmup_epochs=warmup,
-            use_warm_restarts=True,
         )
 
         lrs: list[float] = []
@@ -318,30 +324,6 @@ class TestSupervisedTrainerGrokfast:
         assert trainer_with_grokfast.disable_grokfast_filter() is True
         assert trainer_with_grokfast._grokfast_filter is None
         assert trainer_with_grokfast.disable_grokfast_filter() is False
-
-
-class TestOneCycleLR:
-    def test_onecycle_scheduler_accepted(self) -> None:
-        encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S)
-        backbone = ChessPolicyBackbone(
-            SMALL_D_S, SMALL_NUM_HEADS, SMALL_NUM_LAYERS, SMALL_FFN_DIM
-        )
-        policy_head = ChessPolicyHead(d_s=SMALL_D_S)
-        value_head = ChessValueHead(d_s=SMALL_D_S)
-        loss_fn = ChessLossComputer()
-
-        trainer = SupervisedTrainer(
-            encoder=encoder,
-            backbone=backbone,
-            policy_head=policy_head,
-            value_head=value_head,
-            loss_fn=loss_fn,
-            lr=1e-3,
-            use_onecycle=True,
-            steps_per_epoch=100,
-            total_epochs=10,
-        )
-        assert isinstance(trainer._scheduler, torch.optim.lr_scheduler.OneCycleLR)
 
 
 class TestGradientAccumulation:

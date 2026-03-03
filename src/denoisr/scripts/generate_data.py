@@ -59,7 +59,9 @@ def _cleanup_oracle() -> None:
     try:
         _oracle.close()
     except Exception:  # noqa: BLE001
-        pass
+        logging.getLogger(__name__).warning(
+            "Oracle cleanup failed", exc_info=True
+        )
 
 
 def _init_worker(

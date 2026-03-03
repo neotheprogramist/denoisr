@@ -16,7 +16,8 @@ class TestChessLossComputer:
         target_policy[:, 12, 28] = 1.0
         target_value = torch.tensor([[1.0, 0.0, 0.0]] * 4, dtype=torch.float32)
         total, breakdown = loss_fn.compute(
-            pred_policy, pred_value, target_policy, target_value
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=target_policy > 0,
         )
         assert total.ndim == 0
         assert total.item() >= 0
@@ -28,7 +29,8 @@ class TestChessLossComputer:
         target_policy[:, 0, 1] = 1.0
         target_value = torch.tensor([[0.0, 1.0, 0.0]] * 2)
         _, breakdown = loss_fn.compute(
-            pred_policy, pred_value, target_policy, target_value
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=target_policy > 0,
         )
         assert "policy" in breakdown
         assert "value" in breakdown
@@ -43,15 +45,18 @@ class TestChessLossComputer:
         target_policy = torch.zeros(2, 64, 64)
         target_policy[:, 0, 0] = 1.0
         target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
+        legal_mask = target_policy > 0
 
         total_base, _ = loss_fn.compute(
-            pred_policy, pred_value, target_policy, target_value
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=legal_mask,
         )
         total_aux, breakdown = loss_fn.compute(
             pred_policy,
             pred_value,
             target_policy,
             target_value,
+            policy_legal_mask=legal_mask,
             consistency_loss=torch.tensor(0.5),
             diffusion_loss=torch.tensor(0.3),
             reward_loss=torch.tensor(0.1),
@@ -75,6 +80,7 @@ class TestChessLossComputer:
             pred_value,
             target_policy,
             target_value,
+            policy_legal_mask=target_policy > 0,
             consistency_loss=torch.tensor(0.5),
             diffusion_loss=torch.tensor(0.3),
             reward_loss=torch.tensor(0.1),
@@ -100,7 +106,10 @@ class TestChessLossComputer:
         target_value = torch.tensor([[1.0, 0.0, 0.0]])
         pred_value = torch.tensor([[0.95, 0.04, 0.01]])
 
-        total, _ = loss_fn.compute(pred_policy, pred_value, target_policy, target_value)
+        total, _ = loss_fn.compute(
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=target_policy > 0,
+        )
         assert total.item() < 1.0
 
     def test_loss_is_finite(self, loss_fn: ChessLossComputer) -> None:
@@ -109,7 +118,10 @@ class TestChessLossComputer:
         target_policy = torch.zeros(4, 64, 64)
         target_policy[:, 0, 0] = 1.0
         target_value = torch.tensor([[0.5, 0.3, 0.2]] * 4)
-        total, _ = loss_fn.compute(pred_policy, pred_value, target_policy, target_value)
+        total, _ = loss_fn.compute(
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=target_policy > 0,
+        )
         assert not torch.isnan(total)
         assert not torch.isinf(total)
 
@@ -119,7 +131,10 @@ class TestChessLossComputer:
         target_policy = torch.zeros(2, 64, 64)
         target_policy[:, 0, 0] = 1.0
         target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
-        total, _ = loss_fn.compute(pred_policy, pred_value, target_policy, target_value)
+        total, _ = loss_fn.compute(
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=target_policy > 0,
+        )
         total.backward()
         assert pred_policy.grad is not None
 
@@ -136,9 +151,11 @@ class TestChessLossComputer:
         target_policy[0, 4, 12] = 0.4  # e2-e5
         target_policy[1, 1, 18] = 1.0  # single move
         target_value = torch.tensor([[0.4, 0.3, 0.3], [0.5, 0.2, 0.3]])
+        legal_mask = target_policy > 0
 
         loss_a, _ = loss_fn.compute(
-            pred_policy, pred_value, target_policy, target_value
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=legal_mask,
         )
 
         # Wildly change logits at illegal positions (where target is 0)
@@ -147,7 +164,8 @@ class TestChessLossComputer:
         pred_policy_b[:, 7, 7] -= 1000.0
 
         loss_b, _ = loss_fn.compute(
-            pred_policy_b, pred_value, target_policy, target_value
+            pred_policy_b, pred_value, target_policy, target_value,
+            policy_legal_mask=legal_mask,
         )
         assert torch.allclose(loss_a, loss_b, atol=1e-5)
 
@@ -161,7 +179,10 @@ class TestChessLossComputer:
         target_policy[0, 4, 4] = 1.0  # item 0 has a legal move
         # item 1 has NO legal moves — simulates a corrupted/padded row
         target_value = torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-        total, _ = loss_fn.compute(pred_policy, pred_value, target_policy, target_value)
+        total, _ = loss_fn.compute(
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=target_policy > 0,
+        )
         assert not torch.isnan(total)
         assert not torch.isinf(total)
 
@@ -172,15 +193,18 @@ class TestChessLossComputer:
         target_policy = torch.zeros(2, 64, 64)
         target_policy[:, 0, 0] = 1.0
         target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
+        legal_mask = target_policy > 0
 
         total_base, _ = loss_fn.compute(
-            pred_policy, pred_value, target_policy, target_value
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=legal_mask,
         )
         total_with_state, breakdown = loss_fn.compute(
             pred_policy,
             pred_value,
             target_policy,
             target_value,
+            policy_legal_mask=legal_mask,
             state_loss=torch.tensor(0.5),
         )
         assert total_with_state.item() > total_base.item()
@@ -193,12 +217,14 @@ class TestChessLossComputer:
         target_policy = torch.zeros(2, 64, 64)
         target_policy[:, 0, 0] = 1.0
         target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
+        legal_mask = target_policy > 0
 
         total_w1, _ = ChessLossComputer(state_weight=1.0).compute(
             pred_policy,
             pred_value,
             target_policy,
             target_value,
+            policy_legal_mask=legal_mask,
             state_loss=torch.tensor(1.0),
         )
         total_w2, _ = loss_fn.compute(
@@ -206,6 +232,7 @@ class TestChessLossComputer:
             pred_value,
             target_policy,
             target_value,
+            policy_legal_mask=legal_mask,
             state_loss=torch.tensor(1.0),
         )
         assert abs(total_w2.item() - total_w1.item() - 1.0) < 0.01
@@ -217,6 +244,7 @@ class TestChessLossComputer:
         target_policy = torch.zeros(2, 64, 64)
         target_policy[:, 0, 0] = 1.0
         target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
+        legal_mask = target_policy > 0
 
         for _ in range(5):
             loss_fn.compute(
@@ -224,6 +252,7 @@ class TestChessLossComputer:
                 pred_value,
                 target_policy,
                 target_value,
+                policy_legal_mask=legal_mask,
                 consistency_loss=torch.tensor(10.0),
                 diffusion_loss=torch.tensor(0.01),
             )
@@ -244,12 +273,15 @@ class TestChessLossComputer:
         target_policy = torch.zeros(2, 64, 64)
         target_policy[:, 12, 28] = 1.0  # only one legal move
         target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
+        legal_mask = target_policy > 0
 
         total_no, _ = loss_fn_no_penalty.compute(
-            pred_policy, pred_value, target_policy, target_value
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=legal_mask,
         )
         total_with, breakdown = loss_fn_with_penalty.compute(
-            pred_policy, pred_value, target_policy, target_value
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=legal_mask,
         )
         assert total_with.item() > total_no.item()
         assert "illegal_penalty" in breakdown
@@ -263,7 +295,10 @@ class TestChessLossComputer:
         target_policy[:, 12, 28] = 1.0
         target_value = torch.tensor([[1.0, 0.0, 0.0]] * 2)
 
-        total, _ = loss_fn.compute(pred_policy, pred_value, target_policy, target_value)
+        total, _ = loss_fn.compute(
+            pred_policy, pred_value, target_policy, target_value,
+            policy_legal_mask=target_policy > 0,
+        )
         total.backward()
         # Gradient should be nonzero at illegal positions
         assert pred_policy.grad is not None
@@ -305,7 +340,10 @@ class TestLabelSmoothing:
         target[0, 0, 3] = 0.2
         target[1, 2, 5] = 1.0
         value = torch.tensor([[0.5, 0.3, 0.2], [0.1, 0.8, 0.1]])
-        total_0, _ = loss_fn.compute(pred, torch.randn(2, 3), target, value)
+        total_0, _ = loss_fn.compute(
+            pred, torch.randn(2, 3), target, value,
+            policy_legal_mask=target > 0,
+        )
         assert total_0.isfinite()
 
     def test_smoothing_increases_loss_for_confident_prediction(self) -> None:
@@ -317,12 +355,19 @@ class TestLabelSmoothing:
         target[0, 0, 3] = 0.2
         value_pred = torch.tensor([[0.0, 0.0, 0.0]])
         value_target = torch.tensor([[0.5, 0.3, 0.2]])
+        legal_mask = target > 0
 
         no_smooth = ChessLossComputer(label_smoothing=0.0)
         with_smooth = ChessLossComputer(label_smoothing=0.1)
 
-        loss_no, _ = no_smooth.compute(pred, value_pred, target, value_target)
-        loss_yes, _ = with_smooth.compute(pred, value_pred, target, value_target)
+        loss_no, _ = no_smooth.compute(
+            pred, value_pred, target, value_target,
+            policy_legal_mask=legal_mask,
+        )
+        loss_yes, _ = with_smooth.compute(
+            pred, value_pred, target, value_target,
+            policy_legal_mask=legal_mask,
+        )
         # Smoothing redistributes probability, so confident-correct predictions
         # have slightly higher loss with smoothing
         assert loss_yes > loss_no
@@ -336,5 +381,8 @@ class TestLabelSmoothing:
         target[0, 0, 3] = 0.3
         value_pred = torch.tensor([[0.0, 0.0, 0.0]])
         value_target = torch.tensor([[0.5, 0.3, 0.2]])
-        total, _ = loss_fn.compute(pred, value_pred, target, value_target)
+        total, _ = loss_fn.compute(
+            pred, value_pred, target, value_target,
+            policy_legal_mask=target > 0,
+        )
         assert total.isfinite()

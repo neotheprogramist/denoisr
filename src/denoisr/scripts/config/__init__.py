@@ -131,23 +131,10 @@ class TrainingConfig:
     # still random. 10 epochs is safer for large-batch training.
     warmup_epochs: int = 10
 
-    # Enable cosine annealing with warm restarts (T_0=20, T_mult=2) instead
-    # of plain CosineAnnealingLR. Periodically resets LR to help escape local
-    # basins when training stalls.
-    use_warm_restarts: bool = True
-
     # Mixed-precision dtype for autocast. "bf16" eliminates gradient overflow
     # (same exponent range as fp32), "fp16" uses dynamic loss scaling, "fp32"
     # disables mixed precision entirely.
     amp_dtype: str = "bf16"
-
-    # Use OneCycleLR instead of cosine annealing. Provides per-step scheduling
-    # with coupled LR/momentum annealing for super-convergence.
-    use_onecycle: bool = False
-
-    # Fraction of total steps spent in the warmup phase of OneCycleLR.
-    # 0.3 means 30% warmup, 70% annealing. Only used when use_onecycle=True.
-    onecycle_pct_start: float = 0.3
 
     # Number of micro-batches to accumulate before stepping the optimizer.
     # Effective batch size = batch_size * gradient_accumulation_steps.
@@ -326,9 +313,6 @@ class TrainingConfig:
     # Evaluate EMA shadow model every N epochs (1 = every epoch).
     phase1_ema_eval_every: int = 2
 
-    # Evaluate SWA shadow model every N epochs (1 = every epoch).
-    phase1_swa_eval_every: int = 2
-
     # Evaluate expensive non-random grok holdout splits every N epochs.
     # Random split is still evaluated every epoch.
     phase1_grok_eval_every: int = 3
@@ -369,6 +353,7 @@ def resolve_dataloader_workers(workers: int) -> int:
 
 def detect_device() -> torch.device:
     if torch.backends.mps.is_available():
+        log.warning("Selected device: mps (Apple Silicon GPU detected)")
         return torch.device("mps")
     if torch.cuda.is_available():
         # Favor throughput for fixed-shape training workloads.
@@ -376,7 +361,9 @@ def detect_device() -> torch.device:
         torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
         torch.set_float32_matmul_precision("high")
+        log.warning("Selected device: cuda (NVIDIA GPU detected, TF32 enabled)")
         return torch.device("cuda")
+    log.warning("Selected device: cpu (no GPU detected)")
     return torch.device("cpu")
 
 
@@ -387,8 +374,9 @@ def maybe_compile(
     module: _M,
     device: torch.device,
 ) -> _M:
-    """Compile module on CUDA; no optional fallback policy."""
+    """Compile module on CUDA; skip with log on other devices."""
     if device.type != "cuda":
+        log.info("Skipping torch.compile (requires CUDA, got %s)", device.type)
         return module
     return torch.compile(module)  # type: ignore[return-value]
 
@@ -583,14 +571,6 @@ def add_training_args(parser: ArgumentParser) -> None:
         env_var="DENOISR_TRAIN_WARMUP_EPOCHS",
         type=int,
         help="linear warmup epochs before cosine decay",
-    )
-    add_env_argument(
-        parser,
-        "--warm-restarts",
-        env_var="DENOISR_TRAIN_WARM_RESTARTS",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="use cosine annealing with warm restarts",
     )
     add_env_argument(
         parser,
@@ -793,15 +773,6 @@ def add_training_args(parser: ArgumentParser) -> None:
     )
     add_env_argument(
         parser,
-        "--phase1-swa-eval-every",
-        env_var="DENOISR_PHASE1_SWA_EVAL_EVERY",
-        type=int,
-        default=2,
-        required=False,
-        help="Evaluate SWA holdout accuracy every N epochs in phase1",
-    )
-    add_env_argument(
-        parser,
         "--phase1-grok-eval-every",
         env_var="DENOISR_PHASE1_GROK_EVAL_EVERY",
         type=int,
@@ -815,21 +786,6 @@ def add_training_args(parser: ArgumentParser) -> None:
         env_var="DENOISR_AMP_DTYPE",
         type=str,
         help="mixed-precision dtype: bf16, fp16, or fp32",
-    )
-    add_env_argument(
-        parser,
-        "--use-onecycle",
-        env_var="DENOISR_TRAIN_USE_ONECYCLE",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="use OneCycleLR scheduler instead of cosine annealing",
-    )
-    add_env_argument(
-        parser,
-        "--onecycle-pct-start",
-        env_var="DENOISR_TRAIN_ONECYCLE_PCT_START",
-        type=float,
-        help="OneCycleLR warmup fraction",
     )
     add_env_argument(
         parser,
@@ -982,7 +938,6 @@ _TRAINING_REQUIRED_ENV_SPECS: tuple[_EnvSpec, ...] = (
     ("DENOISR_TRAIN_ENCODER_LR_MULTIPLIER", _parse_env_float),
     ("DENOISR_TRAIN_MIN_LR", _parse_env_float),
     ("DENOISR_TRAIN_WARMUP_EPOCHS", _parse_env_int),
-    ("DENOISR_TRAIN_WARM_RESTARTS", _parse_env_bool),
     ("DENOISR_TRAIN_THREAT_WEIGHT", _parse_env_float),
     ("DENOISR_TRAIN_POLICY_WEIGHT", _parse_env_float),
     ("DENOISR_TRAIN_VALUE_WEIGHT", _parse_env_float),
@@ -1008,8 +963,6 @@ _TRAINING_REQUIRED_ENV_SPECS: tuple[_EnvSpec, ...] = (
     ("DENOISR_GROKFAST_LAMB", _parse_env_float),
     ("DENOISR_EMA_DECAY", _parse_env_float),
     ("DENOISR_AMP_DTYPE", _parse_env_amp_dtype),
-    ("DENOISR_TRAIN_USE_ONECYCLE", _parse_env_bool),
-    ("DENOISR_TRAIN_ONECYCLE_PCT_START", _parse_env_float),
     ("DENOISR_TRAIN_GRADIENT_ACCUMULATION_STEPS", _parse_env_int),
     ("DENOISR_TRAIN_LABEL_SMOOTHING", _parse_env_float),
     ("DENOISR_TRAIN_VALUE_NOISE_PROB", _parse_env_float),
@@ -1076,7 +1029,6 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         encoder_lr_multiplier=args.encoder_lr_multiplier,
         min_lr=args.min_lr,
         warmup_epochs=args.warmup_epochs,
-        use_warm_restarts=args.warm_restarts,
         threat_weight=args.threat_weight,
         policy_weight=args.policy_weight,
         value_weight=args.value_weight,
@@ -1103,11 +1055,8 @@ def training_config_from_args(args: Namespace) -> TrainingConfig:
         grokfast_plateau_epochs=args.grokfast_plateau_epochs,
         ema_decay=args.ema_decay,
         phase1_ema_eval_every=args.phase1_ema_eval_every,
-        phase1_swa_eval_every=args.phase1_swa_eval_every,
         phase1_grok_eval_every=args.phase1_grok_eval_every,
         amp_dtype=args.amp_dtype,
-        use_onecycle=args.use_onecycle,
-        onecycle_pct_start=args.onecycle_pct_start,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         label_smoothing=args.label_smoothing,
         value_noise_prob=args.value_noise_prob,

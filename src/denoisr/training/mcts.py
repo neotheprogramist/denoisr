@@ -76,8 +76,8 @@ class MCTS:
         policy_value_fn: PolicyValueFn,
         world_model_fn: WorldModelFn,
         config: MCTSConfig,
-        legal_mask_fn: LegalMaskFn | None = None,
-        transition_fn: TransitionFn | None = None,
+        legal_mask_fn: LegalMaskFn,
+        transition_fn: TransitionFn,
     ) -> None:
         self._pv = policy_value_fn
         self._wm = world_model_fn
@@ -172,40 +172,26 @@ class MCTS:
             state, reward = self._wm(parent.state, f, t)
             node.state = state
             node.reward_from_parent = reward
-            if (
-                node.board is None
-                and parent.board is not None
-                and self._transition_fn is not None
-            ):
-                node.board = self._transition_fn(parent.board, f, t)
+            assert parent.board is not None
+            node.board = self._transition_fn(parent.board, f, t)
 
         if node.state is not None:
             policy_logits, value = self._pv(node.state)
-            legal_indices: list[tuple[int, int]]
-            if node.board is not None and self._legal_mask_fn is not None:
-                legal_mask = self._legal_mask_fn(node.board).to(
-                    device=policy_logits.device, dtype=torch.bool
+            legal_mask = self._legal_mask_fn(node.board).to(
+                device=policy_logits.device, dtype=torch.bool
+            )
+            masked_logits = policy_logits.masked_fill(~legal_mask, float("-inf"))
+            if legal_mask.any():
+                policy = torch.softmax(masked_logits.reshape(-1), dim=0).reshape(
+                    64, 64
                 )
-                masked_logits = policy_logits.masked_fill(~legal_mask, float("-inf"))
-                if legal_mask.any():
-                    policy = torch.softmax(masked_logits.reshape(-1), dim=0).reshape(
-                        64, 64
-                    )
-                    legal_indices = [
-                        (int(f), int(t))
-                        for f, t in legal_mask.nonzero(as_tuple=False).tolist()
-                    ]
-                else:
-                    policy = torch.zeros_like(policy_logits)
-                    legal_indices = []
-            else:
-                policy = torch.softmax(policy_logits.reshape(-1), dim=0).reshape(64, 64)
                 legal_indices = [
-                    (fi, ti)
-                    for fi in range(64)
-                    for ti in range(64)
-                    if policy[fi, ti].item() > 1e-8
+                    (int(f), int(t))
+                    for f, t in legal_mask.nonzero(as_tuple=False).tolist()
                 ]
+            else:
+                policy = torch.zeros_like(policy_logits)
+                legal_indices: list[tuple[int, int]] = []
             # Convert white-centric value into side-to-move perspective.
             leaf_value = node.to_play * (value[0] - value[2]).item()
 

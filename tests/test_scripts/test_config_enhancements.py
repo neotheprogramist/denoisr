@@ -12,14 +12,6 @@ class TestEnhancementConfigDefaults:
         cfg = ModelConfig()
         assert cfg.drop_path_rate == 0.0
 
-    def test_training_config_has_use_onecycle(self) -> None:
-        cfg = TrainingConfig()
-        assert cfg.use_onecycle is False
-
-    def test_training_config_has_onecycle_pct_start(self) -> None:
-        cfg = TrainingConfig()
-        assert cfg.onecycle_pct_start == 0.3
-
     def test_training_config_has_gradient_accumulation_steps(self) -> None:
         cfg = TrainingConfig()
         assert cfg.gradient_accumulation_steps == 1

@@ -1,32 +1,6 @@
 import random
-from collections import deque
 
 from denoisr.types import GameRecord
-
-
-class SimpleReplayBuffer:
-    """Uniform-sampling replay buffer with fixed capacity (Phase 1).
-
-    When capacity is exceeded, the oldest entries are evicted (FIFO).
-    Sampling is uniform with replacement.
-    """
-
-    def __init__(self, capacity: int) -> None:
-        self._buffer: deque[GameRecord] = deque(maxlen=capacity)
-
-    def add(self, record: GameRecord, priority: float = 1.0) -> None:
-        self._buffer.append(record)
-
-    def sample(self, batch_size: int) -> list[GameRecord]:
-        if len(self._buffer) == 0:
-            raise ValueError("Cannot sample from empty buffer")
-        return random.choices(list(self._buffer), k=batch_size)
-
-    def update_priorities(self, indices: list[int], priorities: list[float]) -> None:
-        pass  # no-op for uniform buffer
-
-    def __len__(self) -> int:
-        return len(self._buffer)
 
 
 class PriorityReplayBuffer:

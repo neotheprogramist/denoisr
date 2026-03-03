@@ -41,18 +41,28 @@ class GrokfastFilter:
             full_name = f"{prefix}{name}" if prefix else name
             grad = param.grad.detach()
             if not torch.isfinite(grad).all():
+                # Non-finite gradient: skip this parameter, don't corrupt EMA
                 self.grads.pop(full_name, None)
                 continue
             if full_name not in self.grads:
                 self.grads[full_name] = grad.clone()
             else:
                 ema = self.grads[full_name]
-                if (
-                    ema.shape != grad.shape
-                    or ema.device != grad.device
-                    or not torch.isfinite(ema).all()
-                ):
-                    self.grads[full_name] = grad.clone()
-                else:
-                    ema.mul_(self.alpha).add_(grad, alpha=1 - self.alpha)
+                if ema.shape != grad.shape:
+                    raise ValueError(
+                        f"Grokfast EMA shape mismatch for {full_name}: "
+                        f"expected {ema.shape}, got {grad.shape}. "
+                        "This indicates a model architecture change mid-training."
+                    )
+                if ema.device != grad.device:
+                    raise ValueError(
+                        f"Grokfast EMA device mismatch for {full_name}: "
+                        f"expected {ema.device}, got {grad.device}."
+                    )
+                if not torch.isfinite(ema).all():
+                    raise RuntimeError(
+                        f"Grokfast EMA buffer for {full_name} contains non-finite values. "
+                        "Training has diverged."
+                    )
+                ema.mul_(self.alpha).add_(grad, alpha=1 - self.alpha)
             param.grad.add_(self.grads[full_name], alpha=self.lamb)

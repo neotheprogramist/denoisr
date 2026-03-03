@@ -1,7 +1,9 @@
 import shutil
 from collections.abc import Iterator
+from unittest.mock import MagicMock, patch
 
 import chess
+import chess.engine
 import pytest
 
 from denoisr.data.stockfish_oracle import StockfishOracle
@@ -111,3 +113,13 @@ class TestStockfishOracle:
         legal_probs = policy.data[policy.data > 0]
         assert legal_probs.min().item() > 0.001  # smoothing ensures minimum
         smoothed.close()
+
+    def test_missing_wdl_raises_value_error(self, oracle: StockfishOracle) -> None:
+        """ValueError is raised when Stockfish returns no WDL data."""
+        mock_score = MagicMock()
+        mock_score.white.return_value = chess.engine.Cp(30)
+        info_no_wdl: dict[str, object] = {"score": mock_score}
+
+        with patch.object(oracle._engine, "analyse", return_value=info_no_wdl):
+            with pytest.raises(ValueError, match="WDL"):
+                oracle._get_value(chess.Board())

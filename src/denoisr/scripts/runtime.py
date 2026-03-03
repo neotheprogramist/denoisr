@@ -35,9 +35,16 @@ def load_env_file(path: str | Path | None = None) -> Path:
     """Load KEY=VALUE pairs from an env file into os.environ.
 
     Existing environment variables are not overwritten.
+    If an explicit path is given and doesn't exist, raises FileNotFoundError.
+    The default .env path is optional (logs info if missing).
     """
     env_path = Path(path) if path is not None else Path(DEFAULT_ENV_FILE)
     if not env_path.exists():
+        if path is not None:
+            raise FileNotFoundError(
+                f"Env file not found: {env_path}. "
+                "Pass an existing file path or omit to use optional default .env"
+            )
         return env_path
 
     for raw in env_path.read_text(encoding="utf-8").splitlines():

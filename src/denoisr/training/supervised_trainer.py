@@ -34,10 +34,6 @@ class SupervisedTrainer:
         encoder_lr_multiplier: float = 0.3,
         min_lr: float = 1e-6,
         grokfast_filter: GrokfastFilter | None = None,
-        use_warm_restarts: bool = False,
-        use_onecycle: bool = False,
-        onecycle_pct_start: float = 0.3,
-        steps_per_epoch: int = 1,
         accumulation_steps: int = 1,
         amp_dtype: torch.dtype | None = None,
     ) -> None:
@@ -71,53 +67,21 @@ class SupervisedTrainer:
 
         self._accum_steps = accumulation_steps
         self._accum_count = 0
-        self._use_onecycle = use_onecycle
-        self._onecycle_total_steps = 0
 
         self._warmup_epochs = warmup_epochs
         self._base_lrs: list[float] = [float(g["lr"]) for g in param_groups]  # type: ignore[arg-type]
 
-        if use_onecycle:
-            onecycle_spe = max(1, steps_per_epoch // accumulation_steps)
-            self._onecycle_total_steps = onecycle_spe * total_epochs
-            self._scheduler: torch.optim.lr_scheduler.LRScheduler = (
-                torch.optim.lr_scheduler.OneCycleLR(
-                    self.optimizer,
-                    max_lr=[
-                        lr * encoder_lr_multiplier,
-                        lr * encoder_lr_multiplier,
-                        lr,
-                        lr,
-                    ],
-                    epochs=total_epochs,
-                    steps_per_epoch=onecycle_spe,
-                    pct_start=onecycle_pct_start,
-                    anneal_strategy="cos",
-                    div_factor=25,
-                    final_div_factor=10000,
-                )
-            )
-        elif use_warm_restarts:
-            # Start at 1/N of peak LR; warmup will ramp up from here
-            for g, base_lr in zip(param_groups, self._base_lrs):
-                g["lr"] = base_lr / max(self._warmup_epochs, 1)
-            self._scheduler = (
-                torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                    self.optimizer,
-                    T_0=20,
-                    T_mult=2,
-                    eta_min=min_lr,
-                )
-            )
-        else:
-            # Start at 1/N of peak LR; warmup will ramp up from here
-            for g, base_lr in zip(param_groups, self._base_lrs):
-                g["lr"] = base_lr / max(self._warmup_epochs, 1)
-            self._scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        # Start at 1/N of peak LR; warmup will ramp up from here
+        for g, base_lr in zip(param_groups, self._base_lrs):
+            g["lr"] = base_lr / max(self._warmup_epochs, 1)
+        self._scheduler: torch.optim.lr_scheduler.LRScheduler = (
+            torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                 self.optimizer,
-                T_max=max(1, total_epochs - warmup_epochs),
+                T_0=20,
+                T_mult=2,
                 eta_min=min_lr,
             )
+        )
         if hasattr(self._scheduler, "base_lrs"):
             self._scheduler.base_lrs = list(self._base_lrs)
         self._epoch = 0
@@ -178,8 +142,10 @@ class SupervisedTrainer:
             features = self.backbone(latent)
             pred_policy = self.policy_head(features)
             pred_value, _pred_ply = self.value_head(features)
+            legal_mask = target_policies > 0
             total_loss, breakdown = self.loss_fn.compute(
-                pred_policy, pred_value, target_policies, target_values
+                pred_policy, pred_value, target_policies, target_values,
+                policy_legal_mask=legal_mask,
             )
 
         with torch.no_grad():
@@ -230,8 +196,6 @@ class SupervisedTrainer:
                 return total_loss.item(), breakdown
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            if self._use_onecycle and self._scheduler.last_epoch < self._onecycle_total_steps:
-                self._scheduler.step()
             breakdown["grad_norm"] = grad_norm
         else:
             breakdown["grad_norm"] = 0.0
@@ -310,10 +274,7 @@ class SupervisedTrainer:
 
     def scheduler_step(self) -> None:
         self._epoch += 1
-        if self._use_onecycle:
-            return  # OneCycleLR steps per optimizer step in _forward_backward
         if self._epoch <= self._warmup_epochs:
-            # Linear warmup
             frac = self._epoch / self._warmup_epochs
             for group, base_lr in zip(self.optimizer.param_groups, self._base_lrs):
                 group["lr"] = base_lr * frac

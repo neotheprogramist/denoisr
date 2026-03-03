@@ -476,7 +476,6 @@ def main() -> None:
         weight_decay=tcfg.weight_decay,
         encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
         min_lr=tcfg.min_lr,
-        use_warm_restarts=tcfg.use_warm_restarts,
         amp_dtype=resolve_amp_dtype(tcfg),
     )
     aux_lr = args.aux_lr if args.aux_lr is not None else args.lr

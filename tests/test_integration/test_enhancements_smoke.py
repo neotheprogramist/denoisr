@@ -13,7 +13,7 @@ from denoisr.training.supervised_trainer import SupervisedTrainer
 
 class TestEnhancementsSmokeTest:
     def test_full_enhanced_training_step(self, device: torch.device) -> None:
-        """All enhancements active: dropout, drop_path, OneCycleLR, accumulation, smoothing."""
+        """All enhancements active: dropout, drop_path, accumulation, smoothing."""
         encoder = ChessEncoder(num_planes=12, d_s=SMALL_D_S).to(device)
         backbone = ChessPolicyBackbone(
             SMALL_D_S,
@@ -35,8 +35,6 @@ class TestEnhancementsSmokeTest:
             loss_fn=loss_fn,
             lr=1e-3,
             device=device,
-            use_onecycle=True,
-            steps_per_epoch=10,
             total_epochs=2,
             accumulation_steps=2,
         )

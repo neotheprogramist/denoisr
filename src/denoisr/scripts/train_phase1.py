@@ -51,7 +51,6 @@ from denoisr.training.loss import ChessLossComputer
 from denoisr.training.resource_monitor import ResourceMonitor
 from denoisr.training.plateau_detector import PlateauDetector
 from denoisr.training.prefetch import DevicePrefetcher
-from denoisr.training.swa import ModelSWA
 from denoisr.training.supervised_trainer import SupervisedTrainer
 from denoisr.types import TrainingExample
 from denoisr.types.board import BoardTensor
@@ -61,7 +60,6 @@ log = logging.getLogger(__name__)
 _CHUNK_FORMAT = "chunked_v1"
 _HOLDOUT_SPLIT_SEED = 42
 _GROK_HOLDOUT_SPLITS = ("random", "game_level", "opening_family", "piece_count")
-_SWA_START_FRACTION = 0.75
 _DATALOADER_PREFETCH_FACTOR = 2
 _STABILITY_GUARD_ENABLED = True
 _STABILITY_GUARD_MIN_EPOCH = 2
@@ -568,10 +566,6 @@ def measure_accuracy(
     return correct_1 / max(total, 1), correct_5 / max(total, 1)
 
 
-def _is_dataloader_worker_failure(exc: RuntimeError) -> bool:
-    msg = str(exc)
-    return "DataLoader worker" in msg and "exited unexpectedly" in msg
-
 
 def _is_loss_stall_warning(msg: str) -> bool:
     return "loss stalled" in msg
@@ -749,8 +743,6 @@ def main() -> None:
         raise ValueError("--grokfast-plateau-epochs must be >= 0")
     if tcfg.phase1_ema_eval_every < 1:
         raise ValueError("--phase1-ema-eval-every must be >= 1")
-    if tcfg.phase1_swa_eval_every < 1:
-        raise ValueError("--phase1-swa-eval-every must be >= 1")
     if tcfg.phase1_grok_eval_every < 1:
         raise ValueError("--phase1-grok-eval-every must be >= 1")
     use_tqdm = args.tqdm
@@ -855,13 +847,6 @@ def main() -> None:
         )
         log.info("EMA enabled  decay=%.4f", tcfg.ema_decay)
 
-    # Compute actual micro-batches: each shard's DataLoader rounds up
-    # independently (drop_last=False), so use ceiling division per shard.
-    steps_per_epoch = sum(
-        -(-int(shard.train_indices.numel()) // args.batch_size)
-        for shard in data_plan.shards
-        if shard.train_indices.numel() > 0
-    )
     requested_amp_dtype = resolve_amp_dtype(tcfg)
     active_amp_dtype = requested_amp_dtype
     if device.type == "cuda" and active_amp_dtype != torch.bfloat16:
@@ -894,10 +879,6 @@ def main() -> None:
         encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
         min_lr=tcfg.min_lr,
         grokfast_filter=grokfast_filter,
-        use_warm_restarts=tcfg.use_warm_restarts,
-        use_onecycle=tcfg.use_onecycle,
-        onecycle_pct_start=tcfg.onecycle_pct_start,
-        steps_per_epoch=steps_per_epoch,
         accumulation_steps=tcfg.gradient_accumulation_steps,
         amp_dtype=active_amp_dtype,
     )
@@ -908,23 +889,6 @@ def main() -> None:
         trainer.amp_autocast_enabled,
         trainer.amp_scaler_enabled,
     )
-    swa_start_epoch = max(1, math.ceil(args.epochs * _SWA_START_FRACTION))
-    swa_model = ModelSWA(
-        {
-            "encoder": encoder,
-            "backbone": backbone,
-            "policy_head": policy_head,
-            "value_head": value_head,
-        }
-    )
-    log.info(
-        "SWA enabled  start_epoch=%d/%d",
-        swa_start_epoch,
-        args.epochs,
-    )
-    if not swa_model.has_batch_norm():
-        log.info("SWA batch-norm update skipped (no BatchNorm layers detected)")
-
     # --- Grok tracker (opt-in) ---
     grok_tracker: GrokTracker | None = None
 
@@ -951,21 +915,16 @@ def main() -> None:
         # --- Build shard stream config ---
         bs = args.batch_size
         worker_count = resolve_dataloader_workers(tcfg.workers)
-        active_worker_count = worker_count
         pin_memory = device.type == "cuda"
         log.info(
             "phase1 dataloader config: workers=%d  batch_size=%d  shards=%d",
-            active_worker_count,
+            worker_count,
             bs,
             len(data_plan.shards),
         )
         log.info(
-            (
-                "phase1 eval cadence: ema_every=%d  swa_every=%d  "
-                "grok_nonrandom_every=%d"
-            ),
+            "phase1 eval cadence: ema_every=%d  grok_nonrandom_every=%d",
             tcfg.phase1_ema_eval_every,
-            tcfg.phase1_swa_eval_every,
             tcfg.phase1_grok_eval_every,
         )
 
@@ -998,7 +957,6 @@ def main() -> None:
                 "grokfast_start_epoch": tcfg.grokfast_start_epoch,
                 "grokfast_plateau_epochs": tcfg.grokfast_plateau_epochs,
                 "phase1_ema_eval_every": tcfg.phase1_ema_eval_every,
-                "phase1_swa_eval_every": tcfg.phase1_swa_eval_every,
                 "phase1_grok_eval_every": tcfg.phase1_grok_eval_every,
             },
             {"best_top1": 0.0},
@@ -1091,7 +1049,7 @@ def main() -> None:
                 train_loader = _build_phase1_train_loader(
                     train_dataset,
                     batch_size=bs,
-                    worker_count=active_worker_count,
+                    worker_count=worker_count,
                     pin_memory=pin_memory,
                 )
                 batch_iter: (
@@ -1099,33 +1057,7 @@ def main() -> None:
                     | DataLoader[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
                 )
                 if device.type == "cuda":
-                    try:
-                        batch_iter = DevicePrefetcher(train_loader, device)
-                    except RuntimeError as exc:
-                        if (
-                            active_worker_count > 0
-                            and _is_dataloader_worker_failure(exc)
-                        ):
-                            log.warning(
-                                "DataLoader worker startup failed on shard %d/%d; "
-                                "disabling workers (num_workers=0) for the "
-                                "remainder of phase1 "
-                                "(%s)",
-                                shard_pos,
-                                len(shard_order),
-                                exc,
-                            )
-                            active_worker_count = 0
-                            del train_loader
-                            train_loader = _build_phase1_train_loader(
-                                train_dataset,
-                                batch_size=bs,
-                                worker_count=active_worker_count,
-                                pin_memory=pin_memory,
-                            )
-                            batch_iter = DevicePrefetcher(train_loader, device)
-                        else:
-                            raise
+                    batch_iter = DevicePrefetcher(train_loader, device)
                 else:
                     batch_iter = train_loader
                 pbar = tqdm(
@@ -1182,8 +1114,6 @@ def main() -> None:
                 pbar.close()
                 del train_loader, train_dataset, boards, policies, values
             trainer.scheduler_step()
-            if epoch_num >= swa_start_epoch:
-                swa_model.update()
 
             epoch_duration = time.monotonic() - epoch_start
             samples_per_sec = data_plan.train_examples / max(epoch_duration, 1e-9)
@@ -1196,27 +1126,6 @@ def main() -> None:
                 progress_desc=f"Eval random E{epoch_num}",
             )
             boundary_epoch = epoch_num in {1, args.epochs}
-            swa_top1: float | None = None
-            swa_top5: float | None = None
-            eval_swa = (
-                swa_model.num_updates > 0
-                and (boundary_epoch or (epoch_num % tcfg.phase1_swa_eval_every == 0))
-            )
-            if eval_swa:
-                with swa_model.apply():
-                    swa_top1, swa_top5 = _measure_accuracy_from_plan(
-                        trainer,
-                        data_plan,
-                        device,
-                        use_tqdm=use_tqdm,
-                        progress_desc=f"Eval random SWA E{epoch_num}",
-                    )
-                log.info(
-                    "SWA top1=%.2f%% top5=%.2f%% (regular=%.2f%%)",
-                    swa_top1 * 100,
-                    (swa_top5 or 0.0) * 100,
-                    top1 * 100,
-                )
             ema_top1: float | None = None
             eval_ema = model_ema is not None and (
                 boundary_epoch or (epoch_num % tcfg.phase1_ema_eval_every == 0)
@@ -1240,9 +1149,6 @@ def main() -> None:
             if ema_top1 is not None and ema_top1 >= selected_top1:
                 selected_top1 = ema_top1
                 selected_source = "ema"
-            if swa_top1 is not None and swa_top1 >= selected_top1:
-                selected_top1 = swa_top1
-                selected_source = "swa"
             current_lr = trainer.optimizer.param_groups[0]["lr"]
             avg_policy_loss = policy_loss_sum / max(policy_loss_count, 1)
             avg_value_loss = value_loss_sum / max(value_loss_count, 1)
@@ -1518,10 +1424,7 @@ def main() -> None:
             if selected_top1 > best_acc:
                 best_acc = selected_top1
                 best_source = selected_source
-                if selected_source == "swa":
-                    with swa_model.apply():
-                        _save_current_checkpoint()
-                elif selected_source == "ema" and model_ema is not None:
+                if selected_source == "ema" and model_ema is not None:
                     with model_ema.apply():
                         _save_current_checkpoint()
                 else:

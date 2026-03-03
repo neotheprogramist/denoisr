@@ -81,6 +81,23 @@ class TestSelfPlayActor:
         assert actor._mcts._config.dirichlet_epsilon == pytest.approx(0.15)
 
 
+    def test_zero_visit_dist_raises_runtime_error(self) -> None:
+        model = _DummyModel(SMALL_D_S)
+        actor = SelfPlayActor(
+            policy_value_fn=model.predict,
+            world_model_fn=model.predict_next,
+            encode_fn=model.encode,
+            diffusion_policy_fn=None,
+            game=ChessGame(),
+            board_encoder=ExtendedBoardEncoder(),
+            config=SelfPlayConfig(num_simulations=5, max_moves=10, temperature=1.0),
+        )
+        # Force MCTS to return a zero distribution
+        actor._mcts.search = lambda *_args, **_kwargs: torch.zeros(64, 64)  # type: ignore[assignment]
+        with pytest.raises(RuntimeError, match="MCTS produced zero visit distribution"):
+            actor.play_game()
+
+
 class TestTemperatureSchedule:
     def test_explore_phase_returns_base(self) -> None:
         ts = TemperatureSchedule(base=1.0, explore_moves=30)

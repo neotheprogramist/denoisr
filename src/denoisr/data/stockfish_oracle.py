@@ -14,6 +14,7 @@ class StockfishOracle:
         label_smoothing: float = 0.02,
     ) -> None:
         self._engine = chess.engine.SimpleEngine.popen_uci(path)
+        self._engine.configure({"UCI_ShowWDL": True})
         self._depth = depth
         self._policy_temperature = policy_temperature
         self._label_smoothing = label_smoothing
@@ -62,6 +63,16 @@ class StockfishOracle:
         return PolicyTarget(data)
 
     def _get_value(self, board: chess.Board) -> tuple[ValueTarget, float]:
+        # Terminal positions have deterministic WDL; Stockfish omits WDL for
+        # these, so resolve them from the board state directly.
+        if board.is_checkmate():
+            # The side to move has been checkmated.
+            if board.turn == chess.WHITE:
+                return ValueTarget(win=0.0, draw=0.0, loss=1.0), -10000.0
+            return ValueTarget(win=1.0, draw=0.0, loss=0.0), 10000.0
+        if board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
+            return ValueTarget(win=0.0, draw=1.0, loss=0.0), 0.0
+
         info = self._engine.analyse(board, chess.engine.Limit(depth=self._depth))
         score = info["score"].white()
         cp_val = score.score(mate_score=10000)
@@ -69,18 +80,19 @@ class StockfishOracle:
             cp_val = 0
 
         wdl = info.get("wdl")
-        if wdl is not None:
-            wdl_white = wdl.white()
-            total = wdl_white.wins + wdl_white.draws + wdl_white.losses
-            value = ValueTarget(
-                win=wdl_white.wins / total,
-                draw=wdl_white.draws / total,
-                loss=wdl_white.losses / total,
+        if wdl is None:
+            raise ValueError(
+                "Stockfish did not return WDL data. "
+                "Requires Stockfish 14+ compiled with WDL support. "
+                "Check your Stockfish binary version."
             )
-        else:
-            # Approximate WDL from centipawns using sigmoid
-            win_prob = 1.0 / (1.0 + 10.0 ** (-float(cp_val) / 400.0))
-            value = ValueTarget(win=win_prob, draw=0.0, loss=1.0 - win_prob)
+        wdl_white = wdl.white()
+        total = wdl_white.wins + wdl_white.draws + wdl_white.losses
+        value = ValueTarget(
+            win=wdl_white.wins / total,
+            draw=wdl_white.draws / total,
+            loss=wdl_white.losses / total,
+        )
 
         return value, float(cp_val)
 

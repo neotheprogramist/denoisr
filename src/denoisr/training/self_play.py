@@ -127,8 +127,11 @@ class SelfPlayActor:
 
             flat_dist = visit_dist.reshape(-1)
             if flat_dist.sum() == 0:
-                flat_dist = legal_mask.float().reshape(-1)
-                flat_dist = flat_dist / flat_dist.sum()
+                raise RuntimeError(
+                    "MCTS produced zero visit distribution. "
+                    "This indicates a bug in MCTS search or legal mask generation. "
+                    f"Board FEN: {board.fen()}, move_num: {move_num}"
+                )
 
             idx = int(torch.multinomial(flat_dist, 1).item())
             from_sq = idx // 64

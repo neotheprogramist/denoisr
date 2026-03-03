@@ -56,16 +56,10 @@ from denoisr.training.phase2_trainer import (
     evaluate_phase2_gate,
 )
 from denoisr.training.resource_monitor import ResourceMonitor
-from denoisr.training.swa import ModelSWA
 
 log = logging.getLogger(__name__)
-_SWA_START_FRACTION = 0.75
 _DATALOADER_PREFETCH_FACTOR = 2
 
-
-def _is_dataloader_worker_failure(exc: RuntimeError) -> bool:
-    msg = str(exc)
-    return "DataLoader worker" in msg and "exited unexpectedly" in msg
 
 
 def extract_trajectories(
@@ -331,25 +325,6 @@ def main() -> None:
             decay=tcfg.ema_decay,
         )
         log.info("EMA enabled  decay=%.4f", tcfg.ema_decay)
-    swa_start_epoch = max(1, math.ceil(args.epochs * _SWA_START_FRACTION))
-    swa_model = ModelSWA(
-        {
-            "encoder": encoder,
-            "backbone": backbone,
-            "policy_head": policy_head,
-            "value_head": value_head,
-            "world_model": world_model,
-            "diffusion": diffusion_mod,
-            "consistency": consistency,
-        }
-    )
-    log.info(
-        "SWA enabled  start_epoch=%d/%d",
-        swa_start_epoch,
-        args.epochs,
-    )
-    if not swa_model.has_batch_norm():
-        log.info("SWA batch-norm update skipped (no BatchNorm layers detected)")
 
     # --- Extract enriched trajectories ---
     board_encoder = build_board_encoder(cfg)
@@ -377,20 +352,19 @@ def main() -> None:
         trajectory_data.rewards[:n_train],
     )
     worker_count = resolve_dataloader_workers(tcfg.workers)
-    active_worker_count = worker_count
     loader_kwargs: dict[str, object] = {
         "batch_size": args.batch_size,
         "shuffle": True,
-        "num_workers": active_worker_count,
+        "num_workers": worker_count,
         "pin_memory": (device.type == "cuda"),
     }
-    if active_worker_count > 0:
+    if worker_count > 0:
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = _DATALOADER_PREFETCH_FACTOR
     loader = DataLoader(train_dataset, **loader_kwargs)
     log.info(
         "phase2 dataloader config: workers=%d  batch_size=%d",
-        active_worker_count,
+        worker_count,
         args.batch_size,
     )
 
@@ -459,29 +433,7 @@ def main() -> None:
                 | DataLoader[tuple[torch.Tensor, ...]]
             )
             if device.type == "cuda":
-                try:
-                    batch_iter = DevicePrefetcher(loader, device)
-                except RuntimeError as exc:
-                    if (
-                        active_worker_count > 0
-                        and _is_dataloader_worker_failure(exc)
-                    ):
-                        log.warning(
-                            "DataLoader worker startup failed; disabling workers "
-                            "(num_workers=0) for the remainder of phase2 (%s)",
-                            exc,
-                        )
-                        active_worker_count = 0
-                        loader = DataLoader(
-                            train_dataset,
-                            batch_size=args.batch_size,
-                            shuffle=True,
-                            num_workers=active_worker_count,
-                            pin_memory=(device.type == "cuda"),
-                        )
-                        batch_iter = DevicePrefetcher(loader, device)
-                    else:
-                        raise
+                batch_iter = DevicePrefetcher(loader, device)
             else:
                 batch_iter = loader
 
@@ -534,8 +486,6 @@ def main() -> None:
             pbar.close()
 
             trainer.advance_curriculum()
-            if epoch_num >= swa_start_epoch:
-                swa_model.update()
             epoch_duration = time.monotonic() - epoch_start
             num_samples = len(train_dataset)
             avg_loss = epoch_loss / max(num_batches, 1)
@@ -647,29 +597,6 @@ def main() -> None:
         )
         selected_delta = delta
         selected_source = "base"
-        if swa_model.num_updates > 0:
-            with swa_model.apply():
-                swa_single, swa_diff, swa_delta = evaluate_phase2_gate(
-                    encoder=encoder,
-                    backbone=backbone,
-                    policy_head=policy_head,
-                    diffusion=diffusion_mod,
-                    schedule=schedule,
-                    boards=holdout_boards,
-                    target_from=holdout_from,
-                    target_to=holdout_to,
-                    device=device,
-                    legal_mask=holdout_legal,
-                )
-            log.info(
-                "Phase 2 gate (SWA): single=%.1f%%  diffusion=%.1f%%  delta=%.1fpp",
-                swa_single * 100,
-                swa_diff * 100,
-                swa_delta,
-            )
-            if swa_delta >= selected_delta:
-                selected_delta = swa_delta
-                selected_source = "swa"
         if model_ema is not None:
             with model_ema.apply():
                 ema_single, ema_diff, ema_delta = evaluate_phase2_gate(
@@ -690,8 +617,11 @@ def main() -> None:
                 ema_diff * 100,
                 ema_delta,
             )
-        if selected_source == "swa":
-            with swa_model.apply():
+            if ema_delta >= selected_delta:
+                selected_delta = ema_delta
+                selected_source = "ema"
+        if selected_source == "ema" and model_ema is not None:
+            with model_ema.apply():
                 _save_current_checkpoint()
         else:
             _save_current_checkpoint()

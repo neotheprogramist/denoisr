@@ -1,3 +1,4 @@
+import pytest
 import torch
 from torch import nn
 
@@ -111,3 +112,55 @@ class TestGrokfastFilter:
         before = gf.grads["value_head.norm.weight"].clone()
         gf.grads["encoder.norm.weight"].add_(1.0)
         torch.testing.assert_close(gf.grads["value_head.norm.weight"], before)
+
+    def test_shape_mismatch_raises_value_error(self) -> None:
+        model = nn.Linear(10, 5, bias=False)
+        gf = GrokfastFilter(alpha=0.98, lamb=2.0)
+
+        # First apply: initialize EMA with shape [5, 10]
+        model.zero_grad()
+        model(torch.randn(4, 10)).sum().backward()
+        gf.apply(model)
+
+        # Manually replace EMA with wrong shape to simulate architecture change
+        gf.grads["weight"] = torch.randn(3, 10)
+
+        model.zero_grad()
+        model(torch.randn(4, 10)).sum().backward()
+        with pytest.raises(ValueError, match="shape mismatch"):
+            gf.apply(model)
+
+    def test_device_mismatch_raises_value_error(self) -> None:
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        model = nn.Linear(10, 5, bias=False)
+        gf = GrokfastFilter(alpha=0.98, lamb=2.0)
+
+        model.zero_grad()
+        model(torch.randn(4, 10)).sum().backward()
+        gf.apply(model)
+
+        # Move the EMA buffer to a different device
+        gf.grads["weight"] = gf.grads["weight"].cuda()
+
+        model.zero_grad()
+        model(torch.randn(4, 10)).sum().backward()
+        with pytest.raises(ValueError, match="device mismatch"):
+            gf.apply(model)
+
+    def test_nonfinite_ema_raises_runtime_error(self) -> None:
+        model = nn.Linear(10, 5, bias=False)
+        gf = GrokfastFilter(alpha=0.98, lamb=2.0)
+
+        # First apply: initialize EMA
+        model.zero_grad()
+        model(torch.randn(4, 10)).sum().backward()
+        gf.apply(model)
+
+        # Corrupt the EMA buffer with non-finite values
+        gf.grads["weight"].fill_(float("inf"))
+
+        model.zero_grad()
+        model(torch.randn(4, 10)).sum().backward()
+        with pytest.raises(RuntimeError, match="non-finite values"):
+            gf.apply(model)

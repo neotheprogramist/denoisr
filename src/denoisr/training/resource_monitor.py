@@ -1,41 +1,28 @@
 """System resource monitor for training metrics.
 
 Collects CPU/RAM/GPU samples during training and reports
-per-epoch averages and peaks. Gracefully degrades when
-subsystems are unavailable (no CUDA, no pynvml).
+per-epoch averages and peaks. When CUDA is available, GPU
+monitoring via NVML is required -- initialization failures
+propagate immediately.
 """
 
 from __future__ import annotations
 
+import logging
 from statistics import mean
 
 import psutil
 import torch
 
-
-def _try_init_nvml() -> bool:
-    """Attempt to initialize NVML. Returns True on success."""
-    try:
-        import pynvml
-
-        pynvml.nvmlInit()
-        return True
-    except ImportError, OSError:
-        return False
-
-
-def _get_nvml_handle() -> object | None:
-    """Get NVML handle for device 0, or None."""
-    try:
-        import pynvml
-
-        return pynvml.nvmlDeviceGetHandleByIndex(0)
-    except ImportError, OSError:
-        return None
+log = logging.getLogger(__name__)
 
 
 class ResourceMonitor:
     """Samples system resources and computes per-epoch avg/peak.
+
+    When CUDA is available, NVML *must* initialize successfully.
+    Any NVML failure propagates immediately -- there is no silent
+    degradation.
 
     Usage::
 
@@ -55,8 +42,13 @@ class ResourceMonitor:
         self._process.cpu_percent()
 
         self._has_cuda = torch.cuda.is_available()
-        self._has_nvml = self._has_cuda and _try_init_nvml()
-        self._nvml_handle = _get_nvml_handle() if self._has_nvml else None
+        if self._has_cuda:
+            import pynvml
+
+            pynvml.nvmlInit()
+            self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        else:
+            self._nvml_handle = None
 
         self._cpu_samples: list[float] = []
         self._ram_samples: list[float] = []
@@ -81,27 +73,22 @@ class ResourceMonitor:
 
         if self._has_cuda:
             self._gpu_mem_samples.append(torch.cuda.memory_allocated() / (1024 * 1024))
-
-        if self._has_nvml and self._nvml_handle is not None:
             self._sample_nvml()
 
     def _sample_nvml(self) -> None:
         """Sample GPU utilization, temperature, and power via NVML."""
-        try:
-            import pynvml
+        import pynvml
 
-            rates = pynvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
-            self._gpu_util_samples.append(float(rates.gpu))
+        rates = pynvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
+        self._gpu_util_samples.append(float(rates.gpu))
 
-            temp = pynvml.nvmlDeviceGetTemperature(
-                self._nvml_handle, pynvml.NVML_TEMPERATURE_GPU
-            )
-            self._gpu_temp_samples.append(float(temp))
+        temp = pynvml.nvmlDeviceGetTemperature(
+            self._nvml_handle, pynvml.NVML_TEMPERATURE_GPU
+        )
+        self._gpu_temp_samples.append(float(temp))
 
-            power = pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle)
-            self._gpu_power_samples.append(power / 1000.0)  # mW -> W
-        except ImportError, OSError, RuntimeError:
-            pass
+        power = pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle)
+        self._gpu_power_samples.append(power / 1000.0)  # mW -> W
 
     def summarize(self) -> dict[str, float]:
         """Compute avg/peak for all collected metrics.

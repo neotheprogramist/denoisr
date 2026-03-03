@@ -165,7 +165,7 @@ class Phase2Trainer:
             target_legal_mask = (
                 batch.legal_masks.reshape(B * Tm1, 64, 64)
                 if batch.legal_masks is not None
-                else None
+                else target_policy > 0
             )
             target_value = (
                 batch.values.unsqueeze(1).expand(B, Tm1, 3).reshape(B * Tm1, 3)
