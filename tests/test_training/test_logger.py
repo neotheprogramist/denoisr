@@ -30,6 +30,18 @@ def _read_log(path: pathlib.Path) -> str:
 
 
 class TestTrainingLogger:
+    def test_requires_root_logging_configuration(
+        self,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        logging.shutdown()
+        root = logging.getLogger()
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+
+        with pytest.raises(RuntimeError, match="Root logging is not configured"):
+            TrainingLogger(log_dir=tmp_path, run_name="test")
+
     def test_does_not_create_run_directory(
         self, tmp_path: pathlib.Path, log_path: pathlib.Path
     ) -> None:

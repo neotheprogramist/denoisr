@@ -34,7 +34,7 @@ def _make_cfg(tmp_path: Path) -> PipelineConfig:
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
             pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
-            stockfish_path="",
+            stockfish_path="stockfish",
             stockfish_depth=1,
             max_examples=10,
             workers=1,
@@ -224,7 +224,7 @@ def test_generate_data_calls_generate(tmp_path: Path) -> None:
         data=DataConfig(
             pgn_url="https://example.com/test.pgn.zst",
             pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
-            stockfish_path="",
+            stockfish_path="stockfish",
             stockfish_depth=10,
             max_examples=123,
             workers=4,
@@ -283,20 +283,20 @@ def test_generate_data_calls_generate(tmp_path: Path) -> None:
     ) as mock_gen:
         with patch("shutil.which", return_value="/usr/bin/stockfish"):
             step_generate_data(cfg, state)
-            mock_gen.assert_called_once()
-            kwargs = mock_gen.call_args.kwargs
-            assert kwargs["max_examples"] == 123
-            assert kwargs["stockfish_path"] == "/usr/bin/stockfish"
-            assert kwargs["chunksize"] == 512
-            assert kwargs["chunk_examples"] == 2048
-            assert kwargs["use_tqdm"] is False
+        mock_gen.assert_called_once()
+        kwargs = mock_gen.call_args.kwargs
+        assert kwargs["max_examples"] == 123
+        assert kwargs["stockfish_path"] == "/usr/bin/stockfish"
+        assert kwargs["chunksize"] == 512
+        assert kwargs["chunk_examples"] == 2048
+        assert kwargs["use_tqdm"] is False
 
     assert state.last_data != ""
     assert state.updated_at != ""
 
 
-def test_generate_data_skips_when_exists(tmp_path: Path) -> None:
-    """step_generate_data skips when output .pt file exists."""
+def test_generate_data_fails_when_legacy_artifact_missing_metadata(tmp_path: Path) -> None:
+    """Fail fast when output exists without metadata."""
     cfg = _make_cfg(tmp_path)
     state = PipelineState()
 
@@ -306,25 +306,76 @@ def test_generate_data_skips_when_exists(tmp_path: Path) -> None:
     data_path.write_text("fake")
 
     with patch("denoisr.scripts.generate_data.generate_to_file") as mock_gen:
-        step_generate_data(cfg, state)
+        with pytest.raises(
+            ValueError,
+            match="Training data artifact exists without metadata",
+        ):
+            step_generate_data(cfg, state)
         mock_gen.assert_not_called()
 
-    assert state.last_data == str(data_path)
 
-
-def test_generate_data_fails_fast_when_stockfish_missing(tmp_path: Path) -> None:
-    """Missing Stockfish should raise a clear error before worker startup."""
-    cfg = _make_cfg(tmp_path)
+def test_generate_data_fails_fast_when_stockfish_path_empty(tmp_path: Path) -> None:
+    """Pipeline requires explicit stockfish_path; no auto-detection."""
+    cfg = PipelineConfig(
+        data=DataConfig(
+            pgn_url="https://example.com/test.pgn.zst",
+            pgn_path=str(tmp_path / "data" / "lichess.pgn.zst"),
+            stockfish_path="",
+            stockfish_depth=1,
+            max_examples=10,
+            workers=1,
+            chunksize=16,
+            chunk_examples=32,
+        ),
+        model=ModelSectionConfig(
+            d_s=64,
+            num_heads=4,
+            num_layers=2,
+            ffn_dim=128,
+            num_timesteps=10,
+        ),
+        phase1=Phase1Config(
+            epochs=5,
+            lr=3e-4,
+            batch_size=32,
+            holdout_frac=0.05,
+            warmup_epochs=1,
+            weight_decay=1e-4,
+        ),
+        phase2=Phase2Config(
+            epochs=5,
+            lr=3e-4,
+            batch_size=16,
+            seq_len=4,
+            max_trajectories=20,
+        ),
+        phase3=Phase3Config(
+            generations=10,
+            games_per_gen=5,
+            reanalyse_per_gen=2,
+            mcts_sims=50,
+            buffer_capacity=128,
+            alpha_generations=4,
+            lr=1e-4,
+            train_batch_size=16,
+            diffusion_steps=4,
+            aux_updates_per_gen=1,
+            aux_batch_size=8,
+            aux_seq_len=4,
+            aux_lr=1e-4,
+            self_play_workers=0,
+            reanalyse_workers=0,
+            save_every=1,
+        ),
+        output=OutputConfig(
+            dir=str(tmp_path / "outputs"),
+            run_name="test-run",
+        ),
+    )
     state = PipelineState()
-    pgn_path = Path(cfg.data.pgn_path)
-    pgn_path.parent.mkdir(parents=True, exist_ok=True)
-    pgn_path.write_text("fake pgn")
 
-    with (
-        patch("denoisr.scripts.generate_data.generate_to_file") as mock_gen,
-        patch("shutil.which", return_value=None),
-    ):
-        with pytest.raises(FileNotFoundError, match="Stockfish not found in PATH"):
+    with patch("denoisr.scripts.generate_data.generate_to_file") as mock_gen:
+        with pytest.raises(ValueError, match="requires explicit data.stockfish_path"):
             step_generate_data(cfg, state)
         mock_gen.assert_not_called()
 

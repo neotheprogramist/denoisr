@@ -28,7 +28,10 @@ _KNOWN_PHASES: Final[frozenset[str]] = frozenset(
 def _normalize_phase(raw: object) -> PipelinePhase:
     if isinstance(raw, str) and raw in _KNOWN_PHASES:
         return cast(PipelinePhase, raw)
-    return "init"
+    raise ValueError(
+        "Invalid pipeline phase in state file: "
+        f"{raw!r}. Expected one of {sorted(_KNOWN_PHASES)}"
+    )
 
 
 @dataclass
@@ -59,6 +62,10 @@ class PipelineState:
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text())
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"Invalid pipeline state JSON at {path}: expected object, got {type(raw).__name__}"
+            )
         clean = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
-        clean["phase"] = _normalize_phase(clean.get("phase"))
+        clean["phase"] = _normalize_phase(clean.get("phase", "init"))
         return cls(**clean)

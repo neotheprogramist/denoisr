@@ -22,7 +22,6 @@ import multiprocessing
 import os
 import random
 import shutil
-import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -495,9 +494,7 @@ def main() -> None:
         parser,
         "--stockfish",
         env_var="DENOISR_STOCKFISH_PATH",
-        default=None,
-        required=False,
-        help="Path to Stockfish binary (auto-detected from PATH if omitted)",
+        help="Path to Stockfish binary (required, no auto-detection)",
     )
     add_env_argument(
         parser,
@@ -582,12 +579,17 @@ def main() -> None:
     args = parser.parse_args()
     log.info("logging to %s", log_path)
 
-    stockfish_path = args.stockfish or shutil.which("stockfish")
-    if stockfish_path is None:
-        log.error(
-            "Stockfish not found. Install it or pass --stockfish /path/to/stockfish",
+    stockfish_path = str(args.stockfish).strip()
+    if stockfish_path == "":
+        raise ValueError("--stockfish must be a non-empty executable path or command")
+    resolved_stockfish = shutil.which(stockfish_path)
+    if resolved_stockfish is not None:
+        stockfish_path = resolved_stockfish
+    elif not (Path(stockfish_path).exists() and os.access(stockfish_path, os.X_OK)):
+        raise FileNotFoundError(
+            "Configured Stockfish binary is not executable: "
+            f"{stockfish_path}. Pass --stockfish with an executable path."
         )
-        sys.exit(1)
 
     count = generate_to_file(
         pgn_path=Path(args.pgn),

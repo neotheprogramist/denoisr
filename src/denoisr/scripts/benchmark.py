@@ -10,7 +10,6 @@ benchmarked against the same opponent, and a comparison table is printed.
 import logging
 import math
 import shlex
-import shutil
 import sys
 from importlib import resources
 from pathlib import Path
@@ -209,8 +208,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--opponent-cmd",
-        default=None,
-        help="Command to run the opponent engine (default: auto-detect stockfish)",
+        default="stockfish",
+        help="Command to run the opponent engine (default: stockfish)",
     )
     parser.add_argument(
         "--opponent-args",
@@ -293,10 +292,7 @@ def main() -> None:
         # In head-to-head mode the baseline IS the opponent
         opponent_cmd = args.baseline_cmd
     else:
-        opponent_cmd = args.opponent_cmd or shutil.which("stockfish")
-        if opponent_cmd is None:
-            logger.error("Stockfish not found. Install it or pass --opponent-cmd")
-            sys.exit(1)
+        opponent_cmd = args.opponent_cmd
 
     if args.opponent_elo is not None and args.opponent_elo < 1320:
         logger.warning(
@@ -375,9 +371,7 @@ def main() -> None:
     # --- Resolve analysis settings ---
     pgn_dir = Path(args.pgn_out) if args.pgn_out else None
     analysis_concurrency = args.analysis_concurrency or args.concurrency
-    stockfish_for_analysis = (
-        args.opponent_cmd or shutil.which("stockfish") or "stockfish"
-    )
+    stockfish_for_analysis = opponent_cmd
 
     sep = "=" * 60
     if args.head_to_head:

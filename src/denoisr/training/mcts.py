@@ -134,11 +134,17 @@ class MCTS:
 
         total_visits = visit_dist.sum()
         if total_visits > 0:
-            if self._config.temperature == 0:
+            temperature = float(self._config.temperature)
+            if temperature <= 0.0:
                 best = visit_dist.argmax()
-                visit_dist = torch.zeros(64, 64)
+                visit_dist = torch.zeros(64, 64, device=visit_dist.device)
                 visit_dist.view(-1)[best] = 1.0
             else:
+                # MuZero-style temperature on visit counts:
+                # pi(a) ∝ N(a)^(1 / tau). tau=1 reduces to normalized counts.
+                if abs(temperature - 1.0) > 1e-6:
+                    visit_dist = visit_dist.pow(1.0 / temperature)
+                    total_visits = visit_dist.sum()
                 visit_dist = visit_dist / total_visits
 
         return visit_dist

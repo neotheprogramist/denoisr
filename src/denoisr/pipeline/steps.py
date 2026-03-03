@@ -99,11 +99,11 @@ def _load_artifact_meta(artifact: Path) -> dict[str, Any] | None:
     try:
         raw = json.loads(meta_path.read_text())
     except (OSError, ValueError, TypeError) as exc:
-        log.warning("Ignoring unreadable artifact metadata %s (%s)", meta_path, exc)
-        return None
+        raise ValueError(
+            f"Unreadable artifact metadata {meta_path}: {exc}"
+        ) from exc
     if not isinstance(raw, dict):
-        log.warning("Ignoring invalid artifact metadata %s (not an object)", meta_path)
-        return None
+        raise ValueError(f"Invalid artifact metadata {meta_path}: expected JSON object")
     return raw
 
 
@@ -400,25 +400,20 @@ def step_generate_data(
     data_path = output_dir / "training_data.pt"
 
     stockfish_cfg = cfg.data.stockfish_path.strip()
-    if stockfish_cfg:
-        stockfish_path = stockfish_cfg
-        stockfish_resolved = shutil.which(stockfish_path)
-        if stockfish_resolved is not None:
-            stockfish_path = stockfish_resolved
-        elif not (Path(stockfish_path).exists() and os.access(stockfish_path, os.X_OK)):
-            raise FileNotFoundError(
-                "Configured Stockfish binary is not executable: "
-                f"{stockfish_path}. Set [data].stockfish_path to a valid "
-                "path or leave it empty to auto-detect from PATH."
-            )
-    else:
-        detected = shutil.which("stockfish")
-        if not detected:
-            raise FileNotFoundError(
-                "Stockfish not found in PATH. Set DENOISR_STOCKFISH_PATH "
-                "or [data].stockfish_path to an absolute Stockfish binary path."
-            )
-        stockfish_path = detected
+    if not stockfish_cfg:
+        raise ValueError(
+            "Pipeline requires explicit data.stockfish_path. "
+            "Auto-detection from PATH is disabled."
+        )
+    stockfish_path = stockfish_cfg
+    stockfish_resolved = shutil.which(stockfish_path)
+    if stockfish_resolved is not None:
+        stockfish_path = stockfish_resolved
+    elif not (Path(stockfish_path).exists() and os.access(stockfish_path, os.X_OK)):
+        raise FileNotFoundError(
+            "Configured Stockfish binary is not executable: "
+            f"{stockfish_path}. Set data.stockfish_path to an executable path."
+        )
 
     from denoisr.scripts.config import resolve_workers
 
@@ -442,12 +437,10 @@ def step_generate_data(
     if data_path.exists():
         existing_meta = _load_artifact_meta(data_path)
         if existing_meta is None:
-            log.info(
-                "Training data exists at %s without metadata (legacy artifact), skipping",
-                data_path,
+            raise ValueError(
+                "Training data artifact exists without metadata: "
+                f"{data_path}. Delete the artifact and regenerate."
             )
-            _update_state(state, last_data=data_path)
-            return
         log.info(
             "Training data exists at %s but metadata is stale; regenerating",
             data_path,

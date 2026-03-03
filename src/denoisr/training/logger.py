@@ -25,26 +25,21 @@ class TrainingLogger:
         self._last_warned_grok_state: int | None = None
 
         log_dir.mkdir(parents=True, exist_ok=True)
-        self._ensure_root_logging(log_dir)
+        self._require_root_logging()
 
         self._metrics_logger = logging.getLogger(f"denoisr.metrics.{self._run_name}")
         self._metrics_logger.setLevel(logging.INFO)
         self._metrics_logger.propagate = True
 
     @staticmethod
-    def _ensure_root_logging(log_dir: Path) -> None:
-        """Install a fallback file logger when scripts forgot to configure logging."""
+    def _require_root_logging() -> None:
+        """Fail fast when scripts forgot to configure root logging."""
         root = logging.getLogger()
-        if root.handlers:
-            return
-        fallback_path = log_dir / "denoisr.log"
-        fallback_path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(fallback_path, encoding="utf-8")
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-        )
-        root.setLevel(logging.INFO)
-        root.addHandler(handler)
+        if not root.handlers:
+            raise RuntimeError(
+                "Root logging is not configured. Call configure_logging() "
+                "before constructing TrainingLogger."
+            )
 
     def log_epoch_line(
         self,

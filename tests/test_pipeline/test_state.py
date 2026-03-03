@@ -1,4 +1,7 @@
 from pathlib import Path
+
+import pytest
+
 from denoisr.pipeline.state import PipelineState
 
 
@@ -41,10 +44,10 @@ def test_load_ignores_unknown_fields(tmp_path: Path) -> None:
     assert state.phase == "fetched"
 
 
-def test_load_invalid_phase_falls_back_to_init(tmp_path: Path) -> None:
+def test_load_invalid_phase_fails_fast(tmp_path: Path) -> None:
     import json
 
     path = tmp_path / "state.json"
     path.write_text(json.dumps({"phase": "broken_state"}))
-    state = PipelineState.load(path)
-    assert state.phase == "init"
+    with pytest.raises(ValueError, match="Invalid pipeline phase"):
+        PipelineState.load(path)

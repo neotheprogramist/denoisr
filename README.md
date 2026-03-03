@@ -149,7 +149,7 @@ uv run denoisr-generate-data \
     --output outputs/training_data.pt
 ```
 
-Stockfish is auto-detected from PATH. Pass `--stockfish /path/to/stockfish` to override.
+`--stockfish` is required and must point to an executable binary (or command name resolvable on `PATH`).
 
 Generation stops after writing `--max-examples` streamed positions from the PGN.
 Defaults below reflect the recommended `.env.example` profile.
@@ -175,7 +175,7 @@ Done: 4000000 examples generated.
 | Flag                   | Default                    | Description                                                     |
 | ---------------------- | -------------------------- | --------------------------------------------------------------- |
 | `--pgn`                | (required)                 | Path to `.pgn` or `.pgn.zst` file                               |
-| `--stockfish`          | auto-detect PATH           | Path to Stockfish binary                                        |
+| `--stockfish`          | (required)                 | Path to Stockfish binary                                        |
 | `--stockfish-depth`    | `10`                       | Stockfish analysis depth (higher = better)                      |
 | `--max-examples`       | `4000000`                  | Training examples to generate                                   |
 | `--workers`            | `64`                       | Worker processes (each runs its own Stockfish)                  |
@@ -608,7 +608,7 @@ uv run denoisr-benchmark \
     --sprt-elo1 50
 ```
 
-Games run in parallel across `64` workers (each owning a persistent engine + Stockfish subprocess pair). A bundled opening book ensures game variety. Stockfish is auto-detected from PATH.
+Games run in parallel across `64` workers (each owning a persistent engine + Stockfish subprocess pair). A bundled opening book ensures game variety.
 
 ### Trained model vs random baseline with Elo estimation
 
@@ -700,7 +700,7 @@ outputs/pgn/
 | `--engine-cmd`           | (required)              | Command to run the Denoisr UCI engine      |
 | `--baseline-cmd`         | (none)                  | Baseline engine for comparison             |
 | `--head-to-head`         | off                     | Play engine vs baseline directly           |
-| `--opponent-cmd`         | auto-detect `stockfish` | Opponent engine command                    |
+| `--opponent-cmd`         | `stockfish`             | Opponent engine command                    |
 | `--opponent-elo`         | full strength           | Limit opponent via UCI_Elo (e.g. 1200)     |
 | `--opponent-skill`       | (none)                  | Stockfish Skill Level 0-20 (0 = weakest)   |
 | `--games`                | `100`                   | Number of games to play                    |
