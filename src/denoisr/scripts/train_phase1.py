@@ -73,6 +73,12 @@ _STABILITY_GUARD_LR_BACKOFF = 0.5
 _STABILITY_GUARD_MAX_BACKOFFS = 4
 _STABILITY_GUARD_DISABLE_GROKFAST_AFTER = 1
 _STABILITY_GUARD_COOLDOWN_EPOCHS = 1
+_OVERFLOW_BACKOFF_MIN_EPOCH = 3
+_OVERFLOW_BACKOFF_FRAC = 1e-4
+_OVERFLOW_BACKOFF_STREAK = 2
+_OVERFLOW_BACKOFF_LR_FACTOR = 0.85
+_OVERFLOW_BACKOFF_MAX_BACKOFFS = 4
+_OVERFLOW_BACKOFF_COOLDOWN_EPOCHS = 1
 
 
 @dataclass(frozen=True)
@@ -97,6 +103,16 @@ class _TensorDataPlan:
 class _StabilityGuardDecision:
     trigger: bool
     reason: str = ""
+
+
+def _amp_dtype_name(dtype: torch.dtype | None) -> str:
+    if dtype is None:
+        return "fp32"
+    if dtype == torch.bfloat16:
+        return "bf16"
+    if dtype == torch.float16:
+        return "fp16"
+    return str(dtype)
 
 
 class _IndexedTensorDataset(Dataset[tuple[Tensor, Tensor, Tensor]]):
@@ -846,6 +862,23 @@ def main() -> None:
         for shard in data_plan.shards
         if shard.train_indices.numel() > 0
     )
+    requested_amp_dtype = resolve_amp_dtype(tcfg)
+    active_amp_dtype = requested_amp_dtype
+    if device.type == "cuda" and active_amp_dtype != torch.bfloat16:
+        if torch.cuda.is_bf16_supported():
+            log.warning(
+                "Overriding amp_dtype=%s to bf16 on CUDA to minimize overflow risk.",
+                _amp_dtype_name(active_amp_dtype),
+            )
+            active_amp_dtype = torch.bfloat16
+        else:
+            log.warning(
+                (
+                    "CUDA device reports bf16 unsupported; keeping amp_dtype=%s. "
+                    "Overflow risk may be higher."
+                ),
+                _amp_dtype_name(active_amp_dtype),
+            )
     trainer = SupervisedTrainer(
         encoder=encoder,
         backbone=backbone,
@@ -866,7 +899,14 @@ def main() -> None:
         onecycle_pct_start=tcfg.onecycle_pct_start,
         steps_per_epoch=steps_per_epoch,
         accumulation_steps=tcfg.gradient_accumulation_steps,
-        amp_dtype=resolve_amp_dtype(tcfg),
+        amp_dtype=active_amp_dtype,
+    )
+    log.info(
+        "AMP config: requested=%s active=%s autocast=%s grad_scaler=%s",
+        _amp_dtype_name(requested_amp_dtype),
+        _amp_dtype_name(trainer.amp_dtype),
+        trainer.amp_autocast_enabled,
+        trainer.amp_scaler_enabled,
     )
     swa_start_epoch = max(1, math.ceil(args.epochs * _SWA_START_FRACTION))
     swa_model = ModelSWA(
@@ -949,10 +989,12 @@ def main() -> None:
                 "encoder_lr_multiplier": tcfg.encoder_lr_multiplier,
                 "min_lr": tcfg.min_lr,
                 "warmup_epochs": tcfg.warmup_epochs,
+                "amp_dtype": _amp_dtype_name(trainer.amp_dtype),
                 "policy_weight": tcfg.policy_weight,
                 "value_weight": tcfg.value_weight,
                 "use_harmony_dream": tcfg.use_harmony_dream,
                 "workers": worker_count,
+                "grokfast_lamb": tcfg.grokfast_lamb,
                 "grokfast_start_epoch": tcfg.grokfast_start_epoch,
                 "grokfast_plateau_epochs": tcfg.grokfast_plateau_epochs,
                 "phase1_ema_eval_every": tcfg.phase1_ema_eval_every,
@@ -964,6 +1006,9 @@ def main() -> None:
 
         global_step = 0
         consecutive_overflow_epochs = 0
+        overflow_backoff_streak = 0
+        overflow_backoff_count = 0
+        overflow_backoff_cooldown_until_epoch = 0
         stability_backoff_count = 0
         stability_guard_cooldown_until_epoch = 0
         grokfast_disabled_by_guard = False
@@ -1223,6 +1268,10 @@ def main() -> None:
                     overflow_count,
                     num_batches,
                 )
+            if overflow_count > 0 and overflow_frac >= _OVERFLOW_BACKOFF_FRAC:
+                overflow_backoff_streak += 1
+            else:
+                overflow_backoff_streak = 0
             if overflow_count >= num_batches and num_batches > 0:
                 consecutive_overflow_epochs += 1
             else:
@@ -1275,11 +1324,15 @@ def main() -> None:
                 overflows=overflow_count,
                 phase="phase1",
             )
+            amp_scaler_scale = trainer.amp_scaler_scale()
+            scaler_state = "off"
+            if amp_scaler_scale is not None:
+                scaler_state = f"{amp_scaler_scale:.0f}"
             log.info(
                 (
                     "Epoch %d/%d summary: loss=%.4f pol=%.4f val=%.4f "
                     "top1=%.2f%% top5=%.2f%% selected=%s(%.2f%%) "
-                    "lr=%.2e sps=%.0f data=%.1f%% ovf=%d"
+                    "lr=%.2e sps=%.0f data=%.1f%% ovf=%d(%.3f%%) amp=%s scaler=%s"
                 ),
                 epoch_num,
                 args.epochs,
@@ -1294,6 +1347,9 @@ def main() -> None:
                 samples_per_sec,
                 data_time / max(epoch_duration, 1e-9) * 100.0,
                 overflow_count,
+                overflow_frac * 100.0,
+                _amp_dtype_name(trainer.amp_dtype),
+                scaler_state,
             )
 
             # --- Grokking detection: evaluate all holdout splits ---
@@ -1425,6 +1481,39 @@ def main() -> None:
                     stability_guard_cooldown_until_epoch,
                 )
                 continue
+
+            if (
+                overflow_backoff_streak >= _OVERFLOW_BACKOFF_STREAK
+                and epoch_num >= _OVERFLOW_BACKOFF_MIN_EPOCH
+                and overflow_backoff_count < _OVERFLOW_BACKOFF_MAX_BACKOFFS
+                and epoch_num > overflow_backoff_cooldown_until_epoch
+            ):
+                old_lrs, new_lrs = trainer.backoff_learning_rates(
+                    _OVERFLOW_BACKOFF_LR_FACTOR,
+                    min_lr=tcfg.min_lr,
+                )
+                trainer.reset_amp_scaler()
+                if grokfast_enabled:
+                    trainer.reset_grokfast_filter()
+                overflow_backoff_count += 1
+                overflow_backoff_streak = 0
+                overflow_backoff_cooldown_until_epoch = (
+                    epoch_num + _OVERFLOW_BACKOFF_COOLDOWN_EPOCHS
+                )
+                log.warning(
+                    (
+                        "Overflow mitigation applied: overflow_frac=%.3f%% "
+                        "for %d consecutive epoch(s). head_lr %.2e->%.2e "
+                        "backoff=%d/%d cooldown_until_epoch=%d"
+                    ),
+                    overflow_frac * 100.0,
+                    _OVERFLOW_BACKOFF_STREAK,
+                    max(old_lrs),
+                    max(new_lrs),
+                    overflow_backoff_count,
+                    _OVERFLOW_BACKOFF_MAX_BACKOFFS,
+                    overflow_backoff_cooldown_until_epoch,
+                )
 
             if selected_top1 > best_acc:
                 best_acc = selected_top1

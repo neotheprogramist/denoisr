@@ -109,7 +109,6 @@ class SupervisedTrainer:
                     eta_min=min_lr,
                 )
             )
-            self._scheduler.base_lrs = list(self._base_lrs)
         else:
             # Start at 1/N of peak LR; warmup will ramp up from here
             for g, base_lr in zip(param_groups, self._base_lrs):
@@ -119,8 +118,26 @@ class SupervisedTrainer:
                 T_max=max(1, total_epochs - warmup_epochs),
                 eta_min=min_lr,
             )
+        if hasattr(self._scheduler, "base_lrs"):
             self._scheduler.base_lrs = list(self._base_lrs)
         self._epoch = 0
+
+    @property
+    def amp_dtype(self) -> torch.dtype | None:
+        return self._amp_dtype
+
+    @property
+    def amp_autocast_enabled(self) -> bool:
+        return self._autocast_enabled
+
+    @property
+    def amp_scaler_enabled(self) -> bool:
+        return self.scaler.is_enabled()
+
+    def amp_scaler_scale(self) -> float | None:
+        if not self.scaler.is_enabled():
+            return None
+        return float(self.scaler.get_scale())
 
     def _has_nonfinite_gradients(self) -> bool:
         for param in self._params:
