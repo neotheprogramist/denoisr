@@ -63,10 +63,11 @@ _GROK_HOLDOUT_SPLITS = ("random", "game_level", "opening_family", "piece_count")
 _DATALOADER_PREFETCH_FACTOR = 2
 _STABILITY_GUARD_ENABLED = True
 _STABILITY_GUARD_MIN_EPOCH = 2
-_STABILITY_GUARD_DROP_RATIO = 0.75
-_STABILITY_GUARD_MIN_DROP = 0.10
+_STABILITY_GUARD_DROP_RATIO = 0.85
+_STABILITY_GUARD_MIN_DROP = 0.05
 _STABILITY_GUARD_OVERFLOW_FRAC = 5e-4
 _STABILITY_GUARD_GRAD_PEAK = 100.0
+_STABILITY_GUARD_LOSS_MULTIPLIER = 2.5
 _STABILITY_GUARD_LR_BACKOFF = 0.5
 _STABILITY_GUARD_MAX_BACKOFFS = 4
 _STABILITY_GUARD_DISABLE_GROKFAST_AFTER = 1
@@ -595,6 +596,8 @@ def _evaluate_stability_guard(
     epoch_num: int,
     best_top1: float,
     current_top1: float,
+    best_loss: float | None,
+    current_loss: float,
     overflow_frac: float,
     grad_peak: float,
     backoff_count: int,
@@ -604,11 +607,10 @@ def _evaluate_stability_guard(
     min_drop: float,
     overflow_frac_threshold: float,
     grad_peak_threshold: float,
+    loss_multiplier: float,
     max_backoffs: int,
 ) -> _StabilityGuardDecision:
     if not enabled:
-        return _StabilityGuardDecision(trigger=False)
-    if best_top1 <= 0.0:
         return _StabilityGuardDecision(trigger=False)
     if epoch_num < min_epoch:
         return _StabilityGuardDecision(trigger=False)
@@ -617,25 +619,44 @@ def _evaluate_stability_guard(
     if epoch_num <= cooldown_until_epoch:
         return _StabilityGuardDecision(trigger=False)
 
-    drop = best_top1 - current_top1
-    if drop < min_drop:
-        return _StabilityGuardDecision(trigger=False)
-
-    ratio = current_top1 / max(best_top1, 1e-12)
-    if ratio > drop_ratio:
-        return _StabilityGuardDecision(trigger=False)
-
     overflow_signal = overflow_frac >= overflow_frac_threshold
     grad_signal = math.isfinite(grad_peak) and grad_peak >= grad_peak_threshold
     if not (overflow_signal or grad_signal):
         return _StabilityGuardDecision(trigger=False)
 
-    reasons: list[str] = [
-        (
-            f"top1 dropped {drop * 100:.2f}pp "
-            f"(best={best_top1 * 100:.2f}%, now={current_top1 * 100:.2f}%)"
+    reasons: list[str] = []
+    collapse_signal = False
+    if best_top1 > 0.0:
+        drop = best_top1 - current_top1
+        ratio = current_top1 / max(best_top1, 1e-12)
+        if drop >= min_drop and ratio <= drop_ratio:
+            collapse_signal = True
+            reasons.append(
+                (
+                    f"top1 dropped {drop * 100:.2f}pp "
+                    f"(best={best_top1 * 100:.2f}%, now={current_top1 * 100:.2f}%)"
+                )
+            )
+
+    loss_explosion_signal = False
+    if (
+        best_loss is not None
+        and math.isfinite(best_loss)
+        and best_loss > 0.0
+        and math.isfinite(current_loss)
+        and current_loss >= (best_loss * loss_multiplier)
+    ):
+        loss_explosion_signal = True
+        reasons.append(
+            (
+                f"loss exploded {current_loss:.4f} vs best {best_loss:.4f} "
+                f"(x{current_loss / max(best_loss, 1e-12):.1f})"
+            )
         )
-    ]
+
+    if not (collapse_signal or loss_explosion_signal):
+        return _StabilityGuardDecision(trigger=False)
+
     if overflow_signal:
         reasons.append(f"overflow_frac={overflow_frac * 100:.3f}%")
     if grad_signal:
@@ -931,6 +952,7 @@ def main() -> None:
         # --- Train ---
         best_acc = 0.0
         best_source = "base"
+        best_loss: float | None = None
 
         logger.log_hparams(
             {
@@ -1026,6 +1048,8 @@ def main() -> None:
             value_loss_sum = 0.0
             policy_loss_count = 0
             value_loss_count = 0
+            hidden_loss_sums: dict[str, float] = {}
+            hidden_loss_counts: dict[str, int] = {}
             overflow_count = 0
             data_time = 0.0
 
@@ -1096,6 +1120,25 @@ def main() -> None:
                     if math.isfinite(value_loss):
                         value_loss_sum += value_loss
                         value_loss_count += 1
+                    for name, raw_value in breakdown.items():
+                        if name in {
+                            "policy",
+                            "value",
+                            "total",
+                            "grad_norm",
+                            "batch_top1",
+                            "overflow",
+                        }:
+                            continue
+                        if isinstance(raw_value, bool):
+                            continue
+                        value_scalar = float(raw_value)
+                        if not math.isfinite(value_scalar):
+                            continue
+                        hidden_loss_sums[name] = (
+                            hidden_loss_sums.get(name, 0.0) + value_scalar
+                        )
+                        hidden_loss_counts[name] = hidden_loss_counts.get(name, 0) + 1
                     if breakdown.get("overflow", False):
                         overflow_count += 1
                     else:
@@ -1152,6 +1195,11 @@ def main() -> None:
             current_lr = trainer.optimizer.param_groups[0]["lr"]
             avg_policy_loss = policy_loss_sum / max(policy_loss_count, 1)
             avg_value_loss = value_loss_sum / max(value_loss_count, 1)
+            avg_hidden_losses = {
+                name: hidden_loss_sums[name] / max(hidden_loss_counts.get(name, 0), 1)
+                for name in sorted(hidden_loss_sums)
+            }
+            loss_coefficients = loss_fn.get_coefficients()
             overflow_frac = overflow_count / max(num_batches, 1)
 
             skipped_loss_batches = num_batches - num_loss_batches
@@ -1257,6 +1305,28 @@ def main() -> None:
                 _amp_dtype_name(trainer.amp_dtype),
                 scaler_state,
             )
+            if avg_hidden_losses:
+                hidden_terms = ",".join(
+                    (
+                        f"{name}={avg_hidden_losses[name]:.4f}"
+                        f"@w={loss_coefficients.get(name, 1.0):.4g}"
+                    )
+                    for name in sorted(avg_hidden_losses)
+                )
+                coeff_snapshot = ",".join(
+                    (
+                        f"{name}={loss_coefficients.get(name, 1.0):.4g}"
+                        for name in ("policy", "value", *sorted(avg_hidden_losses))
+                    )
+                )
+                log.info("Epoch %d hidden losses: %s", epoch_num, hidden_terms)
+                logger.log_epoch_summary(
+                    {
+                        "epoch": f"{epoch_num}/{args.epochs}",
+                        "hidden_losses": hidden_terms,
+                        "coeffs": coeff_snapshot,
+                    }
+                )
 
             # --- Grokking detection: evaluate all holdout splits ---
             if grok_tracker is not None:
@@ -1307,6 +1377,8 @@ def main() -> None:
                 epoch_num=epoch_num,
                 best_top1=best_acc,
                 current_top1=selected_top1,
+                best_loss=best_loss,
+                current_loss=avg_loss,
                 overflow_frac=overflow_frac,
                 grad_peak=grad_norm_peak,
                 backoff_count=stability_backoff_count,
@@ -1316,6 +1388,7 @@ def main() -> None:
                 min_drop=_STABILITY_GUARD_MIN_DROP,
                 overflow_frac_threshold=_STABILITY_GUARD_OVERFLOW_FRAC,
                 grad_peak_threshold=_STABILITY_GUARD_GRAD_PEAK,
+                loss_multiplier=_STABILITY_GUARD_LOSS_MULTIPLIER,
                 max_backoffs=_STABILITY_GUARD_MAX_BACKOFFS,
             )
             if guard_decision.trigger:
@@ -1387,6 +1460,11 @@ def main() -> None:
                     stability_guard_cooldown_until_epoch,
                 )
                 continue
+
+            if math.isfinite(avg_loss) and (
+                best_loss is None or avg_loss < best_loss
+            ):
+                best_loss = avg_loss
 
             if (
                 overflow_backoff_streak >= _OVERFLOW_BACKOFF_STREAK
