@@ -214,6 +214,18 @@ def main() -> None:
     )
     add_env_argument(
         parser,
+        "--micro-batch-size",
+        env_var="DENOISR_PHASE2_MICRO_BATCH_SIZE",
+        type=int,
+        default=None,
+        required=False,
+        help=(
+            "Optional in-step microbatch size for Phase 2 to reduce CUDA memory "
+            "pressure (defaults to --batch-size)."
+        ),
+    )
+    add_env_argument(
+        parser,
         "--epochs",
         env_var="DENOISR_PHASE2_EPOCHS",
         type=int,
@@ -307,6 +319,7 @@ def main() -> None:
         curriculum_initial_fraction=tcfg.curriculum_initial_fraction,
         curriculum_growth=tcfg.curriculum_growth,
         amp_dtype=resolve_amp_dtype(tcfg),
+        microbatch_size=args.micro_batch_size,
     )
 
     # --- EMA shadow model (opt-in) ---
@@ -363,9 +376,10 @@ def main() -> None:
         loader_kwargs["prefetch_factor"] = _DATALOADER_PREFETCH_FACTOR
     loader = DataLoader(train_dataset, **loader_kwargs)
     log.info(
-        "phase2 dataloader config: workers=%d  batch_size=%d",
+        "phase2 dataloader config: workers=%d  batch_size=%d  micro_batch_size=%s",
         worker_count,
         args.batch_size,
+        args.micro_batch_size if args.micro_batch_size is not None else "auto",
     )
 
     monitor = ResourceMonitor()

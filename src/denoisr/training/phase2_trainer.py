@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 
 import torch
@@ -8,6 +9,8 @@ from torch.nn import functional as F
 
 from denoisr.nn.diffusion import ChessDiffusionModule, CosineNoiseSchedule, DPMSolverPP
 from denoisr.training.loss import ChessLossComputer
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,20 @@ class TrajectoryBatch:
                     f"(boards T={T})"
                 )
 
+    def slice(self, start: int, end: int) -> "TrajectoryBatch":
+        """Return a batch view spanning [start, end)."""
+        return TrajectoryBatch(
+            boards=self.boards[start:end],
+            actions_from=self.actions_from[start:end],
+            actions_to=self.actions_to[start:end],
+            policies=self.policies[start:end],
+            values=self.values[start:end],
+            rewards=self.rewards[start:end],
+            legal_masks=(
+                self.legal_masks[start:end] if self.legal_masks is not None else None
+            ),
+        )
+
 
 class Phase2Trainer:
     """Unified Phase 2 trainer with all 6 loss terms."""
@@ -85,6 +102,7 @@ class Phase2Trainer:
         curriculum_growth: float = 1.02,
         freeze_encoder: bool = True,
         amp_dtype: torch.dtype | None = None,
+        microbatch_size: int | None = None,
     ) -> None:
         self.encoder = encoder
         self.backbone = backbone
@@ -104,6 +122,9 @@ class Phase2Trainer:
         )
         self._autocast_enabled = amp_dtype is not None and self.device.type == "cuda"
         self._amp_dtype = amp_dtype
+        if microbatch_size is not None and microbatch_size <= 0:
+            raise ValueError("microbatch_size must be > 0 when provided")
+        self._microbatch_size = microbatch_size
 
         # Freeze encoder for standard Phase 2 training. Phase 3 auxiliary
         # updates can disable this to avoid interfering with other optimizers.
@@ -131,19 +152,15 @@ class Phase2Trainer:
         self._current_max_steps = initial_steps
         self._curriculum_growth = curriculum_growth
 
-    def train_step(self, batch: TrajectoryBatch) -> tuple[float, dict[str, float]]:
+    def _forward_loss(self, batch: TrajectoryBatch) -> tuple[Tensor, dict[str, float]]:
         B, T = batch.boards.shape[:2]
         Tm1 = T - 1
 
-        self.encoder.eval()
-        self.backbone.train()
-        self.policy_head.train()
-        self.value_head.train()
-        self.world_model.train()
-        self.diffusion.train()
-        self.consistency.train()
-
-        with autocast(self._autocast_device, enabled=self._autocast_enabled, dtype=self._amp_dtype):
+        with autocast(
+            self._autocast_device,
+            enabled=self._autocast_enabled,
+            dtype=self._amp_dtype,
+        ):
             # 1. Encode all boards (frozen encoder)
             with torch.no_grad():
                 flat_boards = batch.boards.reshape(B * T, *batch.boards.shape[2:])
@@ -219,9 +236,42 @@ class Phase2Trainer:
                 reward_loss=reward_loss,
                 state_loss=state_loss,
             )
+        return total, breakdown
 
-        self.optimizer.zero_grad()
-        self.scaler.scale(total).backward()  # type: ignore[no-untyped-call]
+    def _train_step_chunked(
+        self,
+        batch: TrajectoryBatch,
+        *,
+        chunk_size: int,
+    ) -> tuple[float, dict[str, float]]:
+        batch_size = batch.boards.shape[0]
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        chunk_size = max(1, min(chunk_size, batch_size))
+
+        self.encoder.eval()
+        self.backbone.train()
+        self.policy_head.train()
+        self.value_head.train()
+        self.world_model.train()
+        self.diffusion.train()
+        self.consistency.train()
+
+        self.optimizer.zero_grad(set_to_none=True)
+        weighted_loss = 0.0
+        weighted_breakdown: dict[str, float] = {}
+
+        for start in range(0, batch_size, chunk_size):
+            end = min(batch_size, start + chunk_size)
+            weight = float(end - start) / float(batch_size)
+            total, breakdown = self._forward_loss(batch.slice(start, end))
+            self.scaler.scale(total * weight).backward()  # type: ignore[no-untyped-call]
+            weighted_loss += total.detach().item() * weight
+            for key, value in breakdown.items():
+                weighted_breakdown[key] = weighted_breakdown.get(key, 0.0) + (
+                    float(value) * weight
+                )
+
         self.scaler.unscale_(self.optimizer)
         total_norm = torch.nn.utils.clip_grad_norm_(
             [p for group in self.optimizer.param_groups for p in group["params"]],
@@ -230,8 +280,36 @@ class Phase2Trainer:
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        breakdown["grad_norm"] = total_norm.item()
-        return total.item(), breakdown
+        weighted_breakdown["grad_norm"] = total_norm.item()
+        return weighted_loss, weighted_breakdown
+
+    def train_step(self, batch: TrajectoryBatch) -> tuple[float, dict[str, float]]:
+        batch_size = batch.boards.shape[0]
+        chunk_size = self._microbatch_size or batch_size
+        chunk_size = max(1, min(chunk_size, batch_size))
+
+        while True:
+            try:
+                return self._train_step_chunked(batch, chunk_size=chunk_size)
+            except torch.OutOfMemoryError:
+                if self.device.type != "cuda" or chunk_size <= 1:
+                    raise
+                next_chunk_size = max(1, chunk_size // 2)
+                if next_chunk_size == chunk_size:
+                    raise
+                log.warning(
+                    (
+                        "CUDA OOM in Phase 2 train_step "
+                        "(batch=%d seq_len=%d chunk=%d). Retrying with chunk=%d."
+                    ),
+                    batch_size,
+                    batch.boards.shape[1],
+                    chunk_size,
+                    next_chunk_size,
+                )
+                self.optimizer.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+                chunk_size = next_chunk_size
 
     @property
     def current_max_steps(self) -> int:

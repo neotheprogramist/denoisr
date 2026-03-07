@@ -254,6 +254,7 @@ Gate to Phase 3: diffusion-conditioned accuracy must exceed single-step by >5 pe
 | `--seq-len`          | `10`                | Board states per trajectory (9 future states for diffusion) |
 | `--max-trajectories` | `30000`             | Trajectories to extract                                     |
 | `--batch-size`       | `128`               | Batch size                                                  |
+| `--micro-batch-size` | (disabled)          | Optional in-step microbatching to prevent CUDA OOM          |
 | `--epochs`           | `100`               | Training epochs                                             |
 | `--lr`               | `3e-4`              | Learning rate                                               |
 | `--output`           | `outputs/phase2.pt` | Checkpoint path                                             |

@@ -203,6 +203,18 @@ class TestPhase2Trainer:
         late_avg = sum(losses[-5:]) / 5
         assert late_avg < early_avg
 
+    def test_train_step_with_microbatching(
+        self,
+        trainer: Phase2Trainer,
+        device: torch.device,
+    ) -> None:
+        trainer._microbatch_size = 1
+        batch = _make_trajectory_batch(B=3, device=device)
+        loss, breakdown = trainer.train_step(batch)
+        assert isinstance(loss, float)
+        assert loss > 0
+        assert "grad_norm" in breakdown
+
     def test_curriculum_advances(self, trainer: Phase2Trainer) -> None:
         initial = trainer.current_max_steps
         for _ in range(100):
