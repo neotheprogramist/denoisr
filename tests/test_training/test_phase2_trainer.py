@@ -161,7 +161,15 @@ class TestPhase2Trainer:
         _, breakdown = trainer.train_step(batch)
         for key in ("policy", "value", "diffusion", "state", "reward", "consistency"):
             assert key in breakdown, f"Missing '{key}' in breakdown"
+        for key in ("top1", "top5"):
+            assert key in breakdown, f"Missing '{key}' in breakdown"
         assert "grad_norm" in breakdown
+
+    def test_amp_properties(self, trainer: Phase2Trainer) -> None:
+        assert trainer.amp_dtype is None
+        assert trainer.amp_autocast_enabled is False
+        assert trainer.amp_scaler_enabled is False
+        assert trainer.amp_scaler_scale() is None
 
     def test_encoder_is_frozen(
         self,

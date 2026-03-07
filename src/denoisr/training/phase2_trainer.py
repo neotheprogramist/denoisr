@@ -152,6 +152,23 @@ class Phase2Trainer:
         self._current_max_steps = initial_steps
         self._curriculum_growth = curriculum_growth
 
+    @property
+    def amp_dtype(self) -> torch.dtype | None:
+        return self._amp_dtype
+
+    @property
+    def amp_autocast_enabled(self) -> bool:
+        return self._autocast_enabled
+
+    @property
+    def amp_scaler_enabled(self) -> bool:
+        return self.scaler.is_enabled()
+
+    def amp_scaler_scale(self) -> float | None:
+        if not self.scaler.is_enabled():
+            return None
+        return float(self.scaler.get_scale())
+
     def _forward_loss(self, batch: TrajectoryBatch) -> tuple[Tensor, dict[str, float]]:
         B, T = batch.boards.shape[:2]
         Tm1 = T - 1
@@ -236,6 +253,28 @@ class Phase2Trainer:
                 reward_loss=reward_loss,
                 state_loss=state_loss,
             )
+
+            # Policy top-k over the legal action space for phase-level reporting.
+            with torch.no_grad():
+                flat_logits = pred_policy.reshape(B * Tm1, -1)
+                flat_targets = target_policy.reshape(B * Tm1, -1)
+                flat_legal = target_legal_mask.reshape(B * Tm1, -1).to(
+                    device=flat_logits.device,
+                    dtype=torch.bool,
+                )
+                has_legal = flat_legal.any(dim=-1, keepdim=True)
+                masked_logits = flat_logits.masked_fill(~flat_legal, float("-inf"))
+                masked_logits = masked_logits.masked_fill(
+                    ~has_legal.expand_as(masked_logits), 0.0
+                )
+                target_idx = flat_targets.argmax(dim=-1)
+                top1 = (masked_logits.argmax(dim=-1) == target_idx).float().mean()
+                top5_indices = masked_logits.topk(k=5, dim=-1).indices
+                top5 = (
+                    (top5_indices == target_idx.unsqueeze(-1)).any(dim=-1).float().mean()
+                )
+                breakdown["top1"] = top1.item() * 100.0
+                breakdown["top5"] = top5.item() * 100.0
         return total, breakdown
 
     def _train_step_chunked(

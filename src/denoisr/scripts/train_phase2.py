@@ -62,6 +62,16 @@ _DATALOADER_PREFETCH_FACTOR = 2
 
 
 
+def _amp_dtype_name(dtype: torch.dtype | None) -> str:
+    if dtype is None:
+        return "fp32"
+    if dtype == torch.bfloat16:
+        return "bf16"
+    if dtype == torch.float16:
+        return "fp16"
+    return str(dtype)
+
+
 def extract_trajectories(
     pgn_path: Path,
     encoder: ExtendedBoardEncoder,
@@ -301,6 +311,7 @@ def main() -> None:
         harmony_ema_decay=tcfg.harmony_ema_decay,
     )
 
+    requested_amp_dtype = resolve_amp_dtype(tcfg)
     trainer = Phase2Trainer(
         encoder=encoder,
         backbone=backbone,
@@ -318,8 +329,15 @@ def main() -> None:
         weight_decay=tcfg.weight_decay,
         curriculum_initial_fraction=tcfg.curriculum_initial_fraction,
         curriculum_growth=tcfg.curriculum_growth,
-        amp_dtype=resolve_amp_dtype(tcfg),
+        amp_dtype=requested_amp_dtype,
         microbatch_size=args.micro_batch_size,
+    )
+    log.info(
+        "AMP config: requested=%s active=%s autocast=%s grad_scaler=%s",
+        _amp_dtype_name(requested_amp_dtype),
+        _amp_dtype_name(trainer.amp_dtype),
+        trainer.amp_autocast_enabled,
+        trainer.amp_scaler_enabled,
     )
 
     # --- EMA shadow model (opt-in) ---
@@ -398,6 +416,20 @@ def main() -> None:
                 "diffusion_layers": cfg.diffusion_layers,
                 "num_timesteps": cfg.num_timesteps,
                 "max_grad_norm": tcfg.max_grad_norm,
+                "weight_decay": tcfg.weight_decay,
+                "encoder_lr_multiplier": tcfg.encoder_lr_multiplier,
+                "amp_dtype": _amp_dtype_name(trainer.amp_dtype),
+                "workers": worker_count,
+                "micro_batch_size": (
+                    args.micro_batch_size if args.micro_batch_size is not None else "auto"
+                ),
+                "policy_weight": tcfg.policy_weight,
+                "value_weight": tcfg.value_weight,
+                "consistency_weight": tcfg.consistency_weight,
+                "diffusion_weight": tcfg.diffusion_weight,
+                "reward_weight": tcfg.reward_weight,
+                "state_weight": tcfg.state_weight,
+                "ply_weight": tcfg.ply_weight,
                 "harmony_dream": tcfg.use_harmony_dream,
             },
             {"best_total_loss": float("inf")},
@@ -431,6 +463,9 @@ def main() -> None:
             epoch_start = time.monotonic()
             monitor.reset()
             step_grad_norms: list[float] = []
+            top1_sum = 0.0
+            top5_sum = 0.0
+            topk_count = 0
             overflow_count = 0
             loss_sums = {
                 "policy": 0.0,
@@ -440,6 +475,8 @@ def main() -> None:
                 "state": 0.0,
                 "reward": 0.0,
             }
+            hidden_loss_sums: dict[str, float] = {}
+            hidden_loss_counts: dict[str, int] = {}
             data_time = 0.0
 
             batch_iter: (
@@ -479,6 +516,34 @@ def main() -> None:
 
                 for key in loss_sums:
                     loss_sums[key] += float(breakdown.get(key, 0.0))
+                top1 = float(breakdown.get("top1", float("nan")))
+                if math.isfinite(top1):
+                    top1_sum += top1
+                    topk_count += 1
+                top5 = float(breakdown.get("top5", float("nan")))
+                if math.isfinite(top5):
+                    top5_sum += top5
+                for name, raw_value in breakdown.items():
+                    if name in {
+                        "policy",
+                        "value",
+                        "diffusion",
+                        "consistency",
+                        "state",
+                        "reward",
+                        "total",
+                        "grad_norm",
+                        "top1",
+                        "top5",
+                    }:
+                        continue
+                    if isinstance(raw_value, bool):
+                        continue
+                    value_scalar = float(raw_value)
+                    if not math.isfinite(value_scalar):
+                        continue
+                    hidden_loss_sums[name] = hidden_loss_sums.get(name, 0.0) + value_scalar
+                    hidden_loss_counts[name] = hidden_loss_counts.get(name, 0) + 1
                 grad_norm = breakdown.get("grad_norm", 0.0)
                 if not math.isfinite(grad_norm):
                     overflow_count += 1
@@ -507,6 +572,14 @@ def main() -> None:
             samples_per_sec = num_samples / max(epoch_duration, 1e-9)
             current_lr = trainer.optimizer.param_groups[0]["lr"]
             avg_breakdown = {k: v / max(num_batches, 1) for k, v in loss_sums.items()}
+            avg_top1 = top1_sum / max(topk_count, 1)
+            avg_top5 = top5_sum / max(topk_count, 1)
+            overflow_frac = overflow_count / max(num_batches, 1)
+            avg_hidden_losses = {
+                name: hidden_loss_sums[name] / max(hidden_loss_counts.get(name, 0), 1)
+                for name in sorted(hidden_loss_sums)
+            }
+            loss_coefficients = loss_fn.get_coefficients()
 
             # Build resource dict in the format log_epoch_line expects
             raw_res = monitor.summarize()
@@ -538,6 +611,7 @@ def main() -> None:
                     "state": avg_breakdown["state"],
                     "rew": avg_breakdown["reward"],
                 },
+                accuracy={"top1": avg_top1, "top5": avg_top5},
                 lr=current_lr,
                 grad_norms=step_grad_norms,
                 samples_per_sec=samples_per_sec,
@@ -547,11 +621,16 @@ def main() -> None:
                 overflows=overflow_count,
                 phase="phase2",
             )
+            amp_scaler_scale = trainer.amp_scaler_scale()
+            scaler_state = "off"
+            if amp_scaler_scale is not None:
+                scaler_state = f"{amp_scaler_scale:.0f}"
             log.info(
                 (
                     "Epoch %d/%d summary: loss=%.4f pol=%.4f val=%.4f "
-                    "diff=%.4f cons=%.4f state=%.4f rew=%.4f lr=%.2e "
-                    "sps=%.0f data=%.1f%% ovf=%d"
+                    "diff=%.4f cons=%.4f state=%.4f rew=%.4f "
+                    "top1=%.2f%% top5=%.2f%% lr=%.2e sps=%.0f "
+                    "data=%.1f%% ovf=%d(%.3f%%) amp=%s scaler=%s"
                 ),
                 epoch_num,
                 args.epochs,
@@ -562,11 +641,46 @@ def main() -> None:
                 avg_breakdown["consistency"],
                 avg_breakdown["state"],
                 avg_breakdown["reward"],
+                avg_top1,
+                avg_top5,
                 current_lr,
                 samples_per_sec,
                 data_time / max(epoch_duration, 1e-9) * 100.0,
                 overflow_count,
+                overflow_frac * 100.0,
+                _amp_dtype_name(trainer.amp_dtype),
+                scaler_state,
             )
+            if avg_hidden_losses:
+                hidden_terms = ",".join(
+                    (
+                        f"{name}={avg_hidden_losses[name]:.4f}"
+                        f"@w={loss_coefficients.get(name, 1.0):.4g}"
+                    )
+                    for name in sorted(avg_hidden_losses)
+                )
+                coeff_snapshot = ",".join(
+                    (
+                        f"{name}={loss_coefficients.get(name, 1.0):.4g}"
+                        for name in (
+                            "policy",
+                            "value",
+                            "diffusion",
+                            "consistency",
+                            "state",
+                            "reward",
+                            *sorted(avg_hidden_losses),
+                        )
+                    )
+                )
+                log.info("Epoch %d hidden losses: %s", epoch_num, hidden_terms)
+                logger.log_epoch_summary(
+                    {
+                        "epoch": f"{epoch_num}/{args.epochs}",
+                        "hidden_losses": hidden_terms,
+                        "coeffs": coeff_snapshot,
+                    }
+                )
 
             # Plateau detection
             grad_norm_avg = (
