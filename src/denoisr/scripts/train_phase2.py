@@ -428,7 +428,7 @@ def main() -> None:
                 "consistency_weight": tcfg.consistency_weight,
                 "diffusion_weight": tcfg.diffusion_weight,
                 "reward_weight": tcfg.reward_weight,
-                "state_weight": tcfg.state_weight,
+                "state_weight": loss_fn.get_coefficients().get("state", 1.0),
                 "ply_weight": tcfg.ply_weight,
                 "harmony_dream": tcfg.use_harmony_dream,
             },
