@@ -237,6 +237,19 @@ class TestPhase2Trainer:
         for current, base in zip(current_lrs, base_lrs):
             assert current == pytest.approx(base)
 
+    def test_scheduler_decay_has_no_restart_spikes(self, trainer: Phase2Trainer) -> None:
+        for _ in range(trainer._warmup_epochs):
+            trainer.scheduler_step()
+        trainer.optimizer.step()
+        prev_lrs = [group["lr"] for group in trainer.optimizer.param_groups]
+        for _ in range(40):
+            trainer.optimizer.step()
+            trainer.scheduler_step()
+            current_lrs = [group["lr"] for group in trainer.optimizer.param_groups]
+            for current, prev in zip(current_lrs, prev_lrs):
+                assert current <= prev + 1e-12
+            prev_lrs = current_lrs
+
 
 class TestExtractTrajectories:
     @pytest.fixture

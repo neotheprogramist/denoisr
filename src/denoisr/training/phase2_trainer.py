@@ -149,11 +149,11 @@ class Phase2Trainer:
         self._base_lrs = [float(g["lr"]) for g in self.optimizer.param_groups]
         for group, base_lr in zip(self.optimizer.param_groups, self._base_lrs):
             group["lr"] = base_lr / self._warmup_epochs
+        decay_epochs = max(1, total_epochs - self._warmup_epochs)
         self._scheduler: torch.optim.lr_scheduler.LRScheduler = (
-            torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
-                T_0=max(1, total_epochs // 5),
-                T_mult=2,
+                T_max=decay_epochs,
                 eta_min=min_lr,
             )
         )

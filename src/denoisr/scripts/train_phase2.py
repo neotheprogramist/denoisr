@@ -421,6 +421,7 @@ def main() -> None:
                 "max_grad_norm": tcfg.max_grad_norm,
                 "warmup_epochs": tcfg.warmup_epochs,
                 "min_lr": tcfg.min_lr,
+                "lr_schedule": "warmup+cosine_no_restarts",
                 "weight_decay": tcfg.weight_decay,
                 "encoder_lr_multiplier": tcfg.encoder_lr_multiplier,
                 "amp_dtype": _amp_dtype_name(trainer.amp_dtype),
