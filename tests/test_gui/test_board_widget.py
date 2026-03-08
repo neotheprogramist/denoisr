@@ -5,6 +5,8 @@ from denoisr.gui.board_widget import (
     PIECE_SYMBOLS,
     file_rank_to_pixel,
     pixel_to_file_rank,
+    resolve_click_move,
+    SOLID_PIECE_SYMBOLS,
     square_to_file_rank,
 )
 
@@ -56,3 +58,36 @@ class TestPieceSymbols:
         for color in (chess.WHITE, chess.BLACK):
             for piece_type in range(1, 7):
                 assert (piece_type, color) in PIECE_SYMBOLS
+
+    def test_solid_symbols_cover_all_piece_types(self) -> None:
+        for piece_type in range(1, 7):
+            assert piece_type in SOLID_PIECE_SYMBOLS
+
+
+class TestResolveClickMove:
+    def test_non_promotion_move_resolves_directly(self) -> None:
+        board = chess.Board()
+        move = resolve_click_move(board, chess.G1, chess.F3)
+        assert move == chess.Move.from_uci("g1f3")
+
+    def test_illegal_target_does_not_request_promotion(self) -> None:
+        board = chess.Board("1N6/P7/8/8/8/8/8/k6K w - - 0 1")
+        asked = {"value": False}
+
+        def chooser() -> int | None:
+            asked["value"] = True
+            return chess.QUEEN
+
+        move = resolve_click_move(board, chess.A7, chess.B8, chooser)
+        assert move is None
+        assert asked["value"] is False
+
+    def test_promotion_move_uses_dialog_choice(self) -> None:
+        board = chess.Board("7k/P7/8/8/8/8/8/K7 w - - 0 1")
+        move = resolve_click_move(
+            board,
+            chess.A7,
+            chess.A8,
+            lambda: chess.ROOK,
+        )
+        assert move == chess.Move.from_uci("a7a8r")

@@ -33,6 +33,21 @@ PIECE_SYMBOLS: dict[tuple[int, bool], str] = {
     (chess.PAWN, chess.BLACK): "\u265f",
 }
 
+# Filled glyphs used for board rendering so both colors are visually solid.
+SOLID_PIECE_SYMBOLS: dict[int, str] = {
+    chess.KING: "\u265a",
+    chess.QUEEN: "\u265b",
+    chess.ROOK: "\u265c",
+    chess.BISHOP: "\u265d",
+    chess.KNIGHT: "\u265e",
+    chess.PAWN: "\u265f",
+}
+
+WHITE_PIECE_COLOR = "#F7F7F7"
+BLACK_PIECE_COLOR = "#121212"
+WHITE_SHADOW_COLOR = "#202020"
+BLACK_SHADOW_COLOR = "#DDDDDD"
+
 
 def square_to_file_rank(square: int, flipped: bool) -> tuple[int, int]:
     """Convert chess square (0-63) to (file, rank) in display coordinates.
@@ -69,6 +84,40 @@ def _file_rank_to_square(file: int, rank: int, flipped: bool) -> int:
     if flipped:
         return chess.square(7 - file, rank)
     return chess.square(file, 7 - rank)
+
+
+def resolve_click_move(
+    board: chess.Board,
+    from_square: int,
+    to_square: int,
+    choose_promotion: Callable[[], int | None] | None = None,
+) -> chess.Move | None:
+    """Resolve a user click-pair into a legal move.
+
+    Promotion is only requested when multiple legal promotions exist for the same
+    from/to squares. This avoids spurious promotion dialogs on illegal clicks.
+    """
+    candidates = [
+        move
+        for move in board.legal_moves
+        if move.from_square == from_square and move.to_square == to_square
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    promotion_candidates = [m for m in candidates if m.promotion is not None]
+    if not promotion_candidates:
+        return candidates[0]
+
+    if choose_promotion is None:
+        return promotion_candidates[0]
+
+    promotion = choose_promotion()
+    if promotion is None:
+        return None
+    return next((m for m in promotion_candidates if m.promotion == promotion), None)
 
 
 class BoardWidget(tk.Canvas):
@@ -134,22 +183,14 @@ class BoardWidget(tk.Canvas):
                 self._draw()
         else:
             # Try to make a move
-            move = chess.Move(self._selected_square, clicked_sq)
+            move = resolve_click_move(
+                self._board,
+                self._selected_square,
+                clicked_sq,
+                self._ask_promotion,
+            )
 
-            # Check for pawn promotion
-            piece = self._board.piece_at(self._selected_square)
-            if piece is not None and piece.piece_type == chess.PAWN:
-                dest_rank = chess.square_rank(clicked_sq)
-                if dest_rank in (0, 7):
-                    promo = self._ask_promotion()
-                    if promo is not None:
-                        move = chess.Move(
-                            self._selected_square,
-                            clicked_sq,
-                            promotion=promo,
-                        )
-
-            if move in self._board.legal_moves:
+            if move is not None:
                 self._selected_square = None
                 self._last_move = move
                 if self._on_move_cb is not None:
@@ -248,17 +289,31 @@ class BoardWidget(tk.Canvas):
             piece = self._board.piece_at(square)
             if piece is None:
                 continue
-            symbol = PIECE_SYMBOLS.get((piece.piece_type, piece.color))
+            symbol = SOLID_PIECE_SYMBOLS.get(piece.piece_type)
             if symbol is None:
                 continue
             df, dr = square_to_file_rank(square, self._flipped)
             cx, cy = file_rank_to_pixel(df, dr, sq)
+            fg = WHITE_PIECE_COLOR if piece.color == chess.WHITE else BLACK_PIECE_COLOR
+            shadow = (
+                WHITE_SHADOW_COLOR if piece.color == chess.WHITE else BLACK_SHADOW_COLOR
+            )
+            # Draw a one-pixel shadow so white pieces stay readable on light squares.
+            self.create_text(
+                cx + 1,
+                cy + 1,
+                text=symbol,
+                font=("Arial", sq // 2),
+                anchor="center",
+                fill=shadow,
+            )
             self.create_text(
                 cx,
                 cy,
                 text=symbol,
                 font=("Arial", sq // 2),
                 anchor="center",
+                fill=fg,
             )
 
         # File/rank labels

@@ -11,12 +11,61 @@ from typing import TYPE_CHECKING, Any
 
 import chess
 
-from denoisr.gui.board_widget import BoardWidget
+from denoisr.gui.board_widget import BoardWidget, SOLID_PIECE_SYMBOLS
 from denoisr.engine.types import EngineConfig, TimeControl
 from denoisr.engine.uci_engine import UCIEngine
 
 if TYPE_CHECKING:
     from denoisr.engine.types import GameResult
+
+
+_STARTING_COUNTS: dict[int, int] = {
+    chess.PAWN: 8,
+    chess.KNIGHT: 2,
+    chess.BISHOP: 2,
+    chess.ROOK: 2,
+    chess.QUEEN: 1,
+}
+_CAPTURE_ORDER = (
+    chess.QUEEN,
+    chess.ROOK,
+    chess.BISHOP,
+    chess.KNIGHT,
+    chess.PAWN,
+)
+_CAPTURE_LABELS = {
+    chess.QUEEN: SOLID_PIECE_SYMBOLS[chess.QUEEN],
+    chess.ROOK: SOLID_PIECE_SYMBOLS[chess.ROOK],
+    chess.BISHOP: SOLID_PIECE_SYMBOLS[chess.BISHOP],
+    chess.KNIGHT: SOLID_PIECE_SYMBOLS[chess.KNIGHT],
+    chess.PAWN: SOLID_PIECE_SYMBOLS[chess.PAWN],
+}
+
+
+def summarize_captures(board: chess.Board) -> tuple[str, str]:
+    """Return captured material strings for each side.
+
+    Returns:
+        tuple[str, str]: (captured_by_white, captured_by_black)
+    """
+    remaining: dict[bool, dict[int, int]] = {
+        chess.WHITE: {piece_type: 0 for piece_type in _STARTING_COUNTS},
+        chess.BLACK: {piece_type: 0 for piece_type in _STARTING_COUNTS},
+    }
+    for piece in board.piece_map().values():
+        if piece.piece_type in _STARTING_COUNTS:
+            remaining[piece.color][piece.piece_type] += 1
+
+    def _format_missing(missing_color: bool) -> str:
+        chunks: list[str] = []
+        for piece_type in _CAPTURE_ORDER:
+            missing = _STARTING_COUNTS[piece_type] - remaining[missing_color][piece_type]
+            if missing > 0:
+                chunks.append(f"{_CAPTURE_LABELS[piece_type]}x{missing}")
+        return " ".join(chunks) if chunks else "-"
+
+    # White captures black material, black captures white material.
+    return (_format_missing(chess.BLACK), _format_missing(chess.WHITE))
 
 
 class DenoisrApp:
@@ -38,6 +87,7 @@ class DenoisrApp:
         self._startup_generation = 0
 
         self._build_ui()
+        self._update_captures()
         self._poll_queue()
 
     def run(self) -> None:
@@ -157,6 +207,30 @@ class DenoisrApp:
             status_frame, width=28, height=12, wrap=tk.WORD, state=tk.DISABLED
         )
         self._moves_text.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(status_frame, text="Captured by White:").pack(anchor="w", pady=(8, 0))
+        self._captured_white_var = tk.StringVar(value="-")
+        tk.Label(
+            status_frame,
+            textvariable=self._captured_white_var,
+            anchor="w",
+            justify=tk.LEFT,
+            bg=bg,
+            fg="#111111",
+            font=("Arial", 10, "bold"),
+        ).pack(anchor="w", fill=tk.X)
+
+        ttk.Label(status_frame, text="Captured by Black:").pack(anchor="w", pady=(4, 0))
+        self._captured_black_var = tk.StringVar(value="-")
+        tk.Label(
+            status_frame,
+            textvariable=self._captured_black_var,
+            anchor="w",
+            justify=tk.LEFT,
+            bg=bg,
+            fg="#111111",
+            font=("Arial", 10, "bold"),
+        ).pack(anchor="w", fill=tk.X)
 
         # --- Match mode controls (initially hidden) ---
         self._match_frame = ttk.LabelFrame(main, text="Match Settings", padding=8)
@@ -343,6 +417,7 @@ class DenoisrApp:
 
         self._board_widget.set_board(self._board)
         self._update_moves_text()
+        self._update_captures()
 
         ckpt = self._ckpt_var.get().strip()
         if not ckpt:
@@ -391,6 +466,7 @@ class DenoisrApp:
         self._board_widget.highlight_last_move(move)
         self._board_widget.set_interactive(False)
         self._update_moves_text()
+        self._update_captures()
 
         if self._board.is_game_over():
             self._show_game_over()
@@ -428,8 +504,10 @@ class DenoisrApp:
                         self._on_engine_ready(item[1])
                     elif kind == "match_board":
                         _, board, move = item
+                        self._board = board.copy()
                         self._board_widget.set_board(board)
                         self._board_widget.highlight_last_move(move)
+                        self._update_captures()
                     elif kind == "match_stats":
                         self._set_match_stats(item[1])
                     elif kind == "match_done":
@@ -464,6 +542,7 @@ class DenoisrApp:
         self._board_widget.set_board(self._board)
         self._board_widget.highlight_last_move(move)
         self._update_moves_text()
+        self._update_captures()
 
         if self._board.is_game_over():
             self._show_game_over()
@@ -478,6 +557,11 @@ class DenoisrApp:
         self._set_status(f"Game over: {result}")
         self._board_widget.set_interactive(False)
         self._set_controls_enabled(True)
+
+    def _update_captures(self) -> None:
+        captured_by_white, captured_by_black = summarize_captures(self._board)
+        self._captured_white_var.set(captured_by_white)
+        self._captured_black_var.set(captured_by_black)
 
     def _update_moves_text(self) -> None:
         self._moves_text.config(state=tk.NORMAL)
