@@ -324,9 +324,12 @@ def main() -> None:
         loss_fn=loss_fn,
         lr=args.lr,
         device=device,
+        total_epochs=args.epochs,
+        warmup_epochs=tcfg.warmup_epochs,
         max_grad_norm=tcfg.max_grad_norm,
         encoder_lr_multiplier=tcfg.encoder_lr_multiplier,
         weight_decay=tcfg.weight_decay,
+        min_lr=tcfg.min_lr,
         curriculum_initial_fraction=tcfg.curriculum_initial_fraction,
         curriculum_growth=tcfg.curriculum_growth,
         amp_dtype=requested_amp_dtype,
@@ -416,6 +419,8 @@ def main() -> None:
                 "diffusion_layers": cfg.diffusion_layers,
                 "num_timesteps": cfg.num_timesteps,
                 "max_grad_norm": tcfg.max_grad_norm,
+                "warmup_epochs": tcfg.warmup_epochs,
+                "min_lr": tcfg.min_lr,
                 "weight_decay": tcfg.weight_decay,
                 "encoder_lr_multiplier": tcfg.encoder_lr_multiplier,
                 "amp_dtype": _amp_dtype_name(trainer.amp_dtype),
@@ -565,6 +570,7 @@ def main() -> None:
             pbar.close()
 
             trainer.advance_curriculum()
+            trainer.scheduler_step()
             epoch_duration = time.monotonic() - epoch_start
             num_samples = len(train_dataset)
             avg_loss = epoch_loss / max(num_batches, 1)

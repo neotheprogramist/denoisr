@@ -95,9 +95,12 @@ class Phase2Trainer:
         loss_fn: ChessLossComputer,
         lr: float = 1e-4,
         device: torch.device | None = None,
+        total_epochs: int = 100,
+        warmup_epochs: int = 3,
         max_grad_norm: float = 1.0,
         encoder_lr_multiplier: float = 0.3,
         weight_decay: float = 1e-4,
+        min_lr: float = 1e-6,
         curriculum_initial_fraction: float = 0.25,
         curriculum_growth: float = 1.02,
         freeze_encoder: bool = True,
@@ -142,6 +145,21 @@ class Phase2Trainer:
             {"params": list(consistency.parameters()), "lr": lr},
         ]
         self.optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
+        self._warmup_epochs = max(warmup_epochs, 1)
+        self._base_lrs = [float(g["lr"]) for g in self.optimizer.param_groups]
+        for group, base_lr in zip(self.optimizer.param_groups, self._base_lrs):
+            group["lr"] = base_lr / self._warmup_epochs
+        self._scheduler: torch.optim.lr_scheduler.LRScheduler = (
+            torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                self.optimizer,
+                T_0=max(1, total_epochs // 5),
+                T_mult=2,
+                eta_min=min_lr,
+            )
+        )
+        if hasattr(self._scheduler, "base_lrs"):
+            self._scheduler.base_lrs = list(self._base_lrs)
+        self._epoch = 0
 
         # Diffusion curriculum
         self._curriculum_max_steps = schedule.num_timesteps
@@ -360,6 +378,15 @@ class Phase2Trainer:
             self._current_max_steps_f * self._curriculum_growth,
         )
         self._current_max_steps = int(self._current_max_steps_f)
+
+    def scheduler_step(self) -> None:
+        self._epoch += 1
+        if self._epoch <= self._warmup_epochs:
+            frac = self._epoch / self._warmup_epochs
+            for group, base_lr in zip(self.optimizer.param_groups, self._base_lrs):
+                group["lr"] = base_lr * frac
+        else:
+            self._scheduler.step()
 
 
 def evaluate_phase2_gate(

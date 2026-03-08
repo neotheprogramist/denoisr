@@ -229,6 +229,14 @@ class TestPhase2Trainer:
             trainer.advance_curriculum()
         assert trainer.current_max_steps > initial
 
+    def test_scheduler_warmup_reaches_base_lr(self, trainer: Phase2Trainer) -> None:
+        base_lrs = list(trainer._base_lrs)
+        for _ in range(trainer._warmup_epochs):
+            trainer.scheduler_step()
+        current_lrs = [group["lr"] for group in trainer.optimizer.param_groups]
+        for current, base in zip(current_lrs, base_lrs):
+            assert current == pytest.approx(base)
+
 
 class TestExtractTrajectories:
     @pytest.fixture
