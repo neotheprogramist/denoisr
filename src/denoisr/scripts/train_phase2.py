@@ -59,6 +59,13 @@ from denoisr.training.resource_monitor import ResourceMonitor
 
 log = logging.getLogger(__name__)
 _DATALOADER_PREFETCH_FACTOR = 2
+_OVERFLOW_BACKOFF_MIN_EPOCH = 3
+_OVERFLOW_BACKOFF_FRAC = 1e-4
+_OVERFLOW_BACKOFF_STREAK = 2
+_OVERFLOW_BACKOFF_LR_FACTOR = 0.85
+_OVERFLOW_BACKOFF_MAX_BACKOFFS = 4
+_OVERFLOW_BACKOFF_COOLDOWN_EPOCHS = 1
+_OVERFLOW_STOP_CONSECUTIVE_EPOCHS = 2
 
 
 
@@ -442,6 +449,10 @@ def main() -> None:
         )
 
         global_step = 0
+        consecutive_overflow_epochs = 0
+        overflow_backoff_streak = 0
+        overflow_backoff_count = 0
+        overflow_backoff_cooldown_until_epoch = 0
 
         def _save_current_checkpoint() -> None:
             ema_kwargs: dict[str, object] = {}
@@ -582,6 +593,35 @@ def main() -> None:
             avg_top1 = top1_sum / max(topk_count, 1)
             avg_top5 = top5_sum / max(topk_count, 1)
             overflow_frac = overflow_count / max(num_batches, 1)
+            if overflow_frac > 0.25:
+                log.warning(
+                    (
+                        "High overflow rate in epoch %d: %.1f%% of batches "
+                        "(ovf=%d/%d). Training may stall; consider lowering lr."
+                    ),
+                    epoch_num,
+                    overflow_frac * 100.0,
+                    overflow_count,
+                    num_batches,
+                )
+            if overflow_count > 0 and overflow_frac >= _OVERFLOW_BACKOFF_FRAC:
+                overflow_backoff_streak += 1
+            else:
+                overflow_backoff_streak = 0
+            if overflow_count >= num_batches and num_batches > 0:
+                consecutive_overflow_epochs += 1
+            else:
+                consecutive_overflow_epochs = 0
+            stop_for_overflow = False
+            if consecutive_overflow_epochs >= _OVERFLOW_STOP_CONSECUTIVE_EPOCHS:
+                log.error(
+                    (
+                        "All batches overflowed for %d consecutive epochs. "
+                        "Stopping early to avoid wasting compute."
+                    ),
+                    consecutive_overflow_epochs,
+                )
+                stop_for_overflow = True
             avg_hidden_losses = {
                 name: hidden_loss_sums[name] / max(hidden_loss_counts.get(name, 0), 1)
                 for name in sorted(hidden_loss_sums)
@@ -699,6 +739,38 @@ def main() -> None:
                 avg_loss,
                 trainer.optimizer.param_groups[0]["lr"],
             )
+            if (
+                overflow_backoff_streak >= _OVERFLOW_BACKOFF_STREAK
+                and epoch_num >= _OVERFLOW_BACKOFF_MIN_EPOCH
+                and overflow_backoff_count < _OVERFLOW_BACKOFF_MAX_BACKOFFS
+                and epoch_num > overflow_backoff_cooldown_until_epoch
+            ):
+                old_lrs, new_lrs = trainer.backoff_learning_rates(
+                    _OVERFLOW_BACKOFF_LR_FACTOR,
+                    min_lr=tcfg.min_lr,
+                )
+                trainer.reset_amp_scaler()
+                overflow_backoff_count += 1
+                overflow_backoff_streak = 0
+                overflow_backoff_cooldown_until_epoch = (
+                    epoch_num + _OVERFLOW_BACKOFF_COOLDOWN_EPOCHS
+                )
+                log.warning(
+                    (
+                        "Overflow mitigation applied: overflow_frac=%.3f%% "
+                        "for %d consecutive epoch(s). head_lr %.2e->%.2e "
+                        "backoff=%d/%d cooldown_until_epoch=%d"
+                    ),
+                    overflow_frac * 100.0,
+                    _OVERFLOW_BACKOFF_STREAK,
+                    max(old_lrs),
+                    max(new_lrs),
+                    overflow_backoff_count,
+                    _OVERFLOW_BACKOFF_MAX_BACKOFFS,
+                    overflow_backoff_cooldown_until_epoch,
+                )
+            if stop_for_overflow:
+                break
 
         # --- Phase 2 gate ---
         log.info(

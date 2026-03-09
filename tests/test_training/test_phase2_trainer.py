@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import pytest
@@ -164,6 +165,8 @@ class TestPhase2Trainer:
         for key in ("top1", "top5"):
             assert key in breakdown, f"Missing '{key}' in breakdown"
         assert "grad_norm" in breakdown
+        assert "overflow" in breakdown
+        assert breakdown["overflow"] is False
 
     def test_amp_properties(self, trainer: Phase2Trainer) -> None:
         assert trainer.amp_dtype is None
@@ -222,6 +225,61 @@ class TestPhase2Trainer:
         assert isinstance(loss, float)
         assert loss > 0
         assert "grad_norm" in breakdown
+
+    def test_marks_overflow_on_nonfinite_loss(
+        self,
+        trainer: Phase2Trainer,
+        device: torch.device,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        batch = _make_trajectory_batch(device=device)
+
+        def _fake_forward_loss(_: TrajectoryBatch) -> tuple[torch.Tensor, dict[str, float]]:
+            return torch.tensor(float("nan"), device=device), {
+                "policy": 0.0,
+                "value": 0.0,
+                "diffusion": 0.0,
+                "consistency": 0.0,
+                "state": 0.0,
+                "reward": 0.0,
+                "top1": 0.0,
+                "top5": 0.0,
+            }
+
+        monkeypatch.setattr(trainer, "_forward_loss", _fake_forward_loss)
+        loss, breakdown = trainer.train_step(batch)
+        assert math.isnan(loss)
+        assert breakdown["overflow"] is True
+        assert math.isnan(float(breakdown["grad_norm"]))
+
+    def test_marks_overflow_on_nonfinite_gradients(
+        self,
+        trainer: Phase2Trainer,
+        device: torch.device,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        batch = _make_trajectory_batch(device=device)
+
+        def _fake_forward_loss(_: TrajectoryBatch) -> tuple[torch.Tensor, dict[str, float]]:
+            param = next(trainer.backbone.parameters())
+            total = (param.reshape(-1)[0] * 0.0) + torch.tensor(1.0, device=device)
+            return total, {
+                "policy": 0.0,
+                "value": 0.0,
+                "diffusion": 0.0,
+                "consistency": 0.0,
+                "state": 0.0,
+                "reward": 0.0,
+                "top1": 0.0,
+                "top5": 0.0,
+            }
+
+        monkeypatch.setattr(trainer, "_forward_loss", _fake_forward_loss)
+        monkeypatch.setattr(trainer, "_has_nonfinite_gradients", lambda: True)
+        loss, breakdown = trainer.train_step(batch)
+        assert math.isfinite(loss)
+        assert breakdown["overflow"] is True
+        assert math.isnan(float(breakdown["grad_norm"]))
 
     def test_curriculum_advances(self, trainer: Phase2Trainer) -> None:
         initial = trainer.current_max_steps

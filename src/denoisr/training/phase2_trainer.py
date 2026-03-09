@@ -1,4 +1,5 @@
 import logging
+import math
 from dataclasses import dataclass
 
 import torch
@@ -145,6 +146,9 @@ class Phase2Trainer:
             {"params": list(consistency.parameters()), "lr": lr},
         ]
         self.optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
+        self._params: list[torch.nn.Parameter] = [
+            p for group in self.optimizer.param_groups for p in group["params"]
+        ]
         self._warmup_epochs = max(warmup_epochs, 1)
         self._base_lrs = [float(g["lr"]) for g in self.optimizer.param_groups]
         for group, base_lr in zip(self.optimizer.param_groups, self._base_lrs):
@@ -186,6 +190,24 @@ class Phase2Trainer:
         if not self.scaler.is_enabled():
             return None
         return float(self.scaler.get_scale())
+
+    def _has_nonfinite_gradients(self) -> bool:
+        for param in self._params:
+            grad = param.grad
+            if grad is None:
+                continue
+            if not torch.isfinite(grad).all():
+                return True
+        return False
+
+    def _handle_overflow(self, breakdown: dict[str, float | bool]) -> dict[str, float | bool]:
+        self.optimizer.zero_grad(set_to_none=True)
+        if self.scaler.is_enabled():
+            new_scale = max(float(self.scaler.get_scale()) / 2.0, 1.0)
+            self.scaler.update(new_scale)
+        breakdown["grad_norm"] = float("nan")
+        breakdown["overflow"] = True
+        return breakdown
 
     def _forward_loss(self, batch: TrajectoryBatch) -> tuple[Tensor, dict[str, float]]:
         B, T = batch.boards.shape[:2]
@@ -300,7 +322,7 @@ class Phase2Trainer:
         batch: TrajectoryBatch,
         *,
         chunk_size: int,
-    ) -> tuple[float, dict[str, float]]:
+    ) -> tuple[float, dict[str, float | bool]]:
         batch_size = batch.boards.shape[0]
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
@@ -316,31 +338,41 @@ class Phase2Trainer:
 
         self.optimizer.zero_grad(set_to_none=True)
         weighted_loss = 0.0
-        weighted_breakdown: dict[str, float] = {}
+        weighted_breakdown: dict[str, float | bool] = {}
 
         for start in range(0, batch_size, chunk_size):
             end = min(batch_size, start + chunk_size)
             weight = float(end - start) / float(batch_size)
             total, breakdown = self._forward_loss(batch.slice(start, end))
+            if not torch.isfinite(total):
+                return float("nan"), self._handle_overflow(dict(breakdown))
             self.scaler.scale(total * weight).backward()  # type: ignore[no-untyped-call]
             weighted_loss += total.detach().item() * weight
             for key, value in breakdown.items():
-                weighted_breakdown[key] = weighted_breakdown.get(key, 0.0) + (
-                    float(value) * weight
-                )
+                prev_value = weighted_breakdown.get(key, 0.0)
+                prev = float(prev_value) if not isinstance(prev_value, bool) else 0.0
+                weighted_breakdown[key] = prev + (float(value) * weight)
 
         self.scaler.unscale_(self.optimizer)
+        if self._has_nonfinite_gradients():
+            return weighted_loss, self._handle_overflow(weighted_breakdown)
+
         total_norm = torch.nn.utils.clip_grad_norm_(
-            [p for group in self.optimizer.param_groups for p in group["params"]],
+            self._params,
             self.max_grad_norm,
         )
+        grad_norm = total_norm.item()
+        if not math.isfinite(grad_norm):
+            return weighted_loss, self._handle_overflow(weighted_breakdown)
+
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        weighted_breakdown["grad_norm"] = total_norm.item()
+        weighted_breakdown["grad_norm"] = grad_norm
+        weighted_breakdown["overflow"] = False
         return weighted_loss, weighted_breakdown
 
-    def train_step(self, batch: TrajectoryBatch) -> tuple[float, dict[str, float]]:
+    def train_step(self, batch: TrajectoryBatch) -> tuple[float, dict[str, float | bool]]:
         batch_size = batch.boards.shape[0]
         chunk_size = self._microbatch_size or batch_size
         chunk_size = max(1, min(chunk_size, batch_size))
@@ -387,6 +419,34 @@ class Phase2Trainer:
                 group["lr"] = base_lr * frac
         else:
             self._scheduler.step()
+
+    def backoff_learning_rates(
+        self,
+        factor: float,
+        *,
+        min_lr: float = 0.0,
+    ) -> tuple[list[float], list[float]]:
+        if factor <= 0.0:
+            raise ValueError("LR backoff factor must be > 0")
+        if min_lr < 0.0:
+            raise ValueError("min_lr must be >= 0")
+
+        old_lrs: list[float] = []
+        new_lrs: list[float] = []
+        for group in self.optimizer.param_groups:
+            old = float(group["lr"])
+            new = max(old * factor, min_lr)
+            group["lr"] = new
+            old_lrs.append(old)
+            new_lrs.append(new)
+
+        self._base_lrs = [max(lr * factor, min_lr) for lr in self._base_lrs]
+        if hasattr(self._scheduler, "base_lrs"):
+            self._scheduler.base_lrs = list(self._base_lrs)
+        return old_lrs, new_lrs
+
+    def reset_amp_scaler(self) -> None:
+        self.scaler = GradScaler("cuda", enabled=self.scaler.is_enabled())
 
 
 def evaluate_phase2_gate(
