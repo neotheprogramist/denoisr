@@ -164,9 +164,21 @@ class TestPhase2Trainer:
             assert key in breakdown, f"Missing '{key}' in breakdown"
         for key in ("top1", "top5"):
             assert key in breakdown, f"Missing '{key}' in breakdown"
+        assert "fused_policy" in breakdown
         assert "grad_norm" in breakdown
         assert "overflow" in breakdown
         assert breakdown["overflow"] is False
+
+    def test_fusion_gate_parameters_update(
+        self,
+        trainer: Phase2Trainer,
+        device: torch.device,
+    ) -> None:
+        batch = _make_trajectory_batch(device=device)
+        before = [p.detach().clone() for p in trainer.diffusion.fusion_gate.parameters()]
+        trainer.train_step(batch)
+        after = [p.detach() for p in trainer.diffusion.fusion_gate.parameters()]
+        assert any(not torch.equal(prev, curr) for prev, curr in zip(before, after))
 
     def test_amp_properties(self, trainer: Phase2Trainer) -> None:
         assert trainer.amp_dtype is None

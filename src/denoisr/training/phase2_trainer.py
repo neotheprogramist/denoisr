@@ -13,6 +13,8 @@ from denoisr.training.loss import ChessLossComputer
 
 log = logging.getLogger(__name__)
 
+_FUSED_POLICY_AUX_WEIGHT = 0.25
+
 
 @dataclass(frozen=True)
 class TrajectoryBatch:
@@ -209,6 +211,25 @@ class Phase2Trainer:
         breakdown["overflow"] = True
         return breakdown
 
+    @staticmethod
+    def _masked_policy_loss(
+        pred_policy: Tensor,
+        target_policy: Tensor,
+        policy_legal_mask: Tensor,
+    ) -> Tensor:
+        batch_size = pred_policy.shape[0]
+        pred_flat = pred_policy.reshape(batch_size, -1)
+        target_flat = target_policy.reshape(batch_size, -1)
+        legal_mask = policy_legal_mask.reshape(batch_size, -1).to(
+            device=pred_flat.device,
+            dtype=torch.bool,
+        )
+        has_legal = legal_mask.any(dim=-1, keepdim=True)
+        masked_logits = pred_flat.masked_fill(~legal_mask, float("-inf"))
+        masked_logits = masked_logits.masked_fill(~has_legal.expand_as(masked_logits), 0.0)
+        log_probs = F.log_softmax(masked_logits, dim=-1).masked_fill(~legal_mask, 0.0)
+        return -(target_flat * log_probs).sum(dim=-1).mean()
+
     def _forward_loss(self, batch: TrajectoryBatch) -> tuple[Tensor, dict[str, float]]:
         B, T = batch.boards.shape[:2]
         Tm1 = T - 1
@@ -268,6 +289,25 @@ class Phase2Trainer:
             v_target = self.schedule.compute_v_target(diff_target, noise, t)
             v_pred = self.diffusion(noisy_target, t, cond)
             diffusion_loss = F.mse_loss(v_pred, v_target)
+            x0_pred = self.schedule.predict_x0_from_v(noisy_target, v_pred, t).detach()
+            fused = self.diffusion.fuse(cond, x0_pred)
+            fused_features = self.backbone(fused)
+            fused_policy = self.policy_head(fused_features)
+            fused_target_policy = batch.policies[:, 0]
+            fused_legal_mask = (
+                batch.legal_masks[:, 0]
+                if batch.legal_masks is not None
+                else fused_target_policy > 0
+            )
+            fused_policy_loss = self._masked_policy_loss(
+                fused_policy,
+                fused_target_policy,
+                fused_legal_mask,
+            )
+            fused_policy_weight = (
+                self.loss_fn.get_coefficients().get("policy", 1.0)
+                * _FUSED_POLICY_AUX_WEIGHT
+            )
 
             # 6. Consistency: SimSiam on predicted vs actual
             pred_next_flat = pred_next.reshape(B * Tm1, 64, d_s)
@@ -293,6 +333,9 @@ class Phase2Trainer:
                 reward_loss=reward_loss,
                 state_loss=state_loss,
             )
+            total = total + (fused_policy_weight * fused_policy_loss)
+            breakdown["fused_policy"] = fused_policy_loss.item()
+            breakdown["fused_policy_weight"] = fused_policy_weight
 
             # Policy top-k over the legal action space for phase-level reporting.
             with torch.no_grad():
