@@ -13,7 +13,7 @@ from denoisr.training.loss import ChessLossComputer
 
 log = logging.getLogger(__name__)
 
-_FUSED_POLICY_AUX_WEIGHT = 0.05
+_FUSED_POLICY_AUX_WEIGHT = 0.02
 
 
 @dataclass(frozen=True)
@@ -218,14 +218,16 @@ class Phase2Trainer:
         policy_legal_mask: Tensor,
     ) -> Tensor:
         batch_size = pred_policy.shape[0]
-        pred_flat = pred_policy.reshape(batch_size, -1)
-        target_flat = target_policy.reshape(batch_size, -1)
+        # Keep aux policy CE numerically stable under bf16 autocast.
+        pred_flat = pred_policy.reshape(batch_size, -1).to(torch.float32)
+        pred_flat = pred_flat.clamp(min=-30.0, max=30.0)
+        target_flat = target_policy.reshape(batch_size, -1).to(torch.float32)
         legal_mask = policy_legal_mask.reshape(batch_size, -1).to(
             device=pred_flat.device,
             dtype=torch.bool,
         )
         has_legal = legal_mask.any(dim=-1, keepdim=True)
-        masked_logits = pred_flat.masked_fill(~legal_mask, float("-inf"))
+        masked_logits = pred_flat.masked_fill(~legal_mask, -1e9)
         masked_logits = masked_logits.masked_fill(~has_legal.expand_as(masked_logits), 0.0)
         log_probs = F.log_softmax(masked_logits, dim=-1).masked_fill(~legal_mask, 0.0)
         return -(target_flat * log_probs).sum(dim=-1).mean()
@@ -289,9 +291,9 @@ class Phase2Trainer:
             v_target = self.schedule.compute_v_target(diff_target, noise, t)
             v_pred = self.diffusion(noisy_target, t, cond)
             diffusion_loss = F.mse_loss(v_pred, v_target)
-            # Train fusion gate on the same transition used by gate evaluation:
-            # board_t=0 -> board_t=1. Keep diffusion/backbone/policy optimization
-            # unchanged by stopping gradients at x0_pred_next.
+            # Aux objective mirrors gate evaluation transition: board_t=0 -> board_t=1.
+            # Keep x0 detached (lower-variance target) while still training
+            # fusion/backbone/policy through the fused-policy objective.
             next_target = latent[:, 1].detach()
             t_fused = torch.randint(0, self._current_max_steps, (B,), device=self.device)
             noise_fused = torch.randn_like(next_target)
