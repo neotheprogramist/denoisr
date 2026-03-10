@@ -13,7 +13,7 @@ from denoisr.training.loss import ChessLossComputer
 
 log = logging.getLogger(__name__)
 
-_FUSED_POLICY_AUX_WEIGHT = 0.25
+_FUSED_RECON_AUX_WEIGHT = 0.25
 
 
 @dataclass(frozen=True)
@@ -211,25 +211,6 @@ class Phase2Trainer:
         breakdown["overflow"] = True
         return breakdown
 
-    @staticmethod
-    def _masked_policy_loss(
-        pred_policy: Tensor,
-        target_policy: Tensor,
-        policy_legal_mask: Tensor,
-    ) -> Tensor:
-        batch_size = pred_policy.shape[0]
-        pred_flat = pred_policy.reshape(batch_size, -1)
-        target_flat = target_policy.reshape(batch_size, -1)
-        legal_mask = policy_legal_mask.reshape(batch_size, -1).to(
-            device=pred_flat.device,
-            dtype=torch.bool,
-        )
-        has_legal = legal_mask.any(dim=-1, keepdim=True)
-        masked_logits = pred_flat.masked_fill(~legal_mask, float("-inf"))
-        masked_logits = masked_logits.masked_fill(~has_legal.expand_as(masked_logits), 0.0)
-        log_probs = F.log_softmax(masked_logits, dim=-1).masked_fill(~legal_mask, 0.0)
-        return -(target_flat * log_probs).sum(dim=-1).mean()
-
     def _forward_loss(self, batch: TrajectoryBatch) -> tuple[Tensor, dict[str, float]]:
         B, T = batch.boards.shape[:2]
         Tm1 = T - 1
@@ -289,25 +270,23 @@ class Phase2Trainer:
             v_target = self.schedule.compute_v_target(diff_target, noise, t)
             v_pred = self.diffusion(noisy_target, t, cond)
             diffusion_loss = F.mse_loss(v_pred, v_target)
-            x0_pred = self.schedule.predict_x0_from_v(noisy_target, v_pred, t).detach()
-            fused = self.diffusion.fuse(cond, x0_pred)
-            fused_features = self.backbone(fused)
-            fused_policy = self.policy_head(fused_features)
-            fused_target_policy = batch.policies[:, 0]
-            fused_legal_mask = (
-                batch.legal_masks[:, 0]
-                if batch.legal_masks is not None
-                else fused_target_policy > 0
-            )
-            fused_policy_loss = self._masked_policy_loss(
-                fused_policy,
-                fused_target_policy,
-                fused_legal_mask,
-            )
-            fused_policy_weight = (
-                self.loss_fn.get_coefficients().get("policy", 1.0)
-                * _FUSED_POLICY_AUX_WEIGHT
-            )
+            # Train fusion gate on the same transition used by gate evaluation:
+            # board_t=0 -> board_t=1. Keep diffusion/backbone/policy optimization
+            # unchanged by stopping gradients at x0_pred_next.
+            next_target = latent[:, 1].detach()
+            t_fused = torch.randint(0, self._current_max_steps, (B,), device=self.device)
+            noise_fused = torch.randn_like(next_target)
+            noisy_next = self.schedule.q_sample(next_target, t_fused, noise_fused)
+            v_pred_next = self.diffusion(noisy_next, t_fused, cond)
+            x0_pred_next = self.schedule.predict_x0_from_v(
+                noisy_next,
+                v_pred_next,
+                t_fused,
+            ).detach()
+            next_target_scale = next_target.square().mean(dim=-1, keepdim=True).sqrt()
+            x0_pred_next = torch.tanh(x0_pred_next) * next_target_scale
+            fused = self.diffusion.fuse(cond, x0_pred_next)
+            fused_recon_loss = F.mse_loss(fused, next_target)
 
             # 6. Consistency: SimSiam on predicted vs actual
             pred_next_flat = pred_next.reshape(B * Tm1, 64, d_s)
@@ -333,9 +312,9 @@ class Phase2Trainer:
                 reward_loss=reward_loss,
                 state_loss=state_loss,
             )
-            total = total + (fused_policy_weight * fused_policy_loss)
-            breakdown["fused_policy"] = fused_policy_loss.item()
-            breakdown["fused_policy_weight"] = fused_policy_weight
+            total = total + (_FUSED_RECON_AUX_WEIGHT * fused_recon_loss)
+            breakdown["fused_recon"] = fused_recon_loss.item()
+            breakdown["fused_recon_weight"] = _FUSED_RECON_AUX_WEIGHT
 
             # Policy top-k over the legal action space for phase-level reporting.
             with torch.no_grad():
@@ -420,28 +399,17 @@ class Phase2Trainer:
         chunk_size = self._microbatch_size or batch_size
         chunk_size = max(1, min(chunk_size, batch_size))
 
-        while True:
-            try:
-                return self._train_step_chunked(batch, chunk_size=chunk_size)
-            except torch.OutOfMemoryError:
-                if self.device.type != "cuda" or chunk_size <= 1:
-                    raise
-                next_chunk_size = max(1, chunk_size // 2)
-                if next_chunk_size == chunk_size:
-                    raise
-                log.warning(
-                    (
-                        "CUDA OOM in Phase 2 train_step "
-                        "(batch=%d seq_len=%d chunk=%d). Retrying with chunk=%d."
-                    ),
-                    batch_size,
-                    batch.boards.shape[1],
-                    chunk_size,
-                    next_chunk_size,
+        try:
+            return self._train_step_chunked(batch, chunk_size=chunk_size)
+        except torch.OutOfMemoryError as exc:
+            raise RuntimeError(
+                (
+                    "CUDA OOM in Phase 2 train_step "
+                    f"(batch={batch_size}, seq_len={batch.boards.shape[1]}, "
+                    f"micro_batch_size={chunk_size}). "
+                    "Lower --micro-batch-size and retry."
                 )
-                self.optimizer.zero_grad(set_to_none=True)
-                torch.cuda.empty_cache()
-                chunk_size = next_chunk_size
+            ) from exc
 
     @property
     def current_max_steps(self) -> int:

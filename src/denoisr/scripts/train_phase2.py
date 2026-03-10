@@ -59,12 +59,8 @@ from denoisr.training.resource_monitor import ResourceMonitor
 
 log = logging.getLogger(__name__)
 _DATALOADER_PREFETCH_FACTOR = 2
-_OVERFLOW_BACKOFF_MIN_EPOCH = 3
-_OVERFLOW_BACKOFF_FRAC = 1e-4
-_OVERFLOW_BACKOFF_STREAK = 2
-_OVERFLOW_BACKOFF_LR_FACTOR = 0.85
-_OVERFLOW_BACKOFF_MAX_BACKOFFS = 4
-_OVERFLOW_BACKOFF_COOLDOWN_EPOCHS = 1
+_OVERFLOW_FAIL_FAST_FRAC = 0.25
+_OVERFLOW_FAIL_FAST_STREAK = 2
 _OVERFLOW_STOP_CONSECUTIVE_EPOCHS = 2
 
 
@@ -450,9 +446,7 @@ def main() -> None:
 
         global_step = 0
         consecutive_overflow_epochs = 0
-        overflow_backoff_streak = 0
-        overflow_backoff_count = 0
-        overflow_backoff_cooldown_until_epoch = 0
+        overflow_fail_fast_streak = 0
 
         def _save_current_checkpoint() -> None:
             ema_kwargs: dict[str, object] = {}
@@ -604,24 +598,33 @@ def main() -> None:
                     overflow_count,
                     num_batches,
                 )
-            if overflow_count > 0 and overflow_frac >= _OVERFLOW_BACKOFF_FRAC:
-                overflow_backoff_streak += 1
+            if overflow_frac >= _OVERFLOW_FAIL_FAST_FRAC:
+                overflow_fail_fast_streak += 1
             else:
-                overflow_backoff_streak = 0
+                overflow_fail_fast_streak = 0
+            if overflow_fail_fast_streak >= _OVERFLOW_FAIL_FAST_STREAK:
+                raise RuntimeError(
+                    (
+                        "Phase 2 overflow fail-fast triggered: "
+                        f"overflow rate={overflow_frac * 100.0:.1f}% "
+                        f"for {_OVERFLOW_FAIL_FAST_STREAK} consecutive epochs "
+                        f"(last epoch ovf={overflow_count}/{num_batches}, "
+                        f"lr={current_lr:.2e}). "
+                        "Lower learning rate or micro-batch size and rerun."
+                    )
+                )
             if overflow_count >= num_batches and num_batches > 0:
                 consecutive_overflow_epochs += 1
             else:
                 consecutive_overflow_epochs = 0
-            stop_for_overflow = False
             if consecutive_overflow_epochs >= _OVERFLOW_STOP_CONSECUTIVE_EPOCHS:
-                log.error(
+                raise RuntimeError(
                     (
                         "All batches overflowed for %d consecutive epochs. "
-                        "Stopping early to avoid wasting compute."
-                    ),
-                    consecutive_overflow_epochs,
+                        "Aborting to avoid wasting compute."
+                    )
+                    % consecutive_overflow_epochs
                 )
-                stop_for_overflow = True
             avg_hidden_losses = {
                 name: hidden_loss_sums[name] / max(hidden_loss_counts.get(name, 0), 1)
                 for name in sorted(hidden_loss_sums)
@@ -739,38 +742,6 @@ def main() -> None:
                 avg_loss,
                 trainer.optimizer.param_groups[0]["lr"],
             )
-            if (
-                overflow_backoff_streak >= _OVERFLOW_BACKOFF_STREAK
-                and epoch_num >= _OVERFLOW_BACKOFF_MIN_EPOCH
-                and overflow_backoff_count < _OVERFLOW_BACKOFF_MAX_BACKOFFS
-                and epoch_num > overflow_backoff_cooldown_until_epoch
-            ):
-                old_lrs, new_lrs = trainer.backoff_learning_rates(
-                    _OVERFLOW_BACKOFF_LR_FACTOR,
-                    min_lr=tcfg.min_lr,
-                )
-                trainer.reset_amp_scaler()
-                overflow_backoff_count += 1
-                overflow_backoff_streak = 0
-                overflow_backoff_cooldown_until_epoch = (
-                    epoch_num + _OVERFLOW_BACKOFF_COOLDOWN_EPOCHS
-                )
-                log.warning(
-                    (
-                        "Overflow mitigation applied: overflow_frac=%.3f%% "
-                        "for %d consecutive epoch(s). head_lr %.2e->%.2e "
-                        "backoff=%d/%d cooldown_until_epoch=%d"
-                    ),
-                    overflow_frac * 100.0,
-                    _OVERFLOW_BACKOFF_STREAK,
-                    max(old_lrs),
-                    max(new_lrs),
-                    overflow_backoff_count,
-                    _OVERFLOW_BACKOFF_MAX_BACKOFFS,
-                    overflow_backoff_cooldown_until_epoch,
-                )
-            if stop_for_overflow:
-                break
 
         # --- Phase 2 gate ---
         log.info(

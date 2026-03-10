@@ -164,7 +164,7 @@ class TestPhase2Trainer:
             assert key in breakdown, f"Missing '{key}' in breakdown"
         for key in ("top1", "top5"):
             assert key in breakdown, f"Missing '{key}' in breakdown"
-        assert "fused_policy" in breakdown
+        assert "fused_recon" in breakdown
         assert "grad_norm" in breakdown
         assert "overflow" in breakdown
         assert breakdown["overflow"] is False
@@ -237,6 +237,44 @@ class TestPhase2Trainer:
         assert isinstance(loss, float)
         assert loss > 0
         assert "grad_norm" in breakdown
+
+    def test_train_step_raises_descriptive_error_on_oom(
+        self,
+        trainer: Phase2Trainer,
+        device: torch.device,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        batch = _make_trajectory_batch(B=3, device=device)
+
+        def _raise_oom(
+            _: TrajectoryBatch,
+            *,
+            chunk_size: int,
+        ) -> tuple[float, dict[str, float | bool]]:
+            raise torch.OutOfMemoryError(f"OOM with chunk_size={chunk_size}")
+
+        monkeypatch.setattr(trainer, "_train_step_chunked", _raise_oom)
+        with pytest.raises(RuntimeError, match="Lower --micro-batch-size"):
+            trainer.train_step(batch)
+
+    def test_fused_aux_stays_finite_with_large_denoised_prediction(
+        self,
+        trainer: Phase2Trainer,
+        device: torch.device,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        batch = _make_trajectory_batch(device=device)
+
+        monkeypatch.setattr(
+            trainer.schedule,
+            "predict_x0_from_v",
+            lambda x_t, v, t: torch.full_like(x_t, 1e9),
+        )
+
+        loss, breakdown = trainer.train_step(batch)
+        assert math.isfinite(loss)
+        assert breakdown["overflow"] is False
+        assert math.isfinite(float(breakdown["fused_recon"]))
 
     def test_marks_overflow_on_nonfinite_loss(
         self,
