@@ -164,7 +164,7 @@ class TestPhase2Trainer:
             assert key in breakdown, f"Missing '{key}' in breakdown"
         for key in ("top1", "top5"):
             assert key in breakdown, f"Missing '{key}' in breakdown"
-        assert "fused_recon" in breakdown
+        assert "fused_policy" in breakdown
         assert "grad_norm" in breakdown
         assert "overflow" in breakdown
         assert breakdown["overflow"] is False
@@ -274,7 +274,7 @@ class TestPhase2Trainer:
         loss, breakdown = trainer.train_step(batch)
         assert math.isfinite(loss)
         assert breakdown["overflow"] is False
-        assert math.isfinite(float(breakdown["fused_recon"]))
+        assert math.isfinite(float(breakdown["fused_policy"]))
 
     def test_marks_overflow_on_nonfinite_loss(
         self,
