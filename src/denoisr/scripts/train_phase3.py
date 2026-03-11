@@ -69,6 +69,11 @@ def _resolve_phase3_workers(requested: int, default_workers: int) -> int:
     return max(1, min(8, default_workers))
 
 
+def _progress_stride(total: int) -> int:
+    # Emit roughly 8 heartbeat updates per phase when tqdm is disabled.
+    return max(1, total // 8)
+
+
 def _records_to_trajectory_batch(
     records: list[GameRecord],
     *,
@@ -540,10 +545,22 @@ def main() -> None:
 
         alpha = orchestrator.get_alpha(gen)
         temp_base = temp_schedule.get_temperature(0, gen)
+        log.info(
+            "gen %d/%d started: alpha=%.2f temp=%.3f buffer=%d games=%d sims=%d reanalyse_target=%d",
+            gen + 1,
+            args.generations,
+            alpha,
+            temp_base,
+            len(buffer),
+            args.games_per_gen,
+            args.mcts_sims,
+            args.reanalyse_per_gen,
+        )
 
         # 1. Self-play
         results = {"wins": 0, "draws": 0, "losses": 0}
         new_records: list[GameRecord] = []
+        sp_stride = _progress_stride(args.games_per_gen)
         sp_pbar = tqdm(
             total=args.games_per_gen,
             desc=f"Gen {gen + 1} self-play",
@@ -568,6 +585,20 @@ def main() -> None:
                     sp_pbar.set_postfix(
                         W=results["wins"], D=results["draws"], L=results["losses"]
                     )
+                elif (
+                    len(new_records) % sp_stride == 0
+                    or len(new_records) == args.games_per_gen
+                ):
+                    log.info(
+                        "gen %d/%d self-play progress: %d/%d games W/D/L=%d/%d/%d",
+                        gen + 1,
+                        args.generations,
+                        len(new_records),
+                        args.games_per_gen,
+                        results["wins"],
+                        results["draws"],
+                        results["losses"],
+                    )
         else:
             with ThreadPoolExecutor(max_workers=self_play_workers) as executor:
                 futures = [
@@ -590,6 +621,20 @@ def main() -> None:
                             W=results["wins"],
                             D=results["draws"],
                             L=results["losses"],
+                        )
+                    elif (
+                        len(new_records) % sp_stride == 0
+                        or len(new_records) == args.games_per_gen
+                    ):
+                        log.info(
+                            "gen %d/%d self-play progress: %d/%d games W/D/L=%d/%d/%d",
+                            gen + 1,
+                            args.generations,
+                            len(new_records),
+                            args.games_per_gen,
+                            results["wins"],
+                            results["draws"],
+                            results["losses"],
                         )
         sp_pbar.close()
 
@@ -645,6 +690,8 @@ def main() -> None:
         reanalysed_examples = []
         if len(buffer) >= args.reanalyse_per_gen:
             old_records = buffer.sample(args.reanalyse_per_gen)
+            ra_stride = _progress_stride(len(old_records))
+            reanalysed_games = 0
             ra_pbar = tqdm(
                 total=len(old_records),
                 desc=f"Gen {gen + 1} reanalyse",
@@ -658,9 +705,22 @@ def main() -> None:
                     examples = reanalyser.reanalyse(old_record, alpha=alpha)
                     reanalyse_count += len(examples)
                     reanalysed_examples.extend(examples)
+                    reanalysed_games += 1
                     ra_pbar.update(1)
                     if use_tqdm:
                         ra_pbar.set_postfix(examples=reanalyse_count)
+                    elif (
+                        reanalysed_games % ra_stride == 0
+                        or reanalysed_games == len(old_records)
+                    ):
+                        log.info(
+                            "gen %d/%d reanalyse progress: %d/%d games examples=%d",
+                            gen + 1,
+                            args.generations,
+                            reanalysed_games,
+                            len(old_records),
+                            reanalyse_count,
+                        )
             else:
                 with ThreadPoolExecutor(max_workers=reanalyse_workers) as executor:
                     futures = [
@@ -671,9 +731,22 @@ def main() -> None:
                         examples = future.result()
                         reanalyse_count += len(examples)
                         reanalysed_examples.extend(examples)
+                        reanalysed_games += 1
                         ra_pbar.update(1)
                         if use_tqdm:
                             ra_pbar.set_postfix(examples=reanalyse_count)
+                        elif (
+                            reanalysed_games % ra_stride == 0
+                            or reanalysed_games == len(old_records)
+                        ):
+                            log.info(
+                                "gen %d/%d reanalyse progress: %d/%d games examples=%d",
+                                gen + 1,
+                                args.generations,
+                                reanalysed_games,
+                                len(old_records),
+                                reanalyse_count,
+                            )
             ra_pbar.close()
 
         # 4. Train on replay buffer batch
