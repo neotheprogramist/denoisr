@@ -1,0 +1,40 @@
+[project]
+name = "denoisr-chess"
+version = "0.1.0"
+description = "Chess training, inference, benchmarking, and GUI tools"
+requires-python = ">=3.14"
+classifiers = ["Private :: Do Not Upload"]
+dependencies = [
+    "chess>=1.11.2",
+    "denoisr-common",
+    "numpy>=2.4.3",
+    "nvidia-ml-py3>=7.352.0",
+    "psutil>=7.2.2",
+    "safetensors>=0.7.0",
+    "tensorboard>=2.20.0",
+    "torch>=2.10.0",
+    "tqdm>=4.67.3",
+    "zstandard>=0.25.0",
+]
+
+[project.scripts]
+denoisr-chess-init = "denoisr_chess.apps.init_model:main"
+denoisr-chess-generate-data = "denoisr_chess.apps.generate_data:main"
+denoisr-chess-train-phase1 = "denoisr_chess.apps.train_phase1:main"
+denoisr-chess-train-phase2 = "denoisr_chess.apps.train_phase2:main"
+denoisr-chess-train-phase3 = "denoisr_chess.apps.train_phase3:main"
+denoisr-chess-play = "denoisr_chess.apps.play:main"
+denoisr-chess-benchmark = "denoisr_chess.apps.benchmark:main"
+denoisr-chess-export-mlx = "denoisr_chess.apps.export_mlx:main"
+denoisr-chess-gui = "denoisr_chess.apps.gui:main"
+denoisr-chess-train = "denoisr_chess.apps.train:main"
+
+[tool.uv.sources]
+denoisr-common = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/denoisr_chess"]

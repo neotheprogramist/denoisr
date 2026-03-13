@@ -1,0 +1,2 @@
+"""Chess domain package."""
+

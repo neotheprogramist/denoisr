@@ -1,0 +1,1 @@
+"""Chess application entry points."""
